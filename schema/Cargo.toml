@@ -1,0 +1,13 @@
+[package]
+name = "schema"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+neo4rs.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]

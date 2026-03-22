@@ -1,0 +1,25 @@
+[package]
+name = "orchestrator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+executor.path = "../executor"
+wal.path = "../wal"
+schema.path = "../schema"
+keys.path = "../keys"
+
+tokio.workspace = true
+pgwire.workspace = true
+sqlparser.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+futures.workspace = true
