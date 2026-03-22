@@ -446,6 +446,7 @@ dependencies = [
  "rand 0.8.5",
  "redis",
  "schema",
+ "sqlparser",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

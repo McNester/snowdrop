@@ -14,5 +14,6 @@ schema.path = "../schema"
 wal.path = "../wal"
 rand.workspace = true
 neo4rs.workspace = true
+sqlparser.workspace = true
 
 [dev-dependencies]

@@ -1,14 +1,16 @@
-use executor::{KvrocksConnection, WriteEngine};
+use executor::{bytes_to_row, evaluate_predicate, KvrocksConnection, Row, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
-use schema::{ColumnType, Neo4jConnection};
+use schema::{ColumnInfo, ColumnType, Neo4jConnection};
 use sqlparser::ast::{
-    AlterTableOperation, ColumnOption, Expr, ObjectName, SetExpr, Statement, Value, Values,
+    AlterTableOperation, ColumnOption, Expr, FunctionArg, FunctionArgExpr, ObjectName, OrderByExpr,
+    SelectItem, SetExpr, Statement, Value, Values,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -132,8 +134,7 @@ impl QueryRouter {
                 if q_str.contains("INFORMATION_SCHEMA.COLUMNS") {
                     return self.handle_info_schema_columns().await;
                 }
-                // TODO(M4): SELECT
-                Ok(Response::EmptyQuery)
+                self.handle_select(*q).await
             }
             _ => {
                 warn!(stmt = ?stmt, "unhandled statement type");
@@ -384,6 +385,285 @@ impl QueryRouter {
         ))
     }
 
+    // ── SELECT handler (M4) ──
+
+    async fn handle_select<'a>(&self, query: sqlparser::ast::Query) -> PgWireResult<Response<'a>> {
+        let select = match query.body.as_ref() {
+            SetExpr::Select(sel) => sel.clone(),
+            _ => return Err(user_error("only simple SELECT supported".to_string())),
+        };
+
+        // Resolve table from FROM clause
+        if select.from.is_empty() {
+            return Err(user_error("SELECT requires FROM clause".to_string()));
+        }
+        let table_factor = &select.from[0].relation;
+        let table_name_obj = match table_factor {
+            sqlparser::ast::TableFactor::Table { name, .. } => name.clone(),
+            _ => return Err(user_error("SELECT requires a table name".to_string())),
+        };
+
+        let current_db = self.current_db.read().await.clone();
+        let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
+
+        let neo4j = self.neo4j.read().await;
+        let schema_cols = neo4j
+            .describe_table(&db_name, &table_name)
+            .await
+            .map_err(to_err)?;
+        let db = neo4j
+            .get_database(&db_name)
+            .await
+            .map_err(to_err)?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let table = neo4j
+            .get_table(&db_name, &table_name)
+            .await
+            .map_err(to_err)?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+
+        // Detect aggregates vs. plain select
+        let agg_exprs = extract_aggregates(&select.projection);
+        let is_aggregate = !agg_exprs.is_empty();
+        let _has_group_by = !extract_group_by_cols(&select.group_by).is_empty();
+
+        // Determine projected columns for non-aggregate queries
+        let projected_cols = if is_aggregate {
+            schema_cols.clone() // need all columns to evaluate aggregates
+        } else {
+            resolve_projection(&select.projection, &schema_cols)?
+        };
+
+        // Fast path: COUNT(*) without WHERE can skip MGET entirely
+        if is_aggregate && select.selection.is_none() && is_count_star_only(&select.projection) {
+            let count = self.count_rows_fast(db.id, table.id).await?;
+            return self.make_count_star_response(count);
+        }
+
+        // Fetch all rows from Kvrocks
+        let rows = self
+            .fetch_rows(db.id, table.id, &schema_cols)
+            .await?;
+
+        // Apply WHERE filter
+        let filtered: Vec<Row> = if let Some(ref selection) = select.selection {
+            rows.into_iter()
+                .filter(|row| evaluate_predicate(selection, row, &schema_cols))
+                .collect()
+        } else {
+            rows
+        };
+
+        // Handle aggregates
+        if is_aggregate {
+            return self.handle_aggregate_result(
+                &select.projection,
+                &filtered,
+                &schema_cols,
+                &select.group_by,
+            );
+        }
+
+        // Apply ORDER BY
+        let mut result_rows = filtered;
+        if let Some(ref order_by) = query.order_by {
+            sort_rows(&mut result_rows, &order_by.exprs, &schema_cols)?;
+        }
+
+        // Apply OFFSET and LIMIT
+        let offset = query.offset.as_ref().and_then(|o| expr_to_usize(&o.value)).unwrap_or(0);
+        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+
+        let paged: Vec<Row> = if let Some(lim) = limit {
+            result_rows.into_iter().skip(offset).take(lim).collect()
+        } else {
+            result_rows.into_iter().skip(offset).collect()
+        };
+
+        // Build pgwire response
+        self.rows_to_response(&paged, &projected_cols)
+    }
+
+    /// Fast row count: SCAN keys and count unique row_ids without MGET.
+    async fn count_rows_fast(&self, db_id: u32, table_id: u32) -> PgWireResult<i64> {
+        let pattern = keys::table_scan_pattern(db_id, table_id)
+            .map_err(|e| user_error(e.to_string()))?;
+        let all_keys = self.kvrocks.scan_keys(&pattern).await.map_err(to_err)?;
+
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for key in &all_keys {
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() == 4 {
+                seen.insert(parts[2]);
+            }
+        }
+        Ok(seen.len() as i64)
+    }
+
+    /// Build a simple COUNT(*) = N response.
+    fn make_count_star_response<'a>(&self, count: i64) -> PgWireResult<Response<'a>> {
+        let fields = Arc::new(vec![text_field("COUNT(*)")]);
+        let mut encoder = DataRowEncoder::new(fields.clone());
+        encoder.encode_field(&count.to_string())?;
+        let data_rows = vec![encoder.finish()?];
+        Ok(Response::Query(query_response(fields, data_rows)))
+    }
+
+    /// Fetch all rows for a table from Kvrocks, deserialize into Row maps.
+    async fn fetch_rows(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+    ) -> PgWireResult<Vec<Row>> {
+        let pattern = keys::table_scan_pattern(db_id, table_id)
+            .map_err(|e| user_error(e.to_string()))?;
+        let all_keys = self.kvrocks.scan_keys(&pattern).await.map_err(to_err)?;
+
+        if all_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Single MGET for all keys at once
+        let all_vals = self.kvrocks.mget(&all_keys).await.map_err(to_err)?;
+
+        // Build key -> value lookup
+        let mut key_val_map: HashMap<String, Vec<u8>> = HashMap::with_capacity(all_keys.len());
+        for (key, val) in all_keys.iter().zip(all_vals.into_iter()) {
+            if let Some(v) = val {
+                key_val_map.insert(key.clone(), v);
+            }
+        }
+
+        // Collect unique row_ids
+        let mut row_ids: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for key in &all_keys {
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() == 4 && seen.insert(parts[2].to_string()) {
+                row_ids.push(parts[2].to_string());
+            }
+        }
+
+        // Build rows by constructing expected keys per row
+        let mut rows = Vec::with_capacity(row_ids.len());
+        for row_id_str in &row_ids {
+            let row_id_raw = keys::decode_base62(row_id_str)
+                .map_err(|e| user_error(e.to_string()))?;
+
+            let mut col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = Vec::new();
+            for col in schema_cols {
+                let key = keys::build_key(db_id, table_id, row_id_raw, col.id)
+                    .map_err(|e| user_error(e.to_string()))?;
+                let val = key_val_map.get(&key).cloned();
+                col_values.push((col, val));
+            }
+            rows.push(bytes_to_row(&col_values));
+        }
+
+        Ok(rows)
+    }
+
+    /// Convert typed rows to a pgwire query response.
+    fn rows_to_response<'a>(
+        &self,
+        rows: &[Row],
+        projected_cols: &[ColumnInfo],
+    ) -> PgWireResult<Response<'a>> {
+        let fields = Arc::new(
+            projected_cols
+                .iter()
+                .map(|c| text_field(&c.name))
+                .collect::<Vec<_>>(),
+        );
+
+        let mut data_rows: Vec<DataRow> = Vec::new();
+        for row in rows {
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for col in projected_cols {
+                let val = row.get(&col.name.to_lowercase());
+                match val {
+                    Some(TypedValue::Null) | None => encoder.encode_field(&None::<&str>)?,
+                    Some(tv) => encoder.encode_field(&tv.to_string())?,
+                }
+            }
+            data_rows.push(encoder.finish()?);
+        }
+
+        Ok(Response::Query(query_response(fields, data_rows)))
+    }
+
+    /// Handle aggregate queries (COUNT, SUM, AVG, MIN, MAX) with optional GROUP BY.
+    fn handle_aggregate_result<'a>(
+        &self,
+        projection: &[SelectItem],
+        rows: &[Row],
+        schema_cols: &[ColumnInfo],
+        group_by: &sqlparser::ast::GroupByExpr,
+    ) -> PgWireResult<Response<'a>> {
+        let group_by_cols = extract_group_by_cols(group_by);
+
+        if group_by_cols.is_empty() {
+            // Single aggregate over all rows
+            let agg_row = compute_aggregates(projection, rows, schema_cols)?;
+            let fields = Arc::new(
+                agg_row.iter().map(|(name, _)| text_field(name)).collect::<Vec<_>>(),
+            );
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for (_, val) in &agg_row {
+                match val {
+                    TypedValue::Null => encoder.encode_field(&None::<&str>)?,
+                    tv => encoder.encode_field(&tv.to_string())?,
+                }
+            }
+            let data_rows = vec![encoder.finish()?];
+            Ok(Response::Query(query_response(fields, data_rows)))
+        } else {
+            // GROUP BY: bucket rows
+            let mut buckets: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
+            for row in rows {
+                let key: Vec<String> = group_by_cols
+                    .iter()
+                    .map(|col| {
+                        row.get(&col.to_lowercase())
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "NULL".to_string())
+                    })
+                    .collect();
+                buckets.entry(key).or_default().push(row);
+            }
+
+            let field_names: Vec<String> = projection.iter().map(|item| {
+                match item {
+                    SelectItem::UnnamedExpr(Expr::Identifier(ident)) => ident.value.clone(),
+                    SelectItem::UnnamedExpr(Expr::Function(f)) => f.to_string(),
+                    SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                    _ => "?column?".to_string(),
+                }
+            }).collect();
+
+            let fields = Arc::new(
+                field_names.iter().map(|n| text_field(n)).collect::<Vec<_>>(),
+            );
+
+            let mut data_rows: Vec<DataRow> = Vec::new();
+            for (_group_key, bucket_rows) in &buckets {
+                let owned_rows: Vec<Row> = bucket_rows.iter().map(|r| (*r).clone()).collect();
+                let agg_row = compute_aggregates(projection, &owned_rows, schema_cols)?;
+                let mut encoder = DataRowEncoder::new(fields.clone());
+                for (_, val) in &agg_row {
+                    match val {
+                        TypedValue::Null => encoder.encode_field(&None::<&str>)?,
+                        tv => encoder.encode_field(&tv.to_string())?,
+                    }
+                }
+                data_rows.push(encoder.finish()?);
+            }
+
+            Ok(Response::Query(query_response(fields, data_rows)))
+        }
+    }
+
     // ── Query handlers (SHOW, DESCRIBE, INFORMATION_SCHEMA) ──
 
     async fn handle_show_databases<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
@@ -570,6 +850,310 @@ fn value_to_bytes(val: &Value) -> PgWireResult<Vec<u8>> {
         Value::Boolean(b) => Ok(if *b { b"true".to_vec() } else { b"false".to_vec() }),
         Value::Null => Ok(Vec::new()),
         _ => Err(user_error(format!("unsupported value type: {:?}", val))),
+    }
+}
+
+/// Check if projection is exactly COUNT(*) with no other expressions.
+fn is_count_star_only(items: &[SelectItem]) -> bool {
+    if items.len() != 1 {
+        return false;
+    }
+    match &items[0] {
+        SelectItem::UnnamedExpr(Expr::Function(f)) | SelectItem::ExprWithAlias { expr: Expr::Function(f), .. } => {
+            let name = f.name.to_string().to_uppercase();
+            if name != "COUNT" {
+                return false;
+            }
+            match &f.args {
+                sqlparser::ast::FunctionArguments::List(list) => {
+                    list.args.len() == 1 && matches!(&list.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Resolve SELECT projection to the list of columns to return.
+fn resolve_projection(
+    items: &[SelectItem],
+    schema_cols: &[ColumnInfo],
+) -> PgWireResult<Vec<ColumnInfo>> {
+    let mut cols = Vec::new();
+    for item in items {
+        match item {
+            SelectItem::Wildcard(_) => {
+                cols.extend(schema_cols.iter().cloned());
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                let name = ident.value.to_lowercase();
+                let col = schema_cols
+                    .iter()
+                    .find(|c| c.name.to_lowercase() == name)
+                    .ok_or_else(|| user_error(format!("column '{}' not found", ident.value)))?;
+                cols.push(col.clone());
+            }
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                let name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
+                let col = schema_cols
+                    .iter()
+                    .find(|c| c.name.to_lowercase() == name)
+                    .ok_or_else(|| user_error(format!("column '{}' not found", name)))?;
+                cols.push(col.clone());
+            }
+            SelectItem::ExprWithAlias { expr, .. } => {
+                if let Expr::Identifier(ident) = expr {
+                    let name = ident.value.to_lowercase();
+                    let col = schema_cols
+                        .iter()
+                        .find(|c| c.name.to_lowercase() == name)
+                        .ok_or_else(|| user_error(format!("column '{}' not found", ident.value)))?;
+                    cols.push(col.clone());
+                }
+            }
+            // Aggregate expressions handled separately
+            _ => {}
+        }
+    }
+    if cols.is_empty() {
+        // If only aggregates, return all columns (they're needed for computation)
+        return Ok(schema_cols.to_vec());
+    }
+    Ok(cols)
+}
+
+/// Extract aggregate function calls from the projection.
+fn extract_aggregates(items: &[SelectItem]) -> Vec<&sqlparser::ast::Function> {
+    let mut aggs = Vec::new();
+    for item in items {
+        match item {
+            SelectItem::UnnamedExpr(Expr::Function(f)) => {
+                let name = f.name.to_string().to_uppercase();
+                if matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX") {
+                    aggs.push(f);
+                }
+            }
+            SelectItem::ExprWithAlias { expr: Expr::Function(f), .. } => {
+                let name = f.name.to_string().to_uppercase();
+                if matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX") {
+                    aggs.push(f);
+                }
+            }
+            _ => {}
+        }
+    }
+    aggs
+}
+
+/// Extract GROUP BY column names.
+fn extract_group_by_cols(group_by: &sqlparser::ast::GroupByExpr) -> Vec<String> {
+    match group_by {
+        sqlparser::ast::GroupByExpr::Expressions(exprs, _) => {
+            exprs.iter().filter_map(|e| match e {
+                Expr::Identifier(ident) => Some(ident.value.clone()),
+                _ => None,
+            }).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Compute aggregate values for a set of rows.
+fn compute_aggregates(
+    projection: &[SelectItem],
+    rows: &[Row],
+    _schema_cols: &[ColumnInfo],
+) -> PgWireResult<Vec<(String, TypedValue)>> {
+    let mut result = Vec::new();
+
+    for item in projection {
+        match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                // Non-aggregate column in GROUP BY result: take from first row
+                let val = rows
+                    .first()
+                    .and_then(|r| r.get(&ident.value.to_lowercase()))
+                    .cloned()
+                    .unwrap_or(TypedValue::Null);
+                result.push((ident.value.clone(), val));
+            }
+            SelectItem::UnnamedExpr(Expr::Function(f))
+            | SelectItem::ExprWithAlias { expr: Expr::Function(f), .. } => {
+                let name = f.name.to_string().to_uppercase();
+                let alias = match item {
+                    SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                    _ => f.to_string(),
+                };
+
+                let col_name = extract_function_col_arg(f);
+                let val = compute_single_aggregate(&name, col_name.as_deref(), rows)?;
+                result.push((alias, val));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(result)
+}
+
+/// Extract the column name argument from an aggregate function call.
+fn extract_function_col_arg(f: &sqlparser::ast::Function) -> Option<String> {
+    match &f.args {
+        sqlparser::ast::FunctionArguments::List(list) => {
+            if list.args.is_empty() {
+                return None;
+            }
+            match &list.args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None,
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    Some(ident.value.to_lowercase())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Compute a single aggregate function over rows.
+fn compute_single_aggregate(
+    func_name: &str,
+    col_name: Option<&str>,
+    rows: &[Row],
+) -> PgWireResult<TypedValue> {
+    match func_name {
+        "COUNT" => {
+            if let Some(col) = col_name {
+                // COUNT(col): count non-NULL values
+                let count = rows
+                    .iter()
+                    .filter(|r| {
+                        r.get(col).map_or(false, |v| !v.is_null())
+                    })
+                    .count();
+                Ok(TypedValue::Int(count as i64))
+            } else {
+                // COUNT(*)
+                Ok(TypedValue::Int(rows.len() as i64))
+            }
+        }
+        "SUM" => {
+            let col = col_name.ok_or_else(|| user_error("SUM requires a column".to_string()))?;
+            if rows.is_empty() {
+                return Ok(TypedValue::Null);
+            }
+            let mut sum = 0.0f64;
+            let mut has_value = false;
+            for row in rows {
+                if let Some(val) = row.get(col) {
+                    if let Some(n) = val.as_f64() {
+                        sum += n;
+                        has_value = true;
+                    }
+                }
+            }
+            if has_value {
+                // Return Int if all values were integers
+                if sum == (sum as i64) as f64 {
+                    Ok(TypedValue::Int(sum as i64))
+                } else {
+                    Ok(TypedValue::Float(sum))
+                }
+            } else {
+                Ok(TypedValue::Null)
+            }
+        }
+        "AVG" => {
+            let col = col_name.ok_or_else(|| user_error("AVG requires a column".to_string()))?;
+            if rows.is_empty() {
+                return Ok(TypedValue::Null);
+            }
+            let mut sum = 0.0f64;
+            let mut count = 0u64;
+            for row in rows {
+                if let Some(val) = row.get(col) {
+                    if let Some(n) = val.as_f64() {
+                        sum += n;
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                Ok(TypedValue::Float(sum / count as f64))
+            } else {
+                Ok(TypedValue::Null)
+            }
+        }
+        "MIN" => {
+            let col = col_name.ok_or_else(|| user_error("MIN requires a column".to_string()))?;
+            let mut min: Option<TypedValue> = None;
+            for row in rows {
+                if let Some(val) = row.get(col) {
+                    if val.is_null() {
+                        continue;
+                    }
+                    min = Some(match min {
+                        None => val.clone(),
+                        Some(ref current) if val.sql_lt(current) => val.clone(),
+                        Some(current) => current,
+                    });
+                }
+            }
+            Ok(min.unwrap_or(TypedValue::Null))
+        }
+        "MAX" => {
+            let col = col_name.ok_or_else(|| user_error("MAX requires a column".to_string()))?;
+            let mut max: Option<TypedValue> = None;
+            for row in rows {
+                if let Some(val) = row.get(col) {
+                    if val.is_null() {
+                        continue;
+                    }
+                    max = Some(match max {
+                        None => val.clone(),
+                        Some(ref current) if val.sql_gt(current) => val.clone(),
+                        Some(current) => current,
+                    });
+                }
+            }
+            Ok(max.unwrap_or(TypedValue::Null))
+        }
+        _ => Err(user_error(format!("unsupported aggregate: {}", func_name))),
+    }
+}
+
+/// Sort rows by ORDER BY expressions.
+fn sort_rows(
+    rows: &mut [Row],
+    order_by: &[OrderByExpr],
+    _schema_cols: &[ColumnInfo],
+) -> PgWireResult<()> {
+    rows.sort_by(|a, b| {
+        for ob in order_by {
+            let col_name = match &ob.expr {
+                Expr::Identifier(ident) => ident.value.to_lowercase(),
+                _ => continue,
+            };
+            let a_val = a.get(&col_name).cloned().unwrap_or(TypedValue::Null);
+            let b_val = b.get(&col_name).cloned().unwrap_or(TypedValue::Null);
+
+            let cmp = a_val.cmp_order(&b_val);
+            let cmp = if ob.asc == Some(false) { cmp.reverse() } else { cmp };
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    Ok(())
+}
+
+/// Try to extract a usize from a SQL expression (for LIMIT/OFFSET).
+fn expr_to_usize(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Value(Value::Number(n, _)) => n.parse::<usize>().ok(),
+        _ => None,
     }
 }
 
