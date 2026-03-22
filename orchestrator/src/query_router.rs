@@ -1,24 +1,32 @@
+use executor::{KvrocksConnection, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use schema::{ColumnType, Neo4jConnection};
-use sqlparser::ast::{AlterTableOperation, ColumnOption, ObjectName, Statement};
+use sqlparser::ast::{
+    AlterTableOperation, ColumnOption, Expr, ObjectName, SetExpr, Statement, Value, Values,
+};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
+use wal::WalFile;
 
 pub struct QueryRouter {
     neo4j: Arc<RwLock<Neo4jConnection>>,
+    kvrocks: Arc<KvrocksConnection>,
+    wal: Arc<RwLock<WalFile>>,
     current_db: Arc<RwLock<String>>,
 }
 
 impl QueryRouter {
-    pub fn new(neo4j: Neo4jConnection) -> Self {
+    pub fn new(neo4j: Neo4jConnection, kvrocks: KvrocksConnection, wal: WalFile) -> Self {
         Self {
             neo4j: Arc::new(RwLock::new(neo4j)),
+            kvrocks: Arc::new(kvrocks),
+            wal: Arc::new(RwLock::new(wal)),
             current_db: Arc::new(RwLock::new("default".to_string())),
         }
     }
@@ -109,6 +117,13 @@ impl QueryRouter {
                 }
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
+            Statement::Insert(insert) => self.handle_insert(insert).await,
+            Statement::Update { table, assignments, selection, .. } => {
+                self.handle_update(&table.relation, &assignments, selection.as_ref()).await
+            }
+            Statement::Delete(delete) => {
+                self.handle_delete(&delete.from, delete.selection.as_ref()).await
+            }
             Statement::Query(q) => {
                 let q_str = q.to_string().to_uppercase();
                 if q_str.contains("INFORMATION_SCHEMA.TABLES") {
@@ -135,6 +150,8 @@ impl QueryRouter {
             _ => (current_db.to_string(), name.to_string()),
         }
     }
+
+    // ── DDL handlers (unchanged from M2) ──
 
     async fn handle_create_database<'a>(&self, name: &str) -> PgWireResult<Response<'a>> {
         let neo4j = self.neo4j.read().await;
@@ -240,6 +257,134 @@ impl QueryRouter {
             ))),
         }
     }
+
+    // ── DML handlers (M3) ──
+
+    async fn handle_insert<'a>(
+        &self,
+        insert: sqlparser::ast::Insert,
+    ) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+        let table_name_obj = insert.table_name.clone();
+        let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
+
+        let column_names: Vec<String> = insert.columns.iter().map(|c| c.value.clone()).collect();
+
+        // Extract values from the INSERT source
+        let rows_data = match insert.source.as_ref() {
+            Some(query) => match query.body.as_ref() {
+                SetExpr::Values(Values { rows, .. }) => rows.clone(),
+                _ => return Err(user_error("INSERT must use VALUES".to_string())),
+            },
+            None => return Err(user_error("INSERT must have values".to_string())),
+        };
+
+        let mut total_inserted = 0u64;
+        let neo4j = self.neo4j.read().await;
+
+        for row in &rows_data {
+            let values: Vec<Vec<u8>> = row
+                .iter()
+                .map(|expr| expr_to_bytes(expr))
+                .collect::<Result<_, _>>()?;
+
+            let mut wal = self.wal.write().await;
+            let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+            let n = engine
+                .insert(&db_name, &table_name, &column_names, &values)
+                .await
+                .map_err(to_err)?;
+            total_inserted += n;
+        }
+
+        Ok(Response::Execution(
+            Tag::new("INSERT").with_rows(total_inserted as usize),
+        ))
+    }
+
+    async fn handle_update<'a>(
+        &self,
+        table: &sqlparser::ast::TableFactor,
+        assignments: &[sqlparser::ast::Assignment],
+        selection: Option<&Expr>,
+    ) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+
+        let table_name_obj = match table {
+            sqlparser::ast::TableFactor::Table { name, .. } => name.clone(),
+            _ => return Err(user_error("UPDATE requires a table name".to_string())),
+        };
+        let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
+
+        // Parse SET pairs
+        let mut set_pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        for assign in assignments {
+            let col_name = match &assign.target {
+                sqlparser::ast::AssignmentTarget::ColumnName(name) => {
+                    name.0.last().map(|i| i.value.clone()).unwrap_or_default()
+                }
+                sqlparser::ast::AssignmentTarget::Tuple(_) => {
+                    return Err(user_error("tuple assignment not supported".to_string()));
+                }
+            };
+            let val = expr_to_bytes(&assign.value)?;
+            set_pairs.push((col_name, val));
+        }
+
+        // Parse WHERE clause (simple col = val for M3)
+        let (where_col, where_val) = parse_simple_where(selection)?;
+
+        let neo4j = self.neo4j.read().await;
+        let mut wal = self.wal.write().await;
+        let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+        let n = engine
+            .update(&db_name, &table_name, &set_pairs, &where_col, &where_val)
+            .await
+            .map_err(to_err)?;
+
+        Ok(Response::Execution(
+            Tag::new("UPDATE").with_rows(n as usize),
+        ))
+    }
+
+    async fn handle_delete<'a>(
+        &self,
+        from: &sqlparser::ast::FromTable,
+        selection: Option<&Expr>,
+    ) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+
+        let table_with_joins = match from {
+            sqlparser::ast::FromTable::WithFromKeyword(tables) => {
+                tables.first().ok_or_else(|| user_error("DELETE requires FROM".to_string()))?
+            }
+            sqlparser::ast::FromTable::WithoutKeyword(tables) => {
+                tables.first().ok_or_else(|| user_error("DELETE requires FROM".to_string()))?
+            }
+        };
+
+        let table_name_obj = match &table_with_joins.relation {
+            sqlparser::ast::TableFactor::Table { name, .. } => name.clone(),
+            _ => return Err(user_error("DELETE requires a table name".to_string())),
+        };
+        let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
+
+        let (where_col, where_val) = parse_simple_where(selection)?;
+
+        let neo4j = self.neo4j.read().await;
+        let mut wal = self.wal.write().await;
+        let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+        let n = engine
+            .delete(&db_name, &table_name, &where_col, &where_val)
+            .await
+            .map_err(to_err)?;
+
+        Ok(Response::Execution(
+            Tag::new("DELETE").with_rows(n as usize),
+        ))
+    }
+
+    // ── Query handlers (SHOW, DESCRIBE, INFORMATION_SCHEMA) ──
 
     async fn handle_show_databases<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
         let neo4j = self.neo4j.read().await;
@@ -365,6 +510,8 @@ impl QueryRouter {
     }
 }
 
+// ── Helpers ──
+
 fn text_field(name: &str) -> FieldInfo {
     FieldInfo::new(
         name.to_string(),
@@ -394,4 +541,92 @@ fn user_error(msg: String) -> PgWireError {
         "42000".to_string(),
         msg,
     )))
+}
+
+/// Convert a SQL expression (literal) to raw bytes for storage.
+fn expr_to_bytes(expr: &Expr) -> PgWireResult<Vec<u8>> {
+    match expr {
+        Expr::Value(val) => value_to_bytes(val),
+        Expr::UnaryOp { op, expr } => {
+            // Handle negative numbers: -1, -3.14
+            if matches!(op, sqlparser::ast::UnaryOperator::Minus) {
+                let inner = expr_to_bytes(expr)?;
+                let inner_str = String::from_utf8(inner)
+                    .map_err(|_| user_error("invalid value encoding".to_string()))?;
+                Ok(format!("-{}", inner_str).into_bytes())
+            } else {
+                Err(user_error(format!("unsupported expression: {:?}", expr)))
+            }
+        }
+        _ => Err(user_error(format!("unsupported expression: {:?}", expr))),
+    }
+}
+
+fn value_to_bytes(val: &Value) -> PgWireResult<Vec<u8>> {
+    match val {
+        Value::Number(n, _) => Ok(n.as_bytes().to_vec()),
+        Value::SingleQuotedString(s) => Ok(s.as_bytes().to_vec()),
+        Value::DoubleQuotedString(s) => Ok(s.as_bytes().to_vec()),
+        Value::Boolean(b) => Ok(if *b { b"true".to_vec() } else { b"false".to_vec() }),
+        Value::Null => Ok(Vec::new()),
+        _ => Err(user_error(format!("unsupported value type: {:?}", val))),
+    }
+}
+
+/// Parse a simple WHERE clause: `col = value`
+fn parse_simple_where(selection: Option<&Expr>) -> PgWireResult<(String, String)> {
+    let expr = selection.ok_or_else(|| user_error("WHERE clause is required".to_string()))?;
+
+    match expr {
+        Expr::BinaryOp { left, op, right } => {
+            if !matches!(op, sqlparser::ast::BinaryOperator::Eq) {
+                return Err(user_error(format!(
+                    "only = operator supported in WHERE for M3, got {:?}",
+                    op
+                )));
+            }
+
+            let col_name = match left.as_ref() {
+                Expr::Identifier(ident) => ident.value.clone(),
+                Expr::CompoundIdentifier(parts) => {
+                    parts.last().map(|i| i.value.clone()).unwrap_or_default()
+                }
+                _ => {
+                    return Err(user_error(
+                        "WHERE left side must be a column name".to_string(),
+                    ))
+                }
+            };
+
+            let val_str = match right.as_ref() {
+                Expr::Value(Value::Number(n, _)) => n.clone(),
+                Expr::Value(Value::SingleQuotedString(s)) => s.clone(),
+                Expr::Value(Value::DoubleQuotedString(s)) => s.clone(),
+                Expr::Value(Value::Boolean(b)) => b.to_string(),
+                Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Minus,
+                    expr,
+                } => {
+                    let inner = match expr.as_ref() {
+                        Expr::Value(Value::Number(n, _)) => n.clone(),
+                        _ => {
+                            return Err(user_error("unsupported WHERE value".to_string()));
+                        }
+                    };
+                    format!("-{}", inner)
+                }
+                _ => {
+                    return Err(user_error(format!(
+                        "unsupported WHERE value: {:?}",
+                        right
+                    )));
+                }
+            };
+
+            Ok((col_name, val_str))
+        }
+        _ => Err(user_error(
+            "WHERE clause must be a simple col = value expression".to_string(),
+        )),
+    }
 }

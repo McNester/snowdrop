@@ -79,13 +79,13 @@ impl PgWireServerHandlers for SnowdropHandlers {
 pub async fn serve_pgwire(
     addr: &str,
     neo4j: schema::Neo4jConnection,
-    _kvrocks: executor::KvrocksConnection,
-    _wal: wal::WalFile,
+    kvrocks: executor::KvrocksConnection,
+    wal: wal::WalFile,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(addr, "pgwire listener started");
 
-    let router = Arc::new(query_router::QueryRouter::new(neo4j));
+    let router = Arc::new(query_router::QueryRouter::new(neo4j, kvrocks, wal));
 
     let handlers = Arc::new(SnowdropHandlers {
         startup: Arc::new(SnowdropStartupHandler),

@@ -529,4 +529,31 @@ impl Neo4jConnection {
         }
         Ok(rows)
     }
+
+    /// Lookup the PK column ID for a table by db_id and table_id.
+    /// Used during WAL replay when we only have IDs, not names.
+    pub async fn get_pk_col_id_by_table_id(
+        &self,
+        db_id: u32,
+        table_id: u32,
+    ) -> Result<Option<u32>> {
+        let mut result = self
+            .graph()
+            .execute(
+                query(
+                    "MATCH (db:Database {id: $db_id})-[:HAS_TABLE]->(t:Table {id: $table_id}) \
+                     -[:HAS_COLUMN]->(c:Column {is_pk: true}) \
+                     RETURN c.id AS id",
+                )
+                .param("db_id", db_id as i64)
+                .param("table_id", table_id as i64),
+            )
+            .await?;
+
+        if let Some(row) = result.next().await? {
+            let id: i64 = row.get("id")?;
+            return Ok(Some(id as u32));
+        }
+        Ok(None)
+    }
 }

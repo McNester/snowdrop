@@ -441,10 +441,15 @@ name = "executor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "keys",
+ "neo4rs",
+ "rand 0.8.5",
  "redis",
+ "schema",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "wal",
 ]
 
 [[package]]

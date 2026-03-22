@@ -137,6 +137,62 @@ impl WalFile {
         Ok(())
     }
 
+    /// Compacts the WAL by removing entries older than `max_age_secs` in terminal states
+    /// (Committed or RolledBack). Rewrites the file with only active/recent entries.
+    pub fn compact(&mut self, max_age_secs: u64) -> Result<usize, WalError> {
+        let entries = self.scan_all()?;
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let cutoff_nanos = now_nanos.saturating_sub(max_age_secs * 1_000_000_000);
+
+        let mut keep = Vec::new();
+        let mut removed = 0usize;
+
+        for entry in &entries {
+            let status = WalStatus::try_from(entry.header.status)?;
+            let is_terminal = matches!(status, WalStatus::Committed | WalStatus::RolledBack);
+            let is_old = entry.header.timestamp < cutoff_nanos;
+
+            if is_terminal && is_old {
+                removed += 1;
+            } else {
+                keep.push(entry);
+            }
+        }
+
+        if removed == 0 {
+            return Ok(0);
+        }
+
+        // Write surviving entries to a temp file, then rename
+        let tmp_path = self.path.with_extension("compact.tmp");
+        {
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            let mut writer = BufWriter::new(file);
+
+            for entry in &keep {
+                entry.header.write_to(&mut writer)?;
+                let payload_bytes = bincode::serialize(&entry.payload)?;
+                writer.write_all(&payload_bytes)?;
+            }
+            writer.flush()?;
+        }
+
+        std::fs::rename(&tmp_path, &self.path)?;
+
+        // Re-scan to fix offsets and next_entry_id
+        self.scan_all()?;
+
+        info!(removed, kept = keep.len(), "WAL compaction complete");
+        Ok(removed)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

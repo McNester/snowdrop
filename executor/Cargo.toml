@@ -9,5 +9,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+keys.path = "../keys"
+schema.path = "../schema"
+wal.path = "../wal"
+rand.workspace = true
+neo4rs.workspace = true
 
 [dev-dependencies]

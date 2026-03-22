@@ -80,11 +80,9 @@ async fn main() -> Result<()> {
     // Step 5: Re-execute Kvrocks writes for Neo4jCommitted entries
     if !needs_replay.is_empty() {
         info!(count = needs_replay.len(), "replaying WAL entries to Kvrocks");
-        // TODO(M3): implement actual Kvrocks replay from WAL payload
-        for entry in &needs_replay {
-            info!(entry_id = entry.header.entry_id, "replayed WAL entry (stub)");
-            wal.update_status(entry.file_offset, wal::WalStatus::Committed)?;
-        }
+        executor::replay_wal_entries(&kvrocks, &neo4j, &needs_replay, &wal)
+            .await
+            .context("WAL replay to Kvrocks failed")?;
     }
 
     // Step 6: Mark ready, begin accepting pgwire connections
