@@ -1,5 +1,6 @@
 mod health;
 mod pgwire_handler;
+mod query_router;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -63,6 +64,8 @@ async fn main() -> Result<()> {
         .await
         .context("Neo4j connection failed")?;
 
+    // Initialize schema constraints and counters
+    neo4j.init_schema().await.context("schema initialization failed")?;
     info!("Neo4j connectivity verified");
 
     // Step 4: Verify Kvrocks connectivity

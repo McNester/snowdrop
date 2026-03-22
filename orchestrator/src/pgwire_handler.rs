@@ -1,3 +1,4 @@
+use crate::query_router;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Sink;
@@ -18,22 +19,24 @@ pub struct SnowdropStartupHandler;
 
 impl NoopStartupHandler for SnowdropStartupHandler {}
 
-pub struct SnowdropQueryHandler;
+pub struct SnowdropQueryHandler {
+    router: Arc<query_router::QueryRouter>,
+}
 
 #[async_trait]
 impl SimpleQueryHandler for SnowdropQueryHandler {
     async fn do_query<'a, 'b: 'a, C>(
         &'b self,
         _client: &mut C,
-        query: &'a str,
+        query_str: &'a str,
     ) -> PgWireResult<Vec<Response<'a>>>
     where
         C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        info!(query, "received query");
-        Ok(vec![Response::EmptyQuery])
+        info!(query = query_str, "received query");
+        self.router.route(query_str).await
     }
 }
 
@@ -75,16 +78,20 @@ impl PgWireServerHandlers for SnowdropHandlers {
 
 pub async fn serve_pgwire(
     addr: &str,
-    _neo4j: schema::Neo4jConnection,
+    neo4j: schema::Neo4jConnection,
     _kvrocks: executor::KvrocksConnection,
     _wal: wal::WalFile,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(addr, "pgwire listener started");
 
+    let router = Arc::new(query_router::QueryRouter::new(neo4j));
+
     let handlers = Arc::new(SnowdropHandlers {
         startup: Arc::new(SnowdropStartupHandler),
-        query: Arc::new(SnowdropQueryHandler),
+        query: Arc::new(SnowdropQueryHandler {
+            router: router.clone(),
+        }),
         extended: Arc::new(PlaceholderExtendedQueryHandler),
         copy: Arc::new(NoopCopyHandler),
         error: Arc::new(NoopErrorHandler),

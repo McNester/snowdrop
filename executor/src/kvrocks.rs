@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use redis::aio::MultiplexedConnection;
-use redis::AsyncCommands;
 use tracing::info;
 
 pub struct KvrocksConnection {
