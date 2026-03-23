@@ -149,6 +149,68 @@ pub fn db_scan_pattern(db_id: u32) -> Result<String, KeyError> {
     Ok(format!("{}:*", encode_db_id(db_id)?))
 }
 
+// ── Secondary Index Keys ──
+
+/// Constructs a secondary index key: idx:{db}:{tbl}:{col}:{value_encoded}:{row}
+/// Lexicographic ordering of value_encoded ensures range scans work via prefix iteration.
+pub fn build_index_key(
+    db_id: u32,
+    table_id: u32,
+    col_id: u32,
+    value_encoded: &str,
+    row_id: u64,
+) -> Result<String, KeyError> {
+    Ok(format!(
+        "idx:{}:{}:{}:{}:{}",
+        encode_db_id(db_id)?,
+        encode_table_id(table_id)?,
+        encode_col_id(col_id)?,
+        value_encoded,
+        encode_row_id(row_id)?
+    ))
+}
+
+/// Prefix for all index entries of a column: idx:{db}:{tbl}:{col}:
+pub fn index_prefix(db_id: u32, table_id: u32, col_id: u32) -> Result<String, KeyError> {
+    Ok(format!(
+        "idx:{}:{}:{}:",
+        encode_db_id(db_id)?,
+        encode_table_id(table_id)?,
+        encode_col_id(col_id)?
+    ))
+}
+
+/// Prefix for exact-match index lookup: idx:{db}:{tbl}:{col}:{value_encoded}:
+pub fn index_point_prefix(
+    db_id: u32,
+    table_id: u32,
+    col_id: u32,
+    value_encoded: &str,
+) -> Result<String, KeyError> {
+    Ok(format!(
+        "idx:{}:{}:{}:{}:",
+        encode_db_id(db_id)?,
+        encode_table_id(table_id)?,
+        encode_col_id(col_id)?,
+        value_encoded
+    ))
+}
+
+/// Parse a secondary index key back into its components.
+/// Returns (db_id, table_id, col_id, value_encoded, row_id).
+pub fn parse_index_key(key: &str) -> Result<(u32, u32, u32, String, u64), KeyError> {
+    let parts: Vec<&str> = key.splitn(6, ':').collect();
+    if parts.len() != 6 || parts[0] != "idx" {
+        return Err(KeyError::InvalidBase62(format!("not an index key: {key}")));
+    }
+    let db_id = decode_base62(parts[1])? as u32;
+    let table_id = decode_base62(parts[2])? as u32;
+    let col_id = decode_base62(parts[3])? as u32;
+    let value_encoded = parts[4].to_string();
+    let row_id = decode_base62(parts[5])?;
+    Ok((db_id, table_id, col_id, value_encoded, row_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +289,50 @@ mod tests {
     fn decode_invalid_chars() {
         assert!(decode_base62("!!").is_err());
         assert!(decode_base62("a+b").is_err());
+    }
+
+    // ── Index key tests ──
+
+    #[test]
+    fn build_index_key_format() {
+        let key = build_index_key(1, 15, 3, "09223372036854775808", 42).unwrap();
+        assert!(key.starts_with("idx:01:00F:03:09223372036854775808:"));
+    }
+
+    #[test]
+    fn index_key_roundtrip() {
+        let key = build_index_key(1, 15, 3, "2024-01-15", 999).unwrap();
+        let (db, tbl, col, val, row) = parse_index_key(&key).unwrap();
+        assert_eq!(db, 1);
+        assert_eq!(tbl, 15);
+        assert_eq!(col, 3);
+        assert_eq!(val, "2024-01-15");
+        assert_eq!(row, 999);
+    }
+
+    #[test]
+    fn index_prefix_format() {
+        let p = index_prefix(1, 15, 3).unwrap();
+        assert_eq!(p, "idx:01:00F:03:");
+    }
+
+    #[test]
+    fn index_point_prefix_format() {
+        let p = index_point_prefix(1, 15, 3, "hello").unwrap();
+        assert_eq!(p, "idx:01:00F:03:hello:");
+    }
+
+    #[test]
+    fn index_key_lexicographic_order() {
+        // Smaller encoded values produce lexicographically smaller keys
+        let k1 = build_index_key(1, 1, 1, "00000", 1).unwrap();
+        let k2 = build_index_key(1, 1, 1, "00001", 1).unwrap();
+        assert!(k1 < k2);
+    }
+
+    #[test]
+    fn parse_index_key_rejects_non_index() {
+        assert!(parse_index_key("01:00F:00000000000").is_err());
+        assert!(parse_index_key("notidx:01:00F:03:val:00000000000").is_err());
     }
 }

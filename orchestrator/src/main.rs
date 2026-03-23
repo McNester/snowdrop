@@ -28,6 +28,13 @@ async fn main() -> Result<()> {
 
     info!("Snowdrop database starting");
 
+    // Initialize Prometheus metrics exporter on :9090
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], 9090))
+        .install()
+        .expect("failed to install Prometheus metrics exporter");
+    info!("Prometheus metrics exporter running on :9090");
+
     let state = Arc::new(RwLock::new(AppState {
         status: ServerStatus::Starting,
     }));

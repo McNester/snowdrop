@@ -1,0 +1,1001 @@
+Analysis of sampling tpch-bench (pid 3749) every 1 millisecond
+Process:         tpch-bench [3749]
+Path:            /Users/USER/Desktop/*/tpch-bench
+Load Address:    0x102af4000
+Identifier:      tpch-bench
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  zsh [3747]
+
+Date/Time:       2026-03-23 11:16:53.284 +0500
+Launch Time:     2026-03-23 11:16:51.231 +0500
+OS Version:      macOS 15.3.1 (24D70)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+----
+
+Call graph:
+    16717 Thread_278996571   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 16717 start  (in dyld) + 2840  [0x188c18274]
+    +   16717 main  (in tpch-bench) + 52  [0x102b2f200]
+    +     16717 std::rt::lang_start_internal::h95cf27b851151b9c  (in tpch-bench) + 888  [0x102bb0fcc]
+    +       16717 std::rt::lang_start::_$u7b$$u7b$closure$u7d$$u7d$::h4994f012263d8513  (in tpch-bench) + 16  [0x102b44358]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::hc753747812317e55  (in tpch-bench) + 12  [0x102b48834]  backtrace.rs:152
+    +           16717 tpch_bench::main::hce3e8504c5a3d308  (in tpch-bench) + 176  [0x102b2f118]  main.rs:111
+    +             16717 tokio::runtime::runtime::Runtime::block_on::he78ec342ea8081da  (in tpch-bench) + 128  [0x102b3e8f4]  runtime.rs:345
+    +               16717 tokio::runtime::context::runtime::enter_runtime::h9b6238d7ccf1ff89  (in tpch-bench) + 380  [0x102b4c40c]  runtime.rs:65
+    +                 16662 tokio::runtime::park::CachedParkThread::block_on::h16ac32271b40356f  (in tpch-bench) + 4164  [0x102b003a8]  park.rs:288
+    +                 ! 16661 tokio::runtime::park::Inner::park::ha51b4ca87073bc99  (in tpch-bench) + 104  [0x102b62b08]
+    +                 ! : 16660 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                 ! : | 16658 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                 ! : | + 16658 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    +                 ! : | 1 DYLD-STUB$$pthread_cond_wait  (in tpch-bench) + 0  [0x102bdc7c8]
+    +                 ! : | 1 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1252  [0x188f988c4]
+    +                 ! : 1 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 556  [0x102b857e4]
+    +                 ! 1 tokio::runtime::park::CachedParkThread::park::ha49bef416d7539b2  (in tpch-bench) + 32  [0x102b62fd4]
+    +                 !   1 tlv_get_addr  (in libdyld.dylib) + 0  [0x188fa08b0]
+    +                 30 tokio::runtime::park::CachedParkThread::block_on::h16ac32271b40356f  (in tpch-bench) + 3160  [0x102afffbc]  park.rs:284
+    +                 ! 10 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 6392  [0x102b02320]  main.rs:139
+    +                 ! : 6 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 516  [0x102af83d4]  client.rs:577
+    +                 ! : | 5 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 92  [0x102b3b7d4]  try_collect.rs:46
+    +                 ! : | + 5 _$LT$tokio_postgres..simple_query..SimpleQueryStream$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::hf7ac07bf7a15d79c  (in tpch-bench) + 48  [0x102b5a624]
+    +                 ! : | +   2 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 56  [0x102b4e010]
+    +                 ! : | +   ! 1 postgres_protocol::message::backend::Message::parse::h15789f672b1fe983  (in tpch-bench) + 84  [0x102b5d458]
+    +                 ! : | +   ! : 1 bytes::bytes_mut::BytesMut::reserve_inner::h4c5fd4f67ad8c7df  (in tpch-bench) + 708  [0x102b95894]
+    +                 ! : | +   ! :   1 alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hf90c03aea6cdf45f  (in tpch-bench) + 0  [0x102bda9d8]
+    +                 ! : | +   ! 1 postgres_protocol::message::backend::Message::parse::h15789f672b1fe983  (in tpch-bench) + 1360  [0x102b5d954]
+    +                 ! : | +   !   1 std::io::default_read_exact::h95e565d6152c3d21  (in tpch-bench) + 88  [0x102b577f0]
+    +                 ! : | +   !     1 _platform_memmove  (in libsystem_platform.dylib) + 436  [0x188fcebc4]
+    +                 ! : | +   2 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 240  [0x102b4e0c8]
+    +                 ! : | +   ! 1 postgres_protocol::message::backend::Message::parse::h15789f672b1fe983  (in tpch-bench) + 1548  [0x102b5da10]
+    +                 ! : | +   ! : 1 postgres_protocol::message::backend::Buffer::read_cstr::h6ca29038599ad32e  (in tpch-bench) + 64  [0x102b5d200]
+    +                 ! : | +   ! 1 postgres_protocol::message::backend::Message::parse::h15789f672b1fe983  (in tpch-bench) + 2076  [0x102b5dc20]
+    +                 ! : | +   !   1 bytes::bytes_mut::shared_v_drop::h9ec5db06ee6382fb  (in tpch-bench) + 84  [0x102b95e20]
+    +                 ! : | +   1 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 184  [0x102b4e090]
+    +                 ! : | +     1 _$LT$futures_channel..mpsc..Receiver$LT$T$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::hbda8524bf1d0e2dd  (in tpch-bench) + 44  [0x102b5c9a4]
+    +                 ! : | +       1 futures_channel::mpsc::Receiver$LT$T$GT$::next_message::he287dbbba654af88  (in tpch-bench) + 52  [0x102b5b330]
+    +                 ! : | +         1 futures_channel::mpsc::queue::Queue$LT$T$GT$::pop_spin::h9610645a172408b5  (in tpch-bench) + 144  [0x102b5ebd4]
+    +                 ! : | +           1 _nanov2_free  (in libsystem_malloc.dylib) + 616  [0x188dc413c]
+    +                 ! : | 1 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 52  [0x102b3b7ac]  try_collect.rs:43
+    +                 ! : 4 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 388  [0x102af8354]  client.rs:577
+    +                 ! :   4 tokio_postgres::client::InnerClient::send::haa2ba20636a6b75e  (in tpch-bench) + 104  [0x102b4e220]
+    +                 ! :     3 futures_channel::mpsc::UnboundedSender$LT$T$GT$::do_send_nb::h5cbcea594af52c9d  (in tpch-bench) + 184  [0x102b5b5d4]
+    +                 ! :     + 3 tokio::runtime::task::waker::wake_by_val::h3b37e860c4a13bb1  (in tpch-bench) + 52  [0x102b74c90]
+    +                 ! :     +   3 tokio::runtime::scheduler::multi_thread::handle::_$LT$impl$u20$tokio..runtime..task..Schedule$u20$for$u20$alloc..sync..Arc$LT$tokio..runtime..scheduler..multi_thread..handle..Handle$GT$$GT$::schedule::hb053f6265e9f3ea8  (in tpch-bench) + 52  [0x102b72a48]
+    +                 ! :     +     3 tokio::runtime::context::with_scheduler::ha1ed5a6985ead1e5  (in tpch-bench) + 264  [0x102b7be54]
+    +                 ! :     +       3 tokio::runtime::driver::Handle::unpark::ha38e15c5cbf355cb  (in tpch-bench) + 36  [0x102b7b43c]
+    +                 ! :     +         3 mio::waker::Waker::wake::h075600b152a01842  (in tpch-bench) + 64  [0x102b84134]
+    +                 ! :     +           3 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                 ! :     1 futures_channel::mpsc::UnboundedSender$LT$T$GT$::do_send_nb::h5cbcea594af52c9d  (in tpch-bench) + 136  [0x102b5b5a4]
+    +                 ! :       1 nanov2_malloc_type  (in libsystem_malloc.dylib) + 200  [0x188dc3d58]
+    +                 ! 6 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 12576  [0x102b03b48]  main.rs:133
+    +                 ! : 6 tokio_postgres::connect::connect_once::_$u7b$$u7b$closure$u7d$$u7d$::h888bac96d865ea52  (in tpch-bench) + 5208  [0x102af99f0]  connect.rs:163
+    +                 ! :   5 tokio_postgres::connect_raw::connect_raw::_$u7b$$u7b$closure$u7d$$u7d$::h7c2d6a1bd47fb27a  (in tpch-bench) + 7116  [0x102af6524]  connect_raw.rs:113
+    +                 ! :   | 5 postgres_protocol::authentication::sasl::ScramSha256::update::hc79c779299e98ade  (in tpch-bench) + 2308  [0x102b89878]
+    +                 ! :   |   2 postgres_protocol::authentication::sasl::hi::h59662a09a792aad7  (in tpch-bench) + 1432  [0x102b888b8]
+    +                 ! :   |   + 2 sha2::sha256::compress256::ha48371187e1aad8a  (in tpch-bench) + 1872,6416  [0x102b91518,0x102b926d8]
+    +                 ! :   |   2 sha2::sha256::compress256::ha48371187e1aad8a  (in tpch-bench) + 3680,4624  [0x102b91c28,0x102b91fd8]
+    +                 ! :   |   1 postgres_protocol::authentication::sasl::hi::h59662a09a792aad7  (in tpch-bench) + 1524  [0x102b88914]
+    +                 ! :   1 tokio_postgres::connect_raw::connect_raw::_$u7b$$u7b$closure$u7d$$u7d$::h7c2d6a1bd47fb27a  (in tpch-bench) + 3872  [0x102af5878]  connect_raw.rs:113
+    +                 ! :     1 _$LT$futures_util..sink..send..Send$LT$Si$C$Item$GT$$u20$as$u20$core..future..future..Future$GT$::poll::h2f13debcadb1a655  (in tpch-bench) + 60  [0x102b42014]  send.rs:37
+    +                 ! :       1 _$LT$tokio_postgres..connect_raw..StartupStream$LT$S$C$T$GT$$u20$as$u20$futures_sink..Sink$LT$tokio_postgres..codec..FrontendMessage$GT$$GT$::poll_flush::hcf3bc956f7a0c9e9  (in tpch-bench) + 64  [0x102b45194]  connect_raw.rs:46
+    +                 ! :         1 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_write::hc4788232854d35d9  (in tpch-bench) + 180  [0x102b80118]
+    +                 ! :           1 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Write$GT$::write::h0ded7dc262a21209  (in tpch-bench) + 28  [0x102b843b0]
+    +                 ! :             1 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Write$GT$::write::hcaad6648d1a22a5f  (in tpch-bench) + 24  [0x102bb5444]
+    +                 ! :               1 __sendto  (in libsystem_kernel.dylib) + 8  [0x188f5b44c]
+    +                 ! 6 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 19260  [0x102b05564]  main.rs:139
+    +                 ! : 5 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+    +                 ! : | 4 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 300  [0x102bd0cec]
+    +                 ! : | + 2 core::fmt::num::imp::_$LT$impl$u20$u64$GT$::_fmt::h99108e3731ddbd8b  (in tpch-bench) + 0,216  [0x102bd5848,0x102bd5920]
+    +                 ! : | + 1 core::fmt::float::float_to_decimal_common_exact::hd0b3579727c67261  (in tpch-bench) + 708  [0x102bd0628]
+    +                 ! : | + ! 1 core::fmt::Formatter::write_formatted_parts::h59ce20c6d0fa35ab  (in tpch-bench) + 44  [0x102bd17dc]
+    +                 ! : | + 1 core::fmt::float::float_to_decimal_common_exact::hd0b3579727c67261  (in tpch-bench) + 560  [0x102bd0594]
+    +                 ! : | 1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 160  [0x102bd0c60]
+    +                 ! : 1 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 252  [0x102bcaf2c]
+    +                 ! :   1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 96  [0x188dcf68c]
+    +                 ! 5 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14404,18064,...  [0x102b0426c,0x102b050b8,...]  main.rs:139
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14524  [0x102b042e4]  main.rs:139
+    +                 ! : 1 alloc::slice::_$LT$impl$u20$$u5b$T$u5d$$GT$::join::hd9c9fe0b886e2b3d  (in tpch-bench) + 192  [0x102b3fe28]  slice.rs:645
+    +                 ! :   1 szone_malloc_should_clear  (in libsystem_malloc.dylib) + 88  [0x188da1a80]
+    +                 ! :     1 tiny_malloc_should_clear  (in libsystem_malloc.dylib) + 288  [0x188da2d40]
+    +                 ! :       1 tiny_malloc_from_free_list  (in libsystem_malloc.dylib) + 1068  [0x188da3824]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14608  [0x102b04338]  main.rs:139
+    +                 ! : 1 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+    +                 ! :   1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 404  [0x102bd0d54]
+    +                 ! :     1 _$LT$alloc..string..String$u20$as$u20$core..fmt..Write$GT$::write_str::h4bc2793cacc1d696  (in tpch-bench) + 108  [0x102bcb3ec]
+    +                 ! :       1 alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hf907109019113e80  (in tpch-bench) + 108  [0x102bdbda0]
+    +                 ! :         1 alloc::raw_vec::finish_grow::h91993be477efd13c  (in tpch-bench) + 60  [0x102bdbe20]
+    +                 ! :           1 _realloc  (in libsystem_malloc.dylib) + 468  [0x188dd047c]
+    +                 ! :             1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 144  [0x188dcfc60]
+    +                 ! :               1 szone_realloc  (in libsystem_malloc.dylib) + 0  [0x188da4b14]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 15968  [0x102b04888]  main.rs:139
+    +                 !   1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h49a7196041d93113  (in tpch-bench) + 272  [0x102b388a8]  spec_from_iter.rs:34
+    +                 !     1 core::ops::try_trait::NeverShortCircuit$LT$T$GT$::wrap_mut_2::_$u7b$$u7b$closure$u7d$$u7d$::h187f39334f1f6c76  (in tpch-bench) + 708  [0x102b3f850]
+    +                 !       1 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+    +                 !         1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 300  [0x102bd0cec]
+    +                 !           1 _$LT$alloc..string..String$u20$as$u20$core..fmt..Write$GT$::write_str::h4bc2793cacc1d696  (in tpch-bench) + 108  [0x102bcb3ec]
+    +                 !             1 alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hf907109019113e80  (in tpch-bench) + 108  [0x102bdbda0]
+    +                 !               1 alloc::raw_vec::finish_grow::h91993be477efd13c  (in tpch-bench) + 60  [0x102bdbe20]
+    +                 !                 1 _realloc  (in libsystem_malloc.dylib) + 260  [0x188dd03ac]
+    +                 !                   1 nanov2_size  (in libsystem_malloc.dylib) + 276  [0x188da1638]
+    +                 23 tokio::runtime::park::CachedParkThread::block_on::h16ac32271b40356f  (in tpch-bench) + 2728  [0x102affe0c]  park.rs:284
+    +                 ! 9 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 6392  [0x102b02320]  main.rs:139
+    +                 ! : 4 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 516  [0x102af83d4]  client.rs:577
+    +                 ! : | 2 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 92  [0x102b3b7d4]  try_collect.rs:46
+    +                 ! : | + 2 _$LT$tokio_postgres..simple_query..SimpleQueryStream$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::hf7ac07bf7a15d79c  (in tpch-bench) + 48  [0x102b5a624]
+    +                 ! : | +   1 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 56  [0x102b4e010]
+    +                 ! : | +   ! 1 postgres_protocol::message::backend::Message::parse::h15789f672b1fe983  (in tpch-bench) + 1340  [0x102b5d940]
+    +                 ! : | +   1 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 208  [0x102b4e0a8]
+    +                 ! : | +     1 _nanov2_free  (in libsystem_malloc.dylib) + 776  [0x188dc41dc]
+    +                 ! : | 1 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 268  [0x102b3b884]  main.rs:0
+    +                 ! : | 1 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 244  [0x102b3b86c]  try_collect.rs:47
+    +                 ! : |   1 alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::h86aec9ba87cc6fc6  (in tpch-bench) + 172  [0x102bd60cc]
+    +                 ! : |     1 alloc::raw_vec::finish_grow::h63f16748a89ec2e9  (in tpch-bench) + 92  [0x102bd5ff4]
+    +                 ! : |       1 szone_malloc_type_malloc  (in libsystem_malloc.dylib) + 0  [0x188db887c]
+    +                 ! : 3 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 580  [0x102af8414]  client.rs:577
+    +                 ! : | 3 core::ptr::drop_in_place$LT$tokio_postgres..simple_query..SimpleQueryStream$GT$::h32f8e3a2a2d37f65  (in tpch-bench) + 24  [0x102afd518]  mod.rs:523
+    +                 ! : |   2 _$LT$futures_channel..mpsc..Receiver$LT$T$GT$$u20$as$u20$core..ops..drop..Drop$GT$::drop::h00829e3080dd8e4e  (in tpch-bench) + 820  [0x102b36960]  mod.rs:1189
+    +                 ! : |   + 1 _free  (in libsystem_malloc.dylib) + 80  [0x188dd0274]
+    +                 ! : |   + 1 _nanov2_free  (in libsystem_malloc.dylib) + 520  [0x188dc40dc]
+    +                 ! : |   +   1 __bzero  (in libsystem_platform.dylib) + 24  [0x188fce6f8]
+    +                 ! : |   1 _$LT$futures_channel..mpsc..Receiver$LT$T$GT$$u20$as$u20$core..ops..drop..Drop$GT$::drop::h00829e3080dd8e4e  (in tpch-bench) + 360  [0x102b36794]  mod.rs:1189
+    +                 ! : 1 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 0  [0x102af81d0]  client.rs:576
+    +                 ! : 1 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 388  [0x102af8354]  client.rs:577
+    +                 ! :   1 tokio_postgres::client::InnerClient::send::haa2ba20636a6b75e  (in tpch-bench) + 48  [0x102b4e1e8]
+    +                 ! :     1 futures_channel::mpsc::channel::h4b2e2764c7b0d067  (in tpch-bench) + 260  [0x102b5b768]
+    +                 ! :       1 nanov2_malloc_type  (in libsystem_malloc.dylib) + 224  [0x188dc3d70]
+    +                 ! 5 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 19260  [0x102b05564]  main.rs:139
+    +                 ! : 5 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+    +                 ! :   3 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 300  [0x102bd0cec]
+    +                 ! :   | 3 core::fmt::float::float_to_decimal_common_exact::hd0b3579727c67261  (in tpch-bench) + 504  [0x102bd055c]
+    +                 ! :   |   2 core::num::flt2dec::strategy::grisu::format_exact_opt::hdec38ba32f804639  (in tpch-bench) + 828  [0x102bcdae4]
+    +                 ! :   |   + 2 core::num::flt2dec::strategy::grisu::format_exact_opt::possibly_round::h150999f24cee1dcf  (in tpch-bench) + 56,420  [0x102bcdc08,0x102bcdd74]
+    +                 ! :   |   1 core::num::flt2dec::strategy::grisu::format_exact_opt::hdec38ba32f804639  (in tpch-bench) + 148  [0x102bcd83c]
+    +                 ! :   1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 140  [0x102bd0c4c]
+    +                 ! :   | 1 _$LT$alloc..string..String$u20$as$u20$core..fmt..Write$GT$::write_str::h4bc2793cacc1d696  (in tpch-bench) + 44  [0x102bcb3ac]
+    +                 ! :   1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 236  [0x102bd0cac]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14348  [0x102b04234]  main.rs:139
+    +                 ! : 1 _nanov2_free  (in libsystem_malloc.dylib) + 288  [0x188dc3ff4]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14456  [0x102b042a0]  main.rs:139
+    +                 ! : 1 rand::rng::Rng::gen_range::hb2cce24e20768479  (in tpch-bench) + 0  [0x102b30cfc]  rng.rs:129
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14524  [0x102b042e4]  main.rs:139
+    +                 ! : 1 alloc::slice::_$LT$impl$u20$$u5b$T$u5d$$GT$::join::hd9c9fe0b886e2b3d  (in tpch-bench) + 576  [0x102b3ffa8]  slice.rs:645
+    +                 ! :   1 _platform_memmove  (in libsystem_platform.dylib) + 24  [0x188fcea28]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 14628  [0x102b0434c]  main.rs:139
+    +                 ! : 1 free_tiny  (in libsystem_malloc.dylib) + 136  [0x188da55e0]
+    +                 ! :   1 _platform_memset  (in libsystem_platform.dylib) + 140  [0x188fce7cc]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 18800  [0x102b05398]  main.rs:139
+    +                 ! : 1 alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+    +                 ! :   1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 300  [0x102bd0cec]
+    +                 ! :     1 core::fmt::num::imp::_$LT$impl$u20$u32$GT$::_fmt::h2969b048172ebb80  (in tpch-bench) + 280  [0x102bd5820]
+    +                 ! :       1 _$LT$alloc..string..String$u20$as$u20$core..fmt..Write$GT$::write_str::h4bc2793cacc1d696  (in tpch-bench) + 0  [0x102bcb380]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 19848  [0x102b057b0]  main.rs:139
+    +                 ! : 1 _nanov2_free  (in libsystem_malloc.dylib) + 524  [0x188dc40e0]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 428  [0x102b00bd4]  main.rs:147
+    +                 ! : 1 tpch_bench::run_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::hc43128aa339993fc  (in tpch-bench) + 1284  [0x102b05ed8]  main.rs:262
+    +                 ! :   1 std::io::stdio::_print::h6200d46cef53dee1  (in tpch-bench) + 96  [0x102bb4138]
+    +                 ! :     1 _$LT$$RF$std..io..stdio..Stdout$u20$as$u20$std..io..Write$GT$::write_fmt::h14426c11ecd17a4c  (in tpch-bench) + 68  [0x102bb3698]
+    +                 ! :       1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 480  [0x102bd0da0]
+    +                 ! :         1 _$LT$std..io..Write..write_fmt..Adapter$LT$T$GT$$u20$as$u20$core..fmt..Write$GT$::write_str::h1c13ca75cd138050  (in tpch-bench) + 24  [0x102bb4c9c]
+    +                 ! :           1 _$LT$std..io..stdio..StdoutLock$u20$as$u20$std..io..Write$GT$::write_all::hdf550e962fae6ee2  (in tpch-bench) + 144  [0x102bb3870]
+    +                 ! :             1 std::io::buffered::bufwriter::BufWriter$LT$W$GT$::flush_buf::h4bdccd2184fd8b56  (in tpch-bench) + 112  [0x102bb2ac4]
+    +                 ! :               1 write  (in libsystem_kernel.dylib) + 8  [0x188f5aa14]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 1372  [0x102b00f84]  main.rs:154
+    +                 ! : 1 tokio_postgres::client::Client::simple_query::_$u7b$$u7b$closure$u7d$$u7d$::h2fe37f502e124b3b  (in tpch-bench) + 516  [0x102af83d4]  client.rs:577
+    +                 ! :   1 _$LT$futures_util..stream..try_stream..try_collect..TryCollect$LT$St$C$C$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hcf8946babb792d85  (in tpch-bench) + 92  [0x102b3b7d4]  try_collect.rs:46
+    +                 ! :     1 _$LT$tokio_postgres..simple_query..SimpleQueryStream$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::hf7ac07bf7a15d79c  (in tpch-bench) + 48  [0x102b5a624]
+    +                 ! :       1 tokio_postgres::client::Responses::poll_next::h34b5aadef70ff397  (in tpch-bench) + 184  [0x102b4e090]
+    +                 ! :         1 _$LT$futures_channel..mpsc..Receiver$LT$T$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::hbda8524bf1d0e2dd  (in tpch-bench) + 44  [0x102b5c9a4]
+    +                 ! :           1 futures_channel::mpsc::Receiver$LT$T$GT$::next_message::he287dbbba654af88  (in tpch-bench) + 52  [0x102b5b330]
+    +                 ! :             1 futures_channel::mpsc::queue::Queue$LT$T$GT$::pop_spin::h9610645a172408b5  (in tpch-bench) + 144  [0x102b5ebd4]
+    +                 ! :               1 _nanov2_free  (in libsystem_malloc.dylib) + 520  [0x188dc40dc]
+    +                 ! :                 1 __bzero  (in libsystem_platform.dylib) + 0  [0x188fce6e0]
+    +                 ! 1 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench) + 2576  [0x102b01438]  main.rs:162
+    +                 !   1 tpch_bench::run_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::hc43128aa339993fc  (in tpch-bench) + 928  [0x102b05d74]  main.rs:256
+    +                 !     1 std::io::stdio::_print::h6200d46cef53dee1  (in tpch-bench) + 96  [0x102bb4138]
+    +                 !       1 _$LT$$RF$std..io..stdio..Stdout$u20$as$u20$std..io..Write$GT$::write_fmt::h14426c11ecd17a4c  (in tpch-bench) + 68  [0x102bb3698]
+    +                 !         1 core::fmt::write::he22fcab56bd3ec61  (in tpch-bench) + 480  [0x102bd0da0]
+    +                 !           1 _$LT$std..io..Write..write_fmt..Adapter$LT$T$GT$$u20$as$u20$core..fmt..Write$GT$::write_str::h1c13ca75cd138050  (in tpch-bench) + 24  [0x102bb4c9c]
+    +                 !             1 _$LT$std..io..stdio..StdoutLock$u20$as$u20$std..io..Write$GT$::write_all::hdf550e962fae6ee2  (in tpch-bench) + 144  [0x102bb3870]
+    +                 !               1 std::io::buffered::bufwriter::BufWriter$LT$W$GT$::flush_buf::h4bdccd2184fd8b56  (in tpch-bench) + 112  [0x102bb2ac4]
+    +                 !                 1 write  (in libsystem_kernel.dylib) + 8  [0x188f5aa14]
+    +                 1 tokio::runtime::park::CachedParkThread::block_on::h16ac32271b40356f  (in tpch-bench) + 228  [0x102aff448]  park.rs:284
+    +                 1 tokio::runtime::park::CachedParkThread::block_on::h16ac32271b40356f  (in tpch-bench) + 4164  [0x102b003a8]  park.rs:288
+    16717 Thread_278996574: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996575: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996576: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996577: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16662 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                     ! 16662 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                     !   10867 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                     !   : 10867 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                     !   :   10866 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                     !   :   | 10866 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    +                     !   :   1 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1252  [0x188f988c4]
+    +                     !   5793 tokio::runtime::scheduler::multi_thread::park::Parker::park::he6d53846d92854b6  (in tpch-bench) + 100  [0x102b6d148]
+    +                     !   : 5791 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     !   : | 5787 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     !   : | + 5785 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     !   : | + ! 5785 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                     !   : | + 2 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116,152  [0x102b83fa4,0x102b83fc8]
+    +                     !   : | 2 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 736  [0x102b77998]
+    +                     !   : | + 2 tokio::runtime::io::scheduled_io::ScheduledIo::wake::hfe9147d424aa58e2  (in tpch-bench) + 612  [0x102b6e9a8]
+    +                     !   : | +   1 tokio::runtime::task::waker::wake_by_val::h3b37e860c4a13bb1  (in tpch-bench) + 20  [0x102b74c70]
+    +                     !   : | +   ! 1 tokio::runtime::task::state::State::transition_to_notified_by_val::h4fdc3d7e5dfc3719  (in tpch-bench) + 112  [0x102b6b0c8]
+    +                     !   : | +   1 tokio::runtime::task::waker::wake_by_val::h3b37e860c4a13bb1  (in tpch-bench) + 52  [0x102b74c90]
+    +                     !   : | +     1 tokio::runtime::task::raw::schedule::h2aaf8dd33a751561  (in tpch-bench) + 0  [0x102b3e844]  raw.rs:340
+    +                     !   : | 2 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344,544  [0x102b77810,0x102b778d8]
+    +                     !   : 2 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 792  [0x102b6f038]
+    +                     !   :   2 std::sys::pal::unix::time::Timespec::now::h7c88e70f7233db4b  (in tpch-bench) + 24  [0x102bbab14]
+    +                     !   :     2 clock_gettime  (in libsystem_c.dylib) + 72  [0x188e3a758]
+    +                     !   :       2 clock_gettime_nsec_np  (in libsystem_c.dylib) + 404  [0x188e2d060]
+    +                     !   :         1 DYLD-STUB$$mach_absolute_time  (in libsystem_c.dylib) + 0  [0x188ea5a20]
+    +                     !   :         1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188f573e4]
+    +                     !   1 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 544  [0x102b6d69c]
+    +                     !   1 tokio::runtime::scheduler::multi_thread::park::Parker::park::he6d53846d92854b6  (in tpch-bench) + 16  [0x102b6d0f4]
+    +                     51 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 336  [0x102b6466c]
+    +                     ! 45 tokio::runtime::scheduler::multi_thread::worker::Context::run_task::hf4a892e77bca26a4  (in tpch-bench) + 280  [0x102b65574]
+    +                     ! : 44 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::hd9542d36abddcbb1  (in tpch-bench) + 96  [0x102b412b0]  harness.rs:155
+    +                     ! : | 44 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h0bd85d06d7f2bcd2  (in tpch-bench) + 68  [0x102b472dc]  core.rs:364
+    +                     ! : |   44 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h444c411e275ae571  (in tpch-bench) + 84  [0x102b486f8]
+    +                     ! : |     22 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 2328  [0x102b395ec]  connection.rs:349
+    +                     ! : |     + 22 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$R$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h60bd5579ef2dc101  (in tpch-bench) + 232  [0x102b44fd0]  framed_impl.rs:220
+    +                     ! : |     +   22 tokio_util::util::poll_buf::poll_read_buf::h4fe21f57bd234e13  (in tpch-bench) + 132  [0x102b37868]  poll_buf.rs:64
+    +                     ! : |     +     21 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_read::hee880715433fb91c  (in tpch-bench) + 192  [0x102b7f938]
+    +                     ! : |     +     ! 21 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Read$GT$::read::ha4f439bedb8c6cae  (in tpch-bench) + 28  [0x102b84388]
+    +                     ! : |     +     !   21 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Read$GT$::read::hec471287a838b929  (in tpch-bench) + 24  [0x102bb53fc]
+    +                     ! : |     +     !     21 __recvfrom  (in libsystem_kernel.dylib) + 8  [0x188f5b478]
+    +                     ! : |     +     1 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_read::hee880715433fb91c  (in tpch-bench) + 64  [0x102b7f8b8]
+    +                     ! : |     +       1 tokio::runtime::io::registration::Registration::poll_ready::h631432a03ee67296  (in tpch-bench) + 320  [0x102b6b978]
+    +                     ! : |     12 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 5576  [0x102b3a29c]  connection.rs:349
+    +                     ! : |     + 12 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$W$GT$$u20$as$u20$futures_sink..Sink$LT$I$GT$$GT$::poll_flush::h18973b2c4f0b8f74  (in tpch-bench) + 64  [0x102b44d24]  framed_impl.rs:286
+    +                     ! : |     +   12 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_write::hc4788232854d35d9  (in tpch-bench) + 180  [0x102b80118]
+    +                     ! : |     +     12 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Write$GT$::write::h0ded7dc262a21209  (in tpch-bench) + 28  [0x102b843b0]
+    +                     ! : |     +       12 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Write$GT$::write::hcaad6648d1a22a5f  (in tpch-bench) + 24  [0x102bb5444]
+    +                     ! : |     +         12 __sendto  (in libsystem_kernel.dylib) + 8  [0x188f5b44c]
+    +                     ! : |     7 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 3104  [0x102b398f4]  connection.rs:349
+    +                     ! : |     + 7 futures_channel::mpsc::Sender$LT$T$GT$::start_send::h61bd4727c58ae32a  (in tpch-bench) + 428  [0x102b34c74]  mod.rs:737
+    +                     ! : |     +   7 tokio::runtime::park::wake::hcd3811f37a460b5e  (in tpch-bench) + 248  [0x102b633c8]
+    +                     ! : |     +     6 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+    +                     ! : |     +     ! 6 pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+    +                     ! : |     +     !   6 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8,4  [0x188f5bb3c,0x188f5bb38]
+    +                     ! : |     +     1 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 544  [0x102bd876c]
+    +                     ! : |     2 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 420  [0x102b38e78]  connection.rs:349
+    +                     ! : |     + 1 _$LT$futures_channel..mpsc..UnboundedReceiver$LT$T$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h556df330a6262dbf  (in tpch-bench) + 12  [0x102b376f8]  mod.rs:1323
+    +                     ! : |     + 1 _$LT$futures_channel..mpsc..UnboundedReceiver$LT$T$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h556df330a6262dbf  (in tpch-bench) + 76  [0x102b37738]  mod.rs:1334
+    +                     ! : |     +   1 futures_core::task::__internal::atomic_waker::AtomicWaker::register::h6a5c19475cd7a660  (in tpch-bench) + 44  [0x102b94420]
+    +                     ! : |     1 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 2932  [0x102b39848]  connection.rs:349
+    +                     ! : |       1 core::ptr::drop_in_place$LT$futures_channel..mpsc..Sender$LT$tokio_postgres..codec..BackendMessages$GT$$GT$::h177f09b7884bc133  (in tpch-bench) + 80  [0x102b3b688]  mod.rs:523
+    +                     ! : |         1 futures_core::task::__internal::atomic_waker::AtomicWaker::wake::h719262d7b5d83ac7  (in tpch-bench) + 16  [0x102b94508]
+    +                     ! : 1 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::hd9542d36abddcbb1  (in tpch-bench) + 108  [0x102b412bc]  harness.rs:155
+    +                     ! :   1 tokio::runtime::task::state::State::transition_to_idle::h91a9f6213e844030  (in tpch-bench) + 112  [0x102b6af00]
+    +                     ! 6 tokio::runtime::scheduler::multi_thread::worker::Context::run_task::hf4a892e77bca26a4  (in tpch-bench) + 80  [0x102b654ac]
+    +                     !   3 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 36  [0x102bd8570]
+    +                     !   | 3 parking_lot_core::parking_lot::lock_bucket_pair::h3078ceff5b3aafc0  (in tpch-bench) + 360  [0x102b854f8]
+    +                     !   3 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+    +                     !     3 pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+    +                     !       3 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8  [0x188f5bb3c]
+    +                     2 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 568  [0x102b64754]
+    +                     ! 2 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 172  [0x102b6595c]
+    +                     !   2 tokio::runtime::scheduler::multi_thread::park::Parker::park_timeout::h922662b8559bb640  (in tpch-bench) + 92  [0x102b6d270]
+    +                     !     2 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     !       2 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     !         2 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     !           2 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                     2 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 3080  [0x102b65124]
+    +                       2 tokio::runtime::scheduler::multi_thread::idle::Idle::unpark_worker_by_id::h51bb061d95416c48  (in tpch-bench) + 0,84  [0x102b77114,0x102b77168]
+    16717 Thread_278996578: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996579: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996580: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996581: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996582: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996583: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996584: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    16717 Thread_278996585: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16680 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                     ! 16680 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                     !   13968 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                     !   : 13968 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                     !   :   13968 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                     !   :     13968 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    +                     !   2712 tokio::runtime::scheduler::multi_thread::park::Parker::park::he6d53846d92854b6  (in tpch-bench) + 100  [0x102b6d148]
+    +                     !     2712 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     !       2712 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     !         2712 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     !           2712 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                     34 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 336  [0x102b6466c]
+    +                     ! 34 tokio::runtime::scheduler::multi_thread::worker::Context::run_task::hf4a892e77bca26a4  (in tpch-bench) + 280  [0x102b65574]
+    +                     !   34 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::hd9542d36abddcbb1  (in tpch-bench) + 96  [0x102b412b0]  harness.rs:155
+    +                     !     34 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h0bd85d06d7f2bcd2  (in tpch-bench) + 68  [0x102b472dc]  core.rs:364
+    +                     !       34 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h444c411e275ae571  (in tpch-bench) + 84  [0x102b486f8]
+    +                     !         16 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 2328  [0x102b395ec]  connection.rs:349
+    +                     !         : 16 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$R$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h60bd5579ef2dc101  (in tpch-bench) + 232  [0x102b44fd0]  framed_impl.rs:220
+    +                     !         :   16 tokio_util::util::poll_buf::poll_read_buf::h4fe21f57bd234e13  (in tpch-bench) + 132  [0x102b37868]  poll_buf.rs:64
+    +                     !         :     15 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_read::hee880715433fb91c  (in tpch-bench) + 192  [0x102b7f938]
+    +                     !         :     | 15 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Read$GT$::read::ha4f439bedb8c6cae  (in tpch-bench) + 28  [0x102b84388]
+    +                     !         :     |   15 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Read$GT$::read::hec471287a838b929  (in tpch-bench) + 24  [0x102bb53fc]
+    +                     !         :     |     15 __recvfrom  (in libsystem_kernel.dylib) + 8  [0x188f5b478]
+    +                     !         :     1 _$LT$tokio..net..tcp..stream..TcpStream$u20$as$u20$tokio..io..async_read..AsyncRead$GT$::poll_read::haeb3416cd4443258  (in tpch-bench) + 0  [0x102b7ec18]
+    +                     !         12 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 5576  [0x102b3a29c]  connection.rs:349
+    +                     !         : 12 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$W$GT$$u20$as$u20$futures_sink..Sink$LT$I$GT$$GT$::poll_flush::h18973b2c4f0b8f74  (in tpch-bench) + 64  [0x102b44d24]  framed_impl.rs:286
+    +                     !         :   12 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_write::hc4788232854d35d9  (in tpch-bench) + 180  [0x102b80118]
+    +                     !         :     12 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Write$GT$::write::h0ded7dc262a21209  (in tpch-bench) + 28  [0x102b843b0]
+    +                     !         :       12 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Write$GT$::write::hcaad6648d1a22a5f  (in tpch-bench) + 24  [0x102bb5444]
+    +                     !         :         12 __sendto  (in libsystem_kernel.dylib) + 8  [0x188f5b44c]
+    +                     !         3 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 3104  [0x102b398f4]  connection.rs:349
+    +                     !         : 3 futures_channel::mpsc::Sender$LT$T$GT$::start_send::h61bd4727c58ae32a  (in tpch-bench) + 428  [0x102b34c74]  mod.rs:737
+    +                     !         :   3 tokio::runtime::park::wake::hcd3811f37a460b5e  (in tpch-bench) + 248  [0x102b633c8]
+    +                     !         :     3 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+    +                     !         :       3 pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+    +                     !         :         3 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8  [0x188f5bb3c]
+    +                     !         1 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 0  [0x102b38cd4]  connection.rs:348
+    +                     !         1 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 420  [0x102b38e78]  connection.rs:349
+    +                     !         : 1 _$LT$futures_channel..mpsc..UnboundedReceiver$LT$T$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h556df330a6262dbf  (in tpch-bench) + 76  [0x102b37738]  mod.rs:1334
+    +                     !         :   1 futures_core::task::__internal::atomic_waker::AtomicWaker::register::h6a5c19475cd7a660  (in tpch-bench) + 60  [0x102b94430]
+    +                     !         1 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 1524  [0x102b392c8]  connection.rs:349
+    +                     !           1 _$LT$tokio_postgres..codec..PostgresCodec$u20$as$u20$tokio_util..codec..encoder..Encoder$LT$tokio_postgres..codec..FrontendMessage$GT$$GT$::encode::h47defc2bb29d2f2c  (in tpch-bench) + 100  [0x102b5e174]
+    +                     2 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 568  [0x102b64754]
+    +                     ! 2 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 172  [0x102b6595c]
+    +                     !   2 tokio::runtime::scheduler::multi_thread::park::Parker::park_timeout::h922662b8559bb640  (in tpch-bench) + 92  [0x102b6d270]
+    +                     !     2 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     !       2 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     !         2 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     !           2 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                     1 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 3080  [0x102b65124]
+    +                       1 tokio::runtime::scheduler::multi_thread::idle::Idle::unpark_worker_by_id::h51bb061d95416c48  (in tpch-bench) + 0  [0x102b77114]
+    16717 Thread_278996586: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16669 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                     ! 16668 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                     ! : 8590 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                     ! : | 8589 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                     ! : | + 8589 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                     ! : | +   8589 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    +                     ! : | 1 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 324  [0x102b856fc]
+    +                     ! : 8078 tokio::runtime::scheduler::multi_thread::park::Parker::park::he6d53846d92854b6  (in tpch-bench) + 100  [0x102b6d148]
+    +                     ! :   8064 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     ! :   + 8062 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     ! :   + ! 8061 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     ! :   + ! : 8061 kevent  (in libsystem_kernel.dylib) + 8,4  [0x188f5d01c,0x188f5d018]
+    +                     ! :   + ! 1 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     ! :   + 1 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 736  [0x102b77998]
+    +                     ! :   + ! 1 tokio::runtime::io::scheduled_io::ScheduledIo::wake::hfe9147d424aa58e2  (in tpch-bench) + 612  [0x102b6e9a8]
+    +                     ! :   + !   1 tokio::runtime::task::waker::wake_by_val::h3b37e860c4a13bb1  (in tpch-bench) + 52  [0x102b74c90]
+    +                     ! :   + !     1 tokio::runtime::scheduler::multi_thread::handle::_$LT$impl$u20$tokio..runtime..task..Schedule$u20$for$u20$alloc..sync..Arc$LT$tokio..runtime..scheduler..multi_thread..handle..Handle$GT$$GT$::schedule::hb053f6265e9f3ea8  (in tpch-bench) + 52  [0x102b72a48]
+    +                     ! :   + !       1 tokio::runtime::context::with_scheduler::ha1ed5a6985ead1e5  (in tpch-bench) + 64  [0x102b7bd8c]
+    +                     ! :   + 1 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 544  [0x102b778d8]
+    +                     ! :   11 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 112  [0x102b6ed90]
+    +                     ! :   + 11 tokio::runtime::time::wheel::Wheel::next_expiration::h9aa2a825ec4c5605  (in tpch-bench) + 0  [0x102b74084]
+    +                     ! :   2 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 772  [0x102b6f024]
+    +                     ! :   + 2 tokio::runtime::signal::Driver::process::haabd3f98e9d0cbdc  (in tpch-bench) + 0,256  [0x102b78b90,0x102b78c90]
+    +                     ! :   1 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 792  [0x102b6f038]
+    +                     ! :     1 std::sys::pal::unix::time::Timespec::now::h7c88e70f7233db4b  (in tpch-bench) + 0  [0x102bbaafc]
+    +                     ! 1 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 116  [0x102b65924]
+    +                     38 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 336  [0x102b6466c]
+    +                     ! 36 tokio::runtime::scheduler::multi_thread::worker::Context::run_task::hf4a892e77bca26a4  (in tpch-bench) + 280  [0x102b65574]
+    +                     ! : 36 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::hd9542d36abddcbb1  (in tpch-bench) + 96  [0x102b412b0]  harness.rs:155
+    +                     ! :   36 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h0bd85d06d7f2bcd2  (in tpch-bench) + 68  [0x102b472dc]  core.rs:364
+    +                     ! :     36 tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h444c411e275ae571  (in tpch-bench) + 84  [0x102b486f8]
+    +                     ! :       25 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 2328  [0x102b395ec]  connection.rs:349
+    +                     ! :       | 25 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$R$GT$$u20$as$u20$futures_core..stream..Stream$GT$::poll_next::h60bd5579ef2dc101  (in tpch-bench) + 232  [0x102b44fd0]  framed_impl.rs:220
+    +                     ! :       |   25 tokio_util::util::poll_buf::poll_read_buf::h4fe21f57bd234e13  (in tpch-bench) + 132  [0x102b37868]  poll_buf.rs:64
+    +                     ! :       |     24 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_read::hee880715433fb91c  (in tpch-bench) + 192  [0x102b7f938]
+    +                     ! :       |     + 24 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Read$GT$::read::ha4f439bedb8c6cae  (in tpch-bench) + 28  [0x102b84388]
+    +                     ! :       |     +   24 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Read$GT$::read::hec471287a838b929  (in tpch-bench) + 24  [0x102bb53fc]
+    +                     ! :       |     +     23 __recvfrom  (in libsystem_kernel.dylib) + 8  [0x188f5b478]
+    +                     ! :       |     +     1 recv  (in libsystem_c.dylib) + 0  [0x188e3e088]
+    +                     ! :       |     1 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_read::hee880715433fb91c  (in tpch-bench) + 64  [0x102b7f8b8]
+    +                     ! :       |       1 tokio::runtime::io::registration::Registration::poll_ready::h631432a03ee67296  (in tpch-bench) + 212  [0x102b6b90c]
+    +                     ! :       |         1 tokio::runtime::io::scheduled_io::ScheduledIo::poll_readiness::hf5c24fa516c8d015  (in tpch-bench) + 264  [0x102b6ebf4]
+    +                     ! :       |           1 tokio::runtime::task::waker::clone_waker::hd8f7ed347fe06001  (in tpch-bench) + 0  [0x102b74be8]
+    +                     ! :       6 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 3104  [0x102b398f4]  connection.rs:349
+    +                     ! :       | 4 futures_channel::mpsc::Sender$LT$T$GT$::start_send::h61bd4727c58ae32a  (in tpch-bench) + 428  [0x102b34c74]  mod.rs:737
+    +                     ! :       | + 4 tokio::runtime::park::wake::hcd3811f37a460b5e  (in tpch-bench) + 248  [0x102b633c8]
+    +                     ! :       | +   4 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+    +                     ! :       | +     4 pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+    +                     ! :       | +       4 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8  [0x188f5bb3c]
+    +                     ! :       | 1 futures_channel::mpsc::Sender$LT$T$GT$::start_send::h61bd4727c58ae32a  (in tpch-bench) + 388  [0x102b34c4c]  mod.rs:737
+    +                     ! :       | + 1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 0  [0x188dcf62c]
+    +                     ! :       | 1 futures_channel::mpsc::Sender$LT$T$GT$::start_send::h61bd4727c58ae32a  (in tpch-bench) + 52  [0x102b34afc]  mod.rs:737
+    +                     ! :       5 _$LT$tokio_postgres..connection..Connection$LT$S$C$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::hd000d57aa6431f42  (in tpch-bench) + 5576  [0x102b3a29c]  connection.rs:349
+    +                     ! :         5 _$LT$tokio_util..codec..framed_impl..FramedImpl$LT$T$C$U$C$W$GT$$u20$as$u20$futures_sink..Sink$LT$I$GT$$GT$::poll_flush::h18973b2c4f0b8f74  (in tpch-bench) + 64  [0x102b44d24]  framed_impl.rs:286
+    +                     ! :           5 tokio::io::poll_evented::PollEvented$LT$E$GT$::poll_write::hc4788232854d35d9  (in tpch-bench) + 180  [0x102b80118]
+    +                     ! :             5 _$LT$$RF$mio..net..tcp..stream..TcpStream$u20$as$u20$std..io..Write$GT$::write::h0ded7dc262a21209  (in tpch-bench) + 28  [0x102b843b0]
+    +                     ! :               5 _$LT$$RF$std..net..tcp..TcpStream$u20$as$u20$std..io..Write$GT$::write::hcaad6648d1a22a5f  (in tpch-bench) + 24  [0x102bb5444]
+    +                     ! :                 5 __sendto  (in libsystem_kernel.dylib) + 8  [0x188f5b44c]
+    +                     ! 2 tokio::runtime::scheduler::multi_thread::worker::Context::run_task::hf4a892e77bca26a4  (in tpch-bench) + 80  [0x102b654ac]
+    +                     !   2 parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+    +                     !     2 pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+    +                     !       2 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8  [0x188f5bb3c]
+    +                     6 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 568  [0x102b64754]
+    +                     ! 6 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 172  [0x102b6595c]
+    +                     !   6 tokio::runtime::scheduler::multi_thread::park::Parker::park_timeout::h922662b8559bb640  (in tpch-bench) + 92  [0x102b6d270]
+    +                     !     6 tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+    +                     !       6 tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+    +                     !         6 mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+    +                     !           6 kevent  (in libsystem_kernel.dylib) + 8  [0x188f5d01c]
+    +                     2 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 320,2528  [0x102b6465c,0x102b64efc]
+    +                     1 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 1684  [0x102b64bb0]
+    +                     ! 1 std::time::Instant::elapsed::h5d872ba722761ab4  (in tpch-bench) + 28  [0x102bb6eb4]
+    +                     !   1 std::sys::pal::unix::time::Timespec::now::h7c88e70f7233db4b  (in tpch-bench) + 24  [0x102bbab14]
+    +                     !     1 clock_gettime  (in libsystem_c.dylib) + 72  [0x188e3a758]
+    +                     !       1 clock_gettime_nsec_np  (in libsystem_c.dylib) + 404  [0x188e2d060]
+    +                     !         1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188f573e4]
+    +                     1 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2376  [0x102b64e64]
+    +                       1 tokio::runtime::scheduler::multi_thread::idle::Idle::transition_worker_to_parked::h3beb3333239d3dcf  (in tpch-bench) + 0  [0x102b76fe4]
+    16717 Thread_278996587: tokio-rt-worker
+    + 16717 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   16717 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     16717 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       16717 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         16717 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+    +           16717 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+    +             16717 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+    +               16717 tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+    +                 16717 tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+    +                   16717 tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+    +                     16717 tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+    +                       16717 tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+    +                         16717 tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+    +                           16717 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+    +                             16717 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +                               16717 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    6578 Thread_278996588: tokio-rt-worker
+    + 6578 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+    +   6578 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+    +     6578 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+    +       6578 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+    +         6578 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 504  [0x102b66720]
+    +           6578 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 716  [0x102b85884]
+    +             6578 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+    +               6578 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+    733 Thread_278999330: tokio-rt-worker
+      733 thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+        733 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+          733 std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+            733 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+              732 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 504  [0x102b66720]
+              ! 732 parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 716  [0x102b85884]
+              !   732 _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+              !     732 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x188f5a6ec]
+              1 std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+                1 tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::he844d89f5de01e36  (in tpch-bench) + 176  [0x102b60704]
+                  1 tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h4d7fac0cd20ba8ab  (in tpch-bench) + 272  [0x102b6fa90]
+                    1 _$LT$$LP$$RF$str$C$u16$RP$$u20$as$u20$std..net..socket_addr..ToSocketAddrs$GT$::to_socket_addrs::h2455c5ebbc656e12  (in tpch-bench) + 344  [0x102bb5320]
+                      1 _$LT$std..sys..net..connection..socket..LookupHost$u20$as$u20$core..convert..TryFrom$LT$$LP$$RF$str$C$u16$RP$$GT$$GT$::try_from::_$u7b$$u7b$closure$u7d$$u7d$::h150c9afe405b4dd6  (in tpch-bench) + 72  [0x102bbb11c]
+                        1 getaddrinfo  (in libsystem_info.dylib) + 168  [0x188fd8ae8]
+                          1 si_addrinfo  (in libsystem_info.dylib) + 1368  [0x188fd90e8]
+                            1 search_addrinfo  (in libsystem_info.dylib) + 176  [0x188fe00bc]
+                              1 mdns_addrinfo  (in libsystem_info.dylib) + 404  [0x188fe02a0]
+                                1 _mdns_search_ex  (in libsystem_info.dylib) + 732  [0x188fdd8d4]
+                                  1 _mdns_query_start  (in libsystem_info.dylib) + 624  [0x188fde4f4]
+                                    1 DNSServiceQueryRecordInternal  (in libsystem_dnssd.dylib) + 724  [0x196b6dea4]
+                                      1 deliver_request  (in libsystem_dnssd.dylib) + 168  [0x196b6b2f0]
+                                        1 __socketpair  (in libsystem_kernel.dylib) + 8  [0x188f5b36c]
+
+Total number in stack (recursive counted multiple, when >=5):
+        17       __psynch_cvwait  (in libsystem_kernel.dylib) + 0  [0x188f5a6e4]
+        17       _pthread_cond_wait  (in libsystem_pthread.dylib) + 1204  [0x188f98894]
+        16       _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188f982e4]
+        16       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haa19c1720824553f  (in tpch-bench) + 144  [0x102b69c04]
+        16       std::sys::pal::unix::thread::Thread::new::thread_start::h6d53b1b0c047a3b9  (in tpch-bench) + 52  [0x102bba944]
+        16       thread_start  (in libsystem_pthread.dylib) + 8  [0x188f930fc]
+        15       parking_lot::condvar::Condvar::wait_until_internal::hefac26bed9bd8bc1  (in tpch-bench) + 652  [0x102b85844]
+        15       std::sys::backtrace::__rust_begin_short_backtrace::h6d63eb547a95bd2f  (in tpch-bench) + 388  [0x102b666ac]
+        14       tokio::runtime::context::runtime::enter_runtime::h99b3a350aaf77ce9  (in tpch-bench) + 564  [0x102b6cde0]
+        14       tokio::runtime::context::scoped::Scoped$LT$T$GT$::set::h341f29fe2f3e89e8  (in tpch-bench) + 60  [0x102b7b684]
+        14       tokio::runtime::scheduler::multi_thread::park::Inner::park_condvar::h7f1583fbb1b665c6  (in tpch-bench) + 208  [0x102b6d54c]
+        14       tokio::runtime::scheduler::multi_thread::worker::Context::park_internal::hb6f172605aaa4050  (in tpch-bench) + 148  [0x102b65944]
+        14       tokio::runtime::scheduler::multi_thread::worker::Context::run::h0cc40b326f3363e0  (in tpch-bench) + 2512  [0x102b64eec]
+        14       tokio::runtime::scheduler::multi_thread::worker::run::hd5cdb491ede2e423  (in tpch-bench) + 172  [0x102b64448]
+        14       tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::h6da29f7b7715225e  (in tpch-bench) + 236  [0x102b6fd38]
+        14       tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::h328aef73f197ed54  (in tpch-bench) + 176  [0x102b603c4]
+        7       kevent  (in libsystem_kernel.dylib) + 0  [0x188f5d014]
+        6       mio::poll::Poll::poll::h8014d705d6d02285  (in tpch-bench) + 116  [0x102b83fa4]
+        6       tokio::runtime::io::driver::Driver::turn::hb3e18ed5017bdad9  (in tpch-bench) + 344  [0x102b77810]
+        6       tokio::runtime::time::Driver::park_internal::h05e728451e525398  (in tpch-bench) + 764  [0x102b6f01c]
+        5       __psynch_cvsignal  (in libsystem_kernel.dylib) + 0  [0x188f5bb34]
+        5       alloc::fmt::format::format_inner::ha4482be48280c9dc  (in tpch-bench) + 296  [0x102bcaf58]
+        5       parking_lot::condvar::Condvar::notify_one_slow::hc9c24d2c546bf2ba  (in tpch-bench) + 856  [0x102bd88a4]
+        5       pthread_cond_signal  (in libsystem_pthread.dylib) + 720  [0x188f97578]
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        241278
+        kevent  (in libsystem_kernel.dylib)        16571
+        __recvfrom  (in libsystem_kernel.dylib)        59
+        __sendto  (in libsystem_kernel.dylib)        30
+        __psynch_cvsignal  (in libsystem_kernel.dylib)        18
+        tokio::runtime::time::wheel::Wheel::next_expiration::h9aa2a825ec4c5605  (in tpch-bench)        11
+        tpch_bench::run_full_benchmark::_$u7b$$u7b$closure$u7d$$u7d$::h99aab8b77b7362a7  (in tpch-bench)        5
+
+Binary Images:
+       0x102af4000 -        0x102c4f507 +tpch-bench (0) <DC4D5357-3ED2-3E4D-943C-46CDE947938A> /Users/*/Desktop/*/tpch-bench
+       0x188bc0000 -        0x188c11ca3  libobjc.A.dylib (928.3) <B2882096-462B-3878-BE2A-410F7B1A27FD> /usr/lib/libobjc.A.dylib
+       0x188c12000 -        0x188c93f3f  dyld (1.0.0 - 1245.1) <398A133C-9BCB-317F-A064-A40D3CEA3C0F> /usr/lib/dyld
+       0x188c94000 -        0x188c97ff8  libsystem_blocks.dylib (95) <A33D811C-BD2D-3833-9C38-9BF3960A1F8C> /usr/lib/system/libsystem_blocks.dylib
+       0x188c98000 -        0x188ce2fff  libxpc.dylib (2866.81.1) <564B7785-E7C4-3231-8BF1-3FBB266B6599> /usr/lib/system/libxpc.dylib
+       0x188ce3000 -        0x188cfefff  libsystem_trace.dylib (1612.80.7) <7F5EC174-AB45-37E7-B783-83A04B6154A1> /usr/lib/system/libsystem_trace.dylib
+       0x188cff000 -        0x188d9efdf  libcorecrypto.dylib (1736.80.2) <8A08F4FE-C92E-35AA-BBB8-45A9D7A00AAD> /usr/lib/system/libcorecrypto.dylib
+       0x188d9f000 -        0x188de0fff  libsystem_malloc.dylib (657.80.3) <1480B446-99F7-3757-9D4E-5BA3014A2726> /usr/lib/system/libsystem_malloc.dylib
+       0x188de1000 -        0x188e27fff  libdispatch.dylib (1504.60.7) <5576E4FD-AAD2-3608-8C8F-4EEC421236F9> /usr/lib/system/libdispatch.dylib
+       0x188e28000 -        0x188e2affb  libsystem_featureflags.dylib (94) <64FD190D-C0D7-3B9A-837B-E63EA386BE14> /usr/lib/system/libsystem_featureflags.dylib
+       0x188e2b000 -        0x188eacffb  libsystem_c.dylib (1669.60.4) <92699527-645F-3D8D-AED8-1CFB0C034E15> /usr/lib/system/libsystem_c.dylib
+       0x188ead000 -        0x188f3affb  libc++.1.dylib (1800.105) <BBAB286C-2E51-3D64-9AE3-A4102935FE32> /usr/lib/libc++.1.dylib
+       0x188f3b000 -        0x188f55fff  libc++abi.dylib (1800.105) <E7DBA219-4E97-307D-8E80-E0D97BE8517B> /usr/lib/libc++abi.dylib
+       0x188f56000 -        0x188f90ff7  libsystem_kernel.dylib (11215.81.4) <EEE9D0D3-DFFC-37CB-9CED-B27CD0286D8C> /usr/lib/system/libsystem_kernel.dylib
+       0x188f91000 -        0x188f9dfff  libsystem_pthread.dylib (535) <642FAF7A-874E-37E6-8ABA-2B0CC09A3025> /usr/lib/system/libsystem_pthread.dylib
+       0x188f9e000 -        0x188fcaffb  libdyld.dylib (1245.1) <C0C53058-94D2-3D9E-9E92-56BA8B43C327> /usr/lib/system/libdyld.dylib
+       0x188fcb000 -        0x188fd2feb  libsystem_platform.dylib (340.60.2) <984D08B8-F85C-36F5-9E17-5BFF7FC779A3> /usr/lib/system/libsystem_platform.dylib
+       0x188fd3000 -        0x189002ffb  libsystem_info.dylib (592) <8C7C4902-FEC1-3776-87FF-2373BA19B1CE> /usr/lib/system/libsystem_info.dylib
+       0x189003000 -        0x1894f7fff  com.apple.CoreFoundation (6.9 - 3302.1.400) <190E6A36-FCAA-3EA3-94BB-7009C44653DA> /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+       0x1894f8000 -        0x1897dffff  com.apple.LaunchServices (1141.1 - 1141.1) <0BD79215-03E1-3D88-8104-97D48BF358AF> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices
+       0x1897e0000 -        0x18995bfff  com.apple.gpusw.MetalTools (1.0 - 1) <96903DB1-40B9-33C2-8A15-5467628D2E30> /System/Library/PrivateFrameworks/MetalTools.framework/Versions/A/MetalTools
+       0x18995c000 -        0x189cebfef  libBLAS.dylib (1510.80.2) <0BF9D1E6-E6F8-3C3C-B387-A1D026A35421> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib
+       0x189cec000 -        0x189dedfff  com.apple.Lexicon-framework (1.0 - 170) <CB56B935-5BA1-3433-8A90-4C19028119BA> /System/Library/PrivateFrameworks/Lexicon.framework/Versions/A/Lexicon
+       0x189dee000 -        0x189e4eff7  libSparse.dylib (127) <2EFCD141-921F-3A98-AB50-407D7B836E03> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparse.dylib
+       0x189e4f000 -        0x189ee2fff  com.apple.SystemConfiguration (1.21 - 1.21) <C432C6F3-58A3-324A-AA32-9BE164948D73> /System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration
+       0x189ee3000 -        0x189f18fff  libCRFSuite.dylib (55) <46CEF889-1D1C-351C-B617-7EC20152D174> /usr/lib/libCRFSuite.dylib
+       0x18a1f5000 -        0x18b03cfff  com.apple.Foundation (6.9 - 3302.1.400) <16D282D0-8B48-3E76-8036-FCB45DECE518> /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+       0x18b1ff000 -        0x18b31ffff  com.apple.CoreDisplay (288 - 288) <675C41D6-FF46-3086-A6EB-0C833A551E12> /System/Library/Frameworks/CoreDisplay.framework/Versions/A/CoreDisplay
+       0x18b320000 -        0x18b6d1fff  com.apple.audio.AudioToolboxCore (1.0 - 1456.404) <3573E5A3-0C97-33BD-82EC-8B2A0E152826> /System/Library/PrivateFrameworks/AudioToolboxCore.framework/Versions/A/AudioToolboxCore
+       0x18b6d2000 -        0x18b8e1fff  com.apple.CoreText (844.2.0.4 - 844.2.0.4) <EDDB0FFF-E301-3F43-B44B-088BA48BA8D4> /System/Library/Frameworks/CoreText.framework/Versions/A/CoreText
+       0x18b8e2000 -        0x18c02dfff  com.apple.audio.CoreAudio (5.0 - 5.0) <214B90DC-87E8-30A8-B682-C2C1883F9635> /System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio
+       0x18c02e000 -        0x18c424fff  com.apple.security (7.0 - 61439.81.1) <2CDC4B1D-902A-3808-8B42-7473A3BE43F2> /System/Library/Frameworks/Security.framework/Versions/A/Security
+       0x18c425000 -        0x18c6e8fff  libicucore.A.dylib (74222.203) <406B2B81-9520-3A45-AD64-39AE0DF5291E> /usr/lib/libicucore.A.dylib
+       0x18c6e9000 -        0x18c6f3ff7  libsystem_darwin.dylib (1669.60.4) <F23DCA7C-AF18-3BB9-9D2F-FFBC4645DDC1> /usr/lib/system/libsystem_darwin.dylib
+       0x18c6f4000 -        0x18c9e9fff  com.apple.CoreServices.CarbonCore (1333 - 1333) <4F74B7C7-7D08-3067-A12E-DD1873D04A2B> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore
+       0x18c9ea000 -        0x18ca29ffb  com.apple.CoreServicesInternal (505 - 505) <36144ED0-C50B-3319-B3C1-B1CB578D3633> /System/Library/PrivateFrameworks/CoreServicesInternal.framework/Versions/A/CoreServicesInternal
+       0x18ca2a000 -        0x18ca6afff  com.apple.CSStore (1141.1 - 1141.1) <F05A3728-86E9-362C-A3D2-915CF8CE0BEB> /System/Library/PrivateFrameworks/CoreServicesStore.framework/Versions/A/CoreServicesStore
+       0x18ca6b000 -        0x18cb4bfff  com.apple.framework.IOKit (2.0.2 - 100140.81.1) <FFD74642-9D8E-31DB-AD51-41EB5F08837B> /System/Library/Frameworks/IOKit.framework/Versions/A/IOKit
+       0x18cb4c000 -        0x18cb5efff  libsystem_notify.dylib (327.60.1) <A3EE7CB1-6FCC-37AB-A8BC-256B9642B47D> /usr/lib/system/libsystem_notify.dylib
+       0x18e1aa000 -        0x18e1bffff  com.apple.UniformTypeIdentifiers (709 - 709) <AEC24D03-1CF7-3B72-9B70-84D3ACB12B8A> /System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers
+       0x18e666000 -        0x18e72fff2  libboringssl.dylib (486.60.4) <D1D95DEA-FA2D-37B9-9D95-1DFFFEADCD17> /usr/lib/libboringssl.dylib
+       0x18e730000 -        0x18e730fff  libnetwork.dylib (4277.81.1) <4B0437CD-9875-3427-A933-0079F0801589> /usr/lib/libnetwork.dylib
+       0x18e731000 -        0x18eaf9fff  com.apple.CFNetwork (1.0 - 3826.400.120) <446389BE-E9E5-34D6-B055-567FAB324E8B> /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork
+       0x18eafa000 -        0x18eb14ff7  libsystem_networkextension.dylib (2063.80.10) <CD0C82E0-9B1B-3CAA-8CA7-466D1C439C3B> /usr/lib/system/libsystem_networkextension.dylib
+       0x18eb15000 -        0x18eb16fff  libenergytrace.dylib (23) <B32AD8E4-B509-381A-A923-2C2779607316> /usr/lib/libenergytrace.dylib
+       0x18eb17000 -        0x18eb8ffff  libMobileGestalt.dylib (1393.60.16) <2948F2A2-8914-3311-8F59-15D4091D81D4> /usr/lib/libMobileGestalt.dylib
+       0x18eb90000 -        0x18eba8ffb  libsystem_asl.dylib (402) <26693E85-AFDC-38E2-B939-D6EC865FA506> /usr/lib/system/libsystem_asl.dylib
+       0x18eba9000 -        0x18ebcaff4  com.apple.TCC (1.0 - 1) <95F2C668-A363-3532-A8FE-A3477FBB70F3> /System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC
+       0x18ebcb000 -        0x18f0f7fff  com.apple.SkyLight (1.600.0 - 882.26) <F66E0C94-99B5-3FCD-B726-3E3CBCA668A3> /System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight
+       0x18f0f8000 -        0x18f816fff  com.apple.CoreGraphics (2.0 - 1889.3.2) <98B2EB82-3B9F-35EF-B7FC-936BC0F7A900> /System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics
+       0x18f817000 -        0x18f9ceff7  com.apple.ColorSync (4.13.0 - 3777) <710462FA-9380-3B51-B69F-EA76457A113D> /System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync
+       0x190261000 -        0x19027afff  com.apple.ProtocolBuffer (1 - 303.23.11.14.1) <7D868DB1-5E16-3785-98E0-D883FFC85BFE> /System/Library/PrivateFrameworks/ProtocolBuffer.framework/Versions/A/ProtocolBuffer
+       0x19027b000 -        0x19042dff3  libsqlite3.dylib (358.1) <03A3F0E0-3898-360D-8138-2A6E0E43CC70> /usr/lib/libsqlite3.dylib
+       0x1904c7000 -        0x1905abfff  com.apple.BaseBoard (694.3.4 - 694.3.4) <F6CE5B34-65B7-38D9-A7A0-BD366CE4E692> /System/Library/PrivateFrameworks/BaseBoard.framework/Versions/A/BaseBoard
+       0x1905ac000 -        0x190612fff  com.apple.RunningBoardServices (1.0 - 945.80.1.0.1) <C6A2DA05-DD7B-30D9-9C9B-3A0171803A5D> /System/Library/PrivateFrameworks/RunningBoardServices.framework/Versions/A/RunningBoardServices
+       0x190613000 -        0x190687ff7  com.apple.AE (944 - 944) <09E72A53-8B7E-3365-987B-3B6CA4F73672> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/AE
+       0x190688000 -        0x190698ffb  libdns_services.dylib (2559.80.8) <0CB47A92-D03D-3F59-8E40-7C8E7596A13D> /usr/lib/libdns_services.dylib
+       0x190699000 -        0x1906a1fff  libsystem_symptoms.dylib (2001.80.5) <695D143C-5D59-37B0-8784-4AE727AFEEF5> /usr/lib/system/libsystem_symptoms.dylib
+       0x1906a2000 -        0x1916bcfff  com.apple.Network (1.0 - 4277.81.1) <C8EC9CCA-B25B-38A5-878C-FEF450B0F4F6> /System/Library/Frameworks/Network.framework/Versions/A/Network
+       0x1916bd000 -        0x1916eefff  com.apple.analyticsd (1.0 - 1) <51A78775-2A2A-3A2D-A111-97563EDFC22E> /System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics
+       0x1916ef000 -        0x1916f0fff  libDiagnosticMessagesClient.dylib (113) <7A6FFFA7-533C-3598-9D47-9110B143C53D> /usr/lib/libDiagnosticMessagesClient.dylib
+       0x1916f1000 -        0x191750fff  com.apple.spotlight.metadata.utilities (1.0 - 2328.7.8.7) <E758C584-F7F6-3484-AF84-06E9DFCA1D21> /System/Library/PrivateFrameworks/MetadataUtilities.framework/Versions/A/MetadataUtilities
+       0x191751000 -        0x1917dafff  com.apple.Metadata (15.3 - 2328.7.8.7) <1AFBB369-31F2-37B3-AE03-2EDB3E9AD439> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Metadata
+       0x1917db000 -        0x1917e3ffb  com.apple.DiskArbitration (2.7 - 2.7) <5B54B140-0055-302C-94FE-06522FB8A1E8> /System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration
+       0x1917e4000 -        0x191bbffcf  com.apple.vImage (8.1 - 602.81.1) <F8CC3605-0E2A-36D5-AB42-A80D3E9E9644> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage
+       0x191bc0000 -        0x191f87fff  com.apple.QuartzCore (1.11 - 1150.21) <EE3AC490-BA65-3238-8ABA-BB234BF4A480> /System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
+       0x191f88000 -        0x191fd9fff  libFontRegistry.dylib (387) <89CDA507-C362-3BA2-8C8D-6EAAF75B3B74> /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/Resources/libFontRegistry.dylib
+       0x19225c000 -        0x192269fff  com.apple.OpenDirectory (15.3 - 643) <F65493A7-19A1-3694-927F-B50B2855DC33> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory
+       0x19226a000 -        0x192288ffb  com.apple.CFOpenDirectory (15.3 - 643) <B2999F75-22EC-3E1B-9F76-952744E82F45> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/Frameworks/CFOpenDirectory.framework/Versions/A/CFOpenDirectory
+       0x192289000 -        0x192296ffb  com.apple.CoreServices.FSEvents (1400 - 1400) <31542F66-1FA7-3A5C-B3BE-EB872DBCE104> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/FSEvents
+       0x192297000 -        0x1922c0fff  com.apple.coreservices.SharedFileList (225 - 225) <58EF0C88-7857-30AF-8577-A76E86767816> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SharedFileList.framework/Versions/A/SharedFileList
+       0x1922c1000 -        0x1922c4fff  libapp_launch_measurement.dylib (17) <138B5A31-DC0D-362A-BCC6-D3E9FA7706E3> /usr/lib/libapp_launch_measurement.dylib
+       0x1922c5000 -        0x19230efff  com.apple.CoreAutoLayout (1.0 - 33) <680ADBE3-63F8-3685-8758-5D5E5FFCF820> /System/Library/PrivateFrameworks/CoreAutoLayout.framework/Versions/A/CoreAutoLayout
+       0x19230f000 -        0x1923f8ffb  libxml2.2.dylib (38.2) <C7A4F000-76AA-3DD1-B156-0FCE1CD4AA9B> /usr/lib/libxml2.2.dylib
+       0x1923f9000 -        0x192459fff  com.apple.CoreVideo (1.8 - 672.10) <0FCFE924-013C-3974-9FDF-58F9A8D71845> /System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo
+       0x19245a000 -        0x19245cfff  com.apple.loginsupport (3.0 - 259) <E17461AF-3BCD-371F-8303-9E64DB168069> /System/Library/PrivateFrameworks/login.framework/Versions/A/Frameworks/loginsupport.framework/Versions/A/loginsupport
+       0x192499000 -        0x1924c3fff  com.apple.UserManagement (1.0 - 1) <410D3AC7-C9C3-36CB-969E-BC461BBBC260> /System/Library/PrivateFrameworks/UserManagement.framework/Versions/A/UserManagement
+       0x193df6000 -        0x193e24ff7  libsystem_containermanager.dylib (689) <A72C2FD5-969A-342F-B8A4-4216D7C7957E> /usr/lib/system/libsystem_containermanager.dylib
+       0x193e25000 -        0x193e3dfff  com.apple.IOSurface (372.3.5 - 372.3.5) <9A10F15D-D321-3810-B726-57F9362B16D0> /System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface
+       0x193e3e000 -        0x193e47fff  com.apple.IOAccelerator (485 - 485) <87899916-AE41-398D-BDED-92172C92451F> /System/Library/PrivateFrameworks/IOAccelerator.framework/Versions/A/IOAccelerator
+       0x193e48000 -        0x1940c1fff  com.apple.Metal (367.6 - 367.6) <8E4D919E-AA4B-36C5-8621-DBC72ED287CD> /System/Library/Frameworks/Metal.framework/Versions/A/Metal
+       0x1940c2000 -        0x1940e9fff  com.apple.audio.caulk (1.0 - 181.300) <A307BA82-97DE-37D1-99B7-BF68AC23C35C> /System/Library/PrivateFrameworks/caulk.framework/Versions/A/caulk
+       0x1940ea000 -        0x194254fff  com.apple.CoreMedia (1.0 - 3200.5.1) <3B231B1B-4BEB-3F2B-819A-06D087C30C75> /System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia
+       0x194255000 -        0x1944e1fff  libFontParser.dylib (409.2.0.1) <F199B999-BD68-3096-894C-A23361125F37> /System/Library/PrivateFrameworks/FontServices.framework/libFontParser.dylib
+       0x194841000 -        0x194bc2fff  com.apple.ImageIO (3.3.0 - 2661.3.5) <327ED0E7-DC55-33E8-B065-B56558531542> /System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO
+       0x194bc3000 -        0x194f80fff  com.apple.CoreImage (19.0.0 - 1510.80.3) <8F0F7BA4-8492-361D-AAB4-CD0A4BF56AEF> /System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage
+       0x194f81000 -        0x195032fff  com.apple.MetalPerformanceShaders.MPSCore (1.0 - 1) <BA925B23-4A18-358E-B607-E1E723E6FE15> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSCore.framework/Versions/A/MPSCore
+       0x195033000 -        0x195037fff  libsystem_configuration.dylib (1351.80.2) <C218F939-9E60-37A3-B2EC-93837054946D> /usr/lib/system/libsystem_configuration.dylib
+       0x195038000 -        0x19503efff  libsystem_sandbox.dylib (2401.81.2) <BF38E17B-6A57-3EE2-A805-8E9B35542182> /usr/lib/system/libsystem_sandbox.dylib
+       0x19503f000 -        0x195040fff  com.apple.AggregateDictionary (1.0 - 1) <81976928-DABD-365F-9DAC-DCF70A84C96E> /System/Library/PrivateFrameworks/AggregateDictionary.framework/Versions/A/AggregateDictionary
+       0x195041000 -        0x195045ffb  com.apple.AppleSystemInfo (3.1.5 - 3.1.5) <E47837B4-7F08-3EB7-8DA9-FF9CF6A1FFE7> /System/Library/PrivateFrameworks/AppleSystemInfo.framework/Versions/A/AppleSystemInfo
+       0x195046000 -        0x195047fff  liblangid.dylib (140) <F8BF36DD-786A-3C96-885A-797572EA209E> /usr/lib/liblangid.dylib
+       0x195048000 -        0x195167fff  com.apple.CoreNLP (1.0 - 313) <0A576909-71AA-301C-9723-0D5934A7E39D> /System/Library/PrivateFrameworks/CoreNLP.framework/Versions/A/CoreNLP
+       0x195168000 -        0x19516efff  com.apple.LinguisticData (1.0 - 483.10) <1D1A3D4F-880B-3AED-BB2D-03EF563A52A0> /System/Library/PrivateFrameworks/LinguisticData.framework/Versions/A/LinguisticData
+       0x19516f000 -        0x195b34fff  libBNNS.dylib (1361.60.15) <0A0EA04E-3AE2-3734-9E57-D13FBD17FA9A> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBNNS.dylib
+       0x195b35000 -        0x195c27fb7  libvDSP.dylib (1068.60.2) <8201128F-5340-3197-B0A5-5D094E17C0CA> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvDSP.dylib
+       0x195c5b000 -        0x195c6bff3  com.apple.IOMobileFramebuffer (343.0.0 - 343.0.0) <2A45A0EA-9C87-3635-B309-0B172D8EEF56> /System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/Versions/A/IOMobileFramebuffer
+       0x195e5c000 -        0x195e78fff  com.apple.MobileKeyBag (2.0 - 1.0) <7025128F-E5D4-32F3-8993-ED007E18B278> /System/Library/PrivateFrameworks/MobileKeyBag.framework/Versions/A/MobileKeyBag
+       0x195e79000 -        0x195e86fff  com.apple.AssertionServices (1.0 - 945.80.1.0.1) <08A44127-D26E-38B2-A025-56FE5B102127> /System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices
+       0x195e87000 -        0x195f14fff  com.apple.securityfoundation (6.0 - 55289) <4FDFC8E3-483F-37EB-A643-03715E827D61> /System/Library/Frameworks/SecurityFoundation.framework/Versions/A/SecurityFoundation
+       0x195f15000 -        0x195f44fff  com.apple.coreservices.BackgroundTaskManagement (1.0 - 104) <A3DD0080-8E6B-3DE9-BA99-A0337CBC0E59> /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/BackgroundTaskManagement
+       0x195f50000 -        0x195f52ffb  libquarantine.dylib (181.80.2) <90D46A44-087C-3900-8509-EA90C6CFAD58> /usr/lib/system/libquarantine.dylib
+       0x195f53000 -        0x195f5efff  libCheckFix.dylib (33) <B3D83440-97EA-3E1A-9F75-4AD6D66A47F5> /usr/lib/libCheckFix.dylib
+       0x195f5f000 -        0x195f76fff  libcoretls.dylib (186) <54006172-9144-3320-8739-D1D273ACB8EA> /usr/lib/libcoretls.dylib
+       0x195f77000 -        0x195f88ffb  libbsm.0.dylib (89) <31792784-758D-3FC2-8B40-9C321D82EB93> /usr/lib/libbsm.0.dylib
+       0x195f89000 -        0x195fe9ff7  libmecab.dylib (1093.209) <7C6D81B8-3188-347D-9DA9-8074CA92F7A0> /usr/lib/libmecab.dylib
+       0x195fea000 -        0x195fecffb  libgermantok.dylib (31) <1DCFC156-828E-3125-B0F3-A80310A83E33> /usr/lib/libgermantok.dylib
+       0x195fed000 -        0x196001fff  libLinearAlgebra.dylib (1510.80.2) <7968C309-63F8-38E8-A286-4B0FB1188825> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLinearAlgebra.dylib
+       0x196002000 -        0x19624ffff  com.apple.MetalPerformanceShaders.MPSNeuralNetwork (1.0 - 1) <93AA5A10-C8AB-34FB-A515-5D92662CFC7D> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNeuralNetwork.framework/Versions/A/MPSNeuralNetwork
+       0x196250000 -        0x1962a2fff  com.apple.MetalPerformanceShaders.MPSRayIntersector (1.0 - 1) <133C1F7E-9848-3AC9-A2DB-C7C2AFB52081> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSRayIntersector.framework/Versions/A/MPSRayIntersector
+       0x196438000 -        0x196469fff  com.apple.MetalPerformanceShaders.MPSMatrix (1.0 - 1) <40E641E8-CFD5-33B3-8417-5DFCB50C2058> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSMatrix.framework/Versions/A/MPSMatrix
+       0x19646a000 -        0x1965b2fff  com.apple.MetalPerformanceShaders.MPSNDArray (1.0 - 1) <C6F32BA3-F91D-3DAE-BA28-080B0ECC6682> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNDArray.framework/Versions/A/MPSNDArray
+       0x1965b3000 -        0x196646fff  com.apple.MetalPerformanceShaders.MPSImage (1.0 - 1) <6B7959F4-17AA-387B-AB68-B7078E02C67C> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSImage.framework/Versions/A/MPSImage
+       0x196647000 -        0x196652fff  com.apple.AppleFSCompression (168 - 1.0) <6A18573B-0E8B-3B3A-9980-C3920EC792A4> /System/Library/PrivateFrameworks/AppleFSCompression.framework/Versions/A/AppleFSCompression
+       0x196653000 -        0x19665effb  libbz2.1.0.dylib (46) <24E2EF9A-CAB9-318A-8D1A-10E0E688D941> /usr/lib/libbz2.1.0.dylib
+       0x19665f000 -        0x196665ffb  libsystem_coreservices.dylib (171.1) <579E4601-365D-346F-9CD9-37851FB2874C> /usr/lib/system/libsystem_coreservices.dylib
+       0x196666000 -        0x196698fff  com.apple.CoreServices.OSServices (1141.1 - 1141.1) <9DA8BA49-4166-3C9E-BED2-9B14E6A7FA36> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/OSServices.framework/Versions/A/OSServices
+       0x196abd000 -        0x196acbfff  libz.1.dylib (96) <2F124824-B5AD-3E20-996D-9835D9711F47> /usr/lib/libz.1.dylib
+       0x196acc000 -        0x196b09fff  libsystem_m.dylib (3289) <1B9E3C19-420A-38C5-96CE-6C2CE6EB56BA> /usr/lib/system/libsystem_m.dylib
+       0x196b0a000 -        0x196b0afff  libcharset.1.dylib (109) <0F68DB90-93D6-388A-9702-0AD069319AF6> /usr/lib/libcharset.1.dylib
+       0x196b0b000 -        0x196b0eff7  libmacho.dylib (1022.1) <9E0F73E3-1865-3F72-9ED1-465C68D23BA6> /usr/lib/system/libmacho.dylib
+       0x196b0f000 -        0x196b2bfff  libkxld.dylib (11215.81.4) <9A9AF962-D740-3ACF-BE08-8EC62C955917> /usr/lib/system/libkxld.dylib
+       0x196b2c000 -        0x196b39fff  libcommonCrypto.dylib (600033.60.1) <1C8E15A6-869F-3AAD-AAE8-5825C7C4F902> /usr/lib/system/libcommonCrypto.dylib
+       0x196b3a000 -        0x196b45fff  libunwind.dylib (1800.85) <BEFBB85F-B46E-3C52-9A92-2F8EE957E3D9> /usr/lib/system/libunwind.dylib
+       0x196b46000 -        0x196b4dfff  liboah.dylib (342) <D8407F3E-5522-3C66-8A60-C29567136FD5> /usr/lib/liboah.dylib
+       0x196b4e000 -        0x196b58ff7  libcopyfile.dylib (213.40.2) <0D18978A-4446-31EE-8228-25FABB44DB94> /usr/lib/system/libcopyfile.dylib
+       0x196b59000 -        0x196b5cfff  libcompiler_rt.dylib (103.3) <F22CE10B-B1DF-3A58-9B8B-7F0ED73962DF> /usr/lib/system/libcompiler_rt.dylib
+       0x196b5d000 -        0x196b61ffb  libsystem_collections.dylib (1669.60.4) <74DC56B7-7BE5-3392-835A-7C6863986FF2> /usr/lib/system/libsystem_collections.dylib
+       0x196b62000 -        0x196b65ffb  libsystem_secinit.dylib (153.60.1) <9BFA7CCC-E31E-3D39-832D-CA425269A795> /usr/lib/system/libsystem_secinit.dylib
+       0x196b66000 -        0x196b68fff  libremovefile.dylib (75.80.1) <D242539B-BA45-363C-8B08-83FBCE4EC1C2> /usr/lib/system/libremovefile.dylib
+       0x196b69000 -        0x196b69fff  libkeymgr.dylib (31) <95E4D67C-51BF-36C9-99B5-35F5E2D6E2CA> /usr/lib/system/libkeymgr.dylib
+       0x196b6a000 -        0x196b72fff  libsystem_dnssd.dylib (2559.80.8) <35DE5A07-AF58-33F0-A950-1F7CCAE85F3E> /usr/lib/system/libsystem_dnssd.dylib
+       0x196b73000 -        0x196b78ffb  libcache.dylib (95) <46788F12-8B07-3253-BF23-C49BC753A327> /usr/lib/system/libcache.dylib
+       0x196b79000 -        0x196b7affb  libSystem.B.dylib (1351) <E7A14776-89AB-310A-9FCF-F47CAE8043B6> /usr/lib/libSystem.B.dylib
+       0x196b7b000 -        0x196b7dfff  libfakelink.dylib (5) <BAF73E4A-7B10-3626-99D9-0E2832C4153B> /usr/lib/libfakelink.dylib
+       0x196b7e000 -        0x196b7effb  com.apple.SoftLinking (1.0 - 59) <0771644F-636F-377F-B86C-564D33FA62DA> /System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking
+       0x196bb5000 -        0x196bbcffb  libiconv.2.dylib (109) <5CF5071E-B8E9-3CE3-9AFC-FA99DA46DF13> /usr/lib/libiconv.2.dylib
+       0x196bd0000 -        0x196c58ff7  libarchive.2.dylib (138.40.4) <2D28EACA-D571-3EA2-86F5-40770FDBE40C> /usr/lib/libarchive.2.dylib
+       0x196c59000 -        0x196cc4fff  com.apple.SearchKit (1.4.2 - 1.4.2) <91755813-62B1-3576-AF8F-D9133681BD1F> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SearchKit.framework/Versions/A/SearchKit
+       0x196cc5000 -        0x196ccdfff  libThaiTokenizer.dylib (28) <7DD4FA2E-21F8-3E2B-8522-E4C92E4BB99C> /usr/lib/libThaiTokenizer.dylib
+       0x196cce000 -        0x196cf3ff7  com.apple.applesauce (1.0 - 16.62) <6A21081A-0C67-358F-A46C-A8F8CAD3FFA9> /System/Library/PrivateFrameworks/AppleSauce.framework/Versions/A/AppleSauce
+       0x196cf4000 -        0x196d0eff7  libapple_nghttp2.dylib (27) <4B8F296F-6B47-3CBA-8646-4AEF932F6D22> /usr/lib/libapple_nghttp2.dylib
+       0x196d0f000 -        0x196d21ff3  libSparseBLAS.dylib (1510.80.2) <2118AB7C-04A7-35E2-92BE-942A2A91CCB3> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparseBLAS.dylib
+       0x196d22000 -        0x196d23fff  com.apple.MetalPerformanceShaders.MetalPerformanceShaders (1.0 - 1) <AB739C3C-CD38-3AE6-85A0-5CF946870471> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/MetalPerformanceShaders
+       0x196d24000 -        0x196d29fff  libpam.2.dylib (34) <E0A5E9E6-8709-3F5C-89F5-D32232CEDA1E> /usr/lib/libpam.2.dylib
+       0x196d2a000 -        0x196dfafef  libcompression.dylib (181) <09D2A140-CDF6-37A6-9A3F-7085F752A004> /usr/lib/libcompression.dylib
+       0x196dfb000 -        0x196dffff7  libQuadrature.dylib (8) <D197974B-5D68-39E3-8251-F5A0FAD42944> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libQuadrature.dylib
+       0x196e00000 -        0x197fbcfc7  libLAPACK.dylib (1510.80.2) <66C83F80-4F8C-3002-885E-F8D9562B5944> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLAPACK.dylib
+       0x197fbd000 -        0x198014fff  com.apple.DictionaryServices (1.2 - 368.201) <5AB3B4E6-4116-317B-83D1-A10E01C73496> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/DictionaryServices.framework/Versions/A/DictionaryServices
+       0x198015000 -        0x198033fff  liblzma.5.dylib (20) <211F1D1C-75E9-3910-BE41-05DD21676DB6> /usr/lib/liblzma.5.dylib
+       0x198034000 -        0x198035fff  libcoretls_cfhelpers.dylib (186) <301A9407-FEF4-35FA-B542-82443942D6A3> /usr/lib/libcoretls_cfhelpers.dylib
+       0x198036000 -        0x1980a6fff  com.apple.APFS (2317.81.2 - 2317.81.2) <D1F696F1-1BAF-3D69-9A92-8B0521CA2120> /System/Library/PrivateFrameworks/APFS.framework/Versions/A/APFS
+       0x1980a7000 -        0x1980b5fff  libxar.1.dylib (501) <0220EE49-4813-3B16-8ADA-1F4C4623B5AC> /usr/lib/libxar.1.dylib
+       0x1980b6000 -        0x1980b9ffb  libutil.dylib (72) <A8586B94-0399-30F0-9463-7B97CC410E30> /usr/lib/libutil.dylib
+       0x1980ba000 -        0x1980e5ff7  libxslt.1.dylib (21.5) <F067D19F-E16B-3BA8-BE8C-AAA5C2D8E623> /usr/lib/libxslt.1.dylib
+       0x1980ee000 -        0x19816afe7  libvMisc.dylib (1068.60.2) <78438525-303A-3AE3-A7F4-82AB82A378F2> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvMisc.dylib
+       0x19816b000 -        0x1981fbfdf  libate.dylib (3.0.9) <F2EF0E84-65A1-338D-855F-8843F578297A> /usr/lib/libate.dylib
+       0x198205000 -        0x198218fff  com.apple.CrashReporterSupport (10.13 - 15131) <68712F82-E469-3B6A-A63B-CFF119BC8F2A> /System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport
+       0x198364000 -        0x1983a4fff  com.apple.pluginkit.framework (1.0 - 1) <D7DEB0D9-9074-3562-AA18-5D96ECA9DA7C> /System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit
+       0x19841d000 -        0x198466fff  com.apple.AppleVAFramework (6.2.10 - 6.2.10) <DAC92E71-70A8-37FA-878E-8273FEE284A6> /System/Library/PrivateFrameworks/AppleVA.framework/Versions/A/AppleVA
+       0x198467000 -        0x198481fff  libexpat.1.dylib (38) <F5930C97-C0BE-3224-B33F-943BC5178C07> /usr/lib/libexpat.1.dylib
+       0x198482000 -        0x19848cffb  libheimdal-asn1.dylib (693.60.3) <BD048EB0-FE92-3D97-82D2-744937207C3B> /usr/lib/libheimdal-asn1.dylib
+       0x19856c000 -        0x19861afff  com.apple.MediaExperience (1.0 - 1) <EE046AC8-F1BC-3CA5-B283-506BB729ECC2> /System/Library/PrivateFrameworks/MediaExperience.framework/Versions/A/MediaExperience
+       0x198646000 -        0x198651fff  com.apple.GraphVisualizer (1.0 - 120.1) <E5F20865-1979-3E07-A89C-EF32A974EF0D> /System/Library/PrivateFrameworks/GraphVisualizer.framework/Versions/A/GraphVisualizer
+       0x198652000 -        0x198691fff  com.apple.OTSVG (1.0 - 844.2.0.4) <79957785-0285-3BA1-BB17-88B20A861E0F> /System/Library/PrivateFrameworks/OTSVG.framework/Versions/A/OTSVG
+       0x198692000 -        0x19869bfff  com.apple.xpc.AppServerSupport (1.0 - 2866.81.1) <A0745B4D-38C0-34C4-AA05-8D4D274874F5> /System/Library/PrivateFrameworks/AppServerSupport.framework/Versions/A/AppServerSupport
+       0x19869c000 -        0x1986a7fff  libhvf.dylib (1.0 - 409.2.0.1) <CB6095FE-D6A7-3A28-92FF-BCCBE0853A97> /System/Library/PrivateFrameworks/FontServices.framework/libhvf.dylib
+       0x1986a8000 -        0x1986aefff  libspindump.dylib (383.2) <0497F1E3-5CB4-3AA0-857A-749962E90B5E> /usr/lib/libspindump.dylib
+       0x1986af000 -        0x198780fff  com.apple.Heimdal (4.0 - 2.0) <D7424264-0BE6-3FED-9C6F-427B03D1E905> /System/Library/PrivateFrameworks/Heimdal.framework/Versions/A/Heimdal
+       0x1989e0000 -        0x198a25fff  com.apple.AppleJPEG (1.0 - 1) <6FA9292C-2499-3CDD-8863-A454408D73A1> /System/Library/PrivateFrameworks/AppleJPEG.framework/Versions/A/AppleJPEG
+       0x198a26000 -        0x198b18ff7  libJP2.dylib (2661.3.5) <A583E05B-03F7-3873-B6C8-A41DF6A89C1E> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJP2.dylib
+       0x198b19000 -        0x198b1affb  com.apple.WatchdogClient.framework (1.0 - 277.80.2) <4850B029-4065-3134-B72E-50EBF3644007> /System/Library/PrivateFrameworks/WatchdogClient.framework/Versions/A/WatchdogClient
+       0x198b1b000 -        0x198b5ffff  com.apple.MultitouchSupport.framework (8420.1 - 8420.1) <68841138-333A-3FB8-8C94-DBD92C95253C> /System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/A/MultitouchSupport
+       0x198b60000 -        0x198fddfff  com.apple.VideoToolbox (1.0 - 3200.5.1) <E592940B-133B-3BFF-B7C8-AFEDE3F3E78F> /System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox
+       0x198fde000 -        0x199013fff  libAudioToolboxUtility.dylib (1456.404) <94FA2E67-57D3-35B1-A5B6-62594481E769> /usr/lib/libAudioToolboxUtility.dylib
+       0x199014000 -        0x19903efff  libPng.dylib (2661.3.5) <563763E0-CCF4-36B1-AE45-94075EE7D8A3> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libPng.dylib
+       0x19903f000 -        0x1990a1ff3  libTIFF.dylib (2661.3.5) <8D9C3019-4722-396F-A7E9-CE839E8C7704> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libTIFF.dylib
+       0x1990a2000 -        0x1990c1ff3  com.apple.IOPresentment (66 - 66) <62EC4ABA-542F-3C8E-9B70-ED243C053931> /System/Library/PrivateFrameworks/IOPresentment.framework/Versions/A/IOPresentment
+       0x1990c2000 -        0x1990c6ffb  com.apple.GPUWrangler (8.1.10 - 8.1.10) <A8FA21C4-42EE-325A-B114-F2E0202320C5> /System/Library/PrivateFrameworks/GPUWrangler.framework/Versions/A/GPUWrangler
+       0x1990c7000 -        0x1990c9ffb  libRadiance.dylib (2661.3.5) <0850CEFF-37C1-320B-AE61-534DFF1FE608> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libRadiance.dylib
+       0x1990ca000 -        0x1990cffff  com.apple.DSExternalDisplay (3.1 - 380) <D09319DE-EB4A-33A6-9496-DFB35DA2C956> /System/Library/PrivateFrameworks/DSExternalDisplay.framework/Versions/A/DSExternalDisplay
+       0x1990d0000 -        0x1990faff7  libJPEG.dylib (2661.3.5) <B2999762-13F1-3024-8DDB-233F74FC78D4> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJPEG.dylib
+       0x19912a000 -        0x19912fffb  libGIF.dylib (2661.3.5) <CF2F5003-DB41-3D7C-9CAE-878F0B76FCDF> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libGIF.dylib
+       0x199130000 -        0x19913efff  com.apple.CMCaptureCore (1.0 - 587.81.10) <583EC52E-5E91-36A6-A211-279E04C9831A> /System/Library/PrivateFrameworks/CMCaptureCore.framework/Versions/A/CMCaptureCore
+       0x199cc9000 -        0x199d38ff3  libusrtcp.dylib (4277.81.1) <3C4137B4-B6EA-3D39-B9CF-B203A3B7F436> /usr/lib/libusrtcp.dylib
+       0x199d39000 -        0x19a2dcfff  libswiftCore.dylib (6.0.3 - 6.0.3.1.5) <A0EBE73E-3B7B-329E-985C-E884ABA916DF> /usr/lib/swift/libswiftCore.dylib
+       0x19a38f000 -        0x19a3d7fff  libSessionUtility.dylib (321.401) <93F8C841-BA6F-31D0-8996-69FF23211C6D> /System/Library/PrivateFrameworks/AudioSession.framework/libSessionUtility.dylib
+       0x19a3d8000 -        0x19a57bfff  com.apple.audio.toolbox.AudioToolbox (1.14 - 1.14) <CF6ED93A-D59F-3714-95D0-1ED022DC9729> /System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox
+       0x19a57c000 -        0x19a5d8fff  com.apple.audio.AudioSession (1.0 - 321.401) <1BFDB7EB-4E14-35BF-866B-74E6E6A12086> /System/Library/PrivateFrameworks/AudioSession.framework/Versions/A/AudioSession
+       0x19a5d9000 -        0x19a5f1fff  libAudioStatistics.dylib (235.401) <9F9BF287-F4F4-303F-88DE-22623A8D4623> /usr/lib/libAudioStatistics.dylib
+       0x19a69f000 -        0x19a6b7ff7  libresolv.9.dylib (83) <552F31FA-51A1-30D9-9740-94588873A914> /usr/lib/libresolv.9.dylib
+       0x19a6b8000 -        0x19a6caff7  libsasl2.2.dylib (215) <414D826D-F1AA-3315-9C6C-B6B79EF2FDC3> /usr/lib/libsasl2.2.dylib
+       0x19a8b5000 -        0x19a995fff  libSMC.dylib (34) <E7EAB738-D9B0-3E10-913E-B8D053CD21EE> /usr/lib/libSMC.dylib
+       0x19a9f6000 -        0x19aa02fff  com.apple.NetAuth (6.2 - 6.2) <C21B1F1D-F71F-3B86-8D74-247C87D7CD63> /System/Library/PrivateFrameworks/NetAuth.framework/Versions/A/NetAuth
+       0x19aa16000 -        0x19aa23fff  com.apple.perfdata (1.0 - 121) <ED318D59-2E86-38F0-B352-FCE9FD5BEEC2> /System/Library/PrivateFrameworks/perfdata.framework/Versions/A/perfdata
+       0x19aa24000 -        0x19aa31fff  libperfcheck.dylib (46) <4CF360A5-5BAE-396A-AB59-27C00980028E> /usr/lib/libperfcheck.dylib
+       0x19aa32000 -        0x19aa43fff  com.apple.Kerberos (3.0 - 1) <7DBBBDA0-3E54-3F81-A0D3-460C09E82242> /System/Library/Frameworks/Kerberos.framework/Versions/A/Kerberos
+       0x19aa44000 -        0x19aa9efff  com.apple.GSS (4.0 - 2.0) <D5717A82-1F4E-3341-8097-C01E5720351C> /System/Library/Frameworks/GSS.framework/Versions/A/GSS
+       0x19aa9f000 -        0x19aab1fff  com.apple.CommonAuth (4.0 - 2.0) <90BB26F0-F71C-398E-9F6C-882DC3388063> /System/Library/PrivateFrameworks/CommonAuth.framework/Versions/A/CommonAuth
+       0x19c135000 -        0x19c260fff  com.apple.combine (1.0 - 338) <B9F26DAD-2FA4-3139-9C77-B234F12943C6> /System/Library/Frameworks/Combine.framework/Versions/A/Combine
+       0x19e20f000 -        0x19e20ffff  com.apple.Accelerate.vecLib (3.11 - vecLib 3.11) <8C169781-389F-3DF9-B998-BB5B8520DF8B> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/vecLib
+       0x19e234000 -        0x19e234fff  com.apple.CoreServices (1226 - 1226) <718FC148-CF8D-3C56-99A2-D30B3CEF62D8> /System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices
+       0x19e4de000 -        0x19e4defff  com.apple.Accelerate (1.11 - Accelerate 1.11) <81FFBDC1-F06D-3E68-825F-32A9B9F898B0> /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate
+       0x19f1e9000 -        0x19f216fff  com.apple.PowerLog (1.0 - 1) <E31AB967-56EB-3D34-AA37-D38A41DB481A> /System/Library/PrivateFrameworks/PowerLog.framework/Versions/A/PowerLog
+       0x19f224000 -        0x19f2d8fff  com.apple.DiscRecording (9.0.3 - 9030.4.5) <3F138300-72BA-3AAE-A35C-FA0A07FC116B> /System/Library/Frameworks/DiscRecording.framework/Versions/A/DiscRecording
+       0x19f2d9000 -        0x19f30afff  com.apple.MediaKit (16 - 938) <CF4790DD-0363-3D84-918F-586280C7B6DD> /System/Library/PrivateFrameworks/MediaKit.framework/Versions/A/MediaKit
+       0x19fcee000 -        0x19fd05ff8  libswiftDispatch.dylib (49) <2C922043-216F-3091-B078-54996C8E2060> /usr/lib/swift/libswiftDispatch.dylib
+       0x1a0059000 -        0x1a00c4fff  com.apple.BoardServices (1.0 - 694.3.4) <859D3BCA-4A5C-3A3E-A698-65A540D84A1A> /System/Library/PrivateFrameworks/BoardServices.framework/Versions/A/BoardServices
+       0x1a045a000 -        0x1a049fffc  com.apple.DebugSymbols (195.1 - 195.1) <E007C9AB-65EF-35B2-947E-E9EC48865726> /System/Library/PrivateFrameworks/DebugSymbols.framework/Versions/A/DebugSymbols
+       0x1a04a0000 -        0x1a05b3ff3  com.apple.CoreSymbolication (16.0 - 64566.101.4) <EA5B40F8-76B7-3868-A2D6-98AAF6E28595> /System/Library/PrivateFrameworks/CoreSymbolication.framework/Versions/A/CoreSymbolication
+       0x1a05b4000 -        0x1a05befff  com.apple.CoreTime (334.0.2) <A1F67E67-A2B5-312E-A4A3-6A17F34217DF> /System/Library/PrivateFrameworks/CoreTime.framework/Versions/A/CoreTime
+       0x1a1cb1000 -        0x1a1cecfff  com.apple.LDAPFramework (2.4.28 - 194.5) <24E444D5-0AFA-3907-A351-C49D127A2359> /System/Library/Frameworks/LDAP.framework/Versions/A/LDAP
+       0x1a1ced000 -        0x1a1ceefff  com.apple.TrustEvaluationAgent (2.0 - 38) <A61BB7D6-C707-33CA-A0A3-1F183C2DAFFA> /System/Library/PrivateFrameworks/TrustEvaluationAgent.framework/Versions/A/TrustEvaluationAgent
+       0x1a1e1b000 -        0x1a1edbfff  com.apple.DiskImagesFramework (665.80.2 - 665.80.2) <7E145C58-C431-33D3-A62E-1AEA37BE394A> /System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages
+       0x1a1fdd000 -        0x1a205fff7  libcurl.4.dylib (158) <6D045465-1D73-3E87-B4D8-DD268F2320F2> /usr/lib/libcurl.4.dylib
+       0x1a2830000 -        0x1a2830fff  libHeimdalProxy.dylib (87) <AC70F1FE-1431-30BB-82BF-9CECA2339140> /System/Library/Frameworks/Kerberos.framework/Versions/A/Libraries/libHeimdalProxy.dylib
+       0x1a28d5000 -        0x1a28d8ff5  libswiftObjectiveC.dylib (10) <6EE1AA58-9D41-3075-85DA-BF8F5C5A0BD3> /usr/lib/swift/libswiftObjectiveC.dylib
+       0x1a28d9000 -        0x1a28f2fff  libswiftos.dylib (1062.0.2) <E7E4E2D9-F8EA-3288-9BF7-CFE4E2B8B542> /usr/lib/swift/libswiftos.dylib
+       0x1a3a12000 -        0x1a3a63fff  com.apple.ASEProcessing (1.37.0 - 1.37.0) <82CD0969-9307-31CD-A557-A86660A5F5B8> /System/Library/PrivateFrameworks/ASEProcessing.framework/Versions/A/ASEProcessing
+       0x1a4abc000 -        0x1a4b74fff  com.apple.audio.midi.CoreMIDI (2.0 - 88) <CCB045B1-4CFC-3FBB-BDD7-44A103588428> /System/Library/Frameworks/CoreMIDI.framework/Versions/A/CoreMIDI
+       0x1a56fc000 -        0x1a5700fff  com.apple.IOSurfaceAccelerator (1.0.0 - 1.0.0) <14EEB188-D331-37C5-A7F1-366A4CE07D1B> /System/Library/PrivateFrameworks/IOSurfaceAccelerator.framework/Versions/A/IOSurfaceAccelerator
+       0x1a9f84000 -        0x1a9f94fff  com.apple.HID (1.0 - 1) <42F72FDA-C467-32D6-AA2A-EA0442331477> /System/Library/PrivateFrameworks/HID.framework/Versions/A/HID
+       0x1ae35f000 -        0x1ae36efff  com.apple.NetFS (6.0 - 4.0) <90AC4AD1-24E2-32F6-9680-50FFEF89D45C> /System/Library/Frameworks/NetFS.framework/Versions/A/NetFS
+       0x1ae832000 -        0x1ae833ffb  libswiftDarwin.dylib (234.60.42) <26A4C1CC-1525-3829-9C07-DD186D2F00FA> /usr/lib/swift/libswiftDarwin.dylib
+       0x1b0168000 -        0x1b0254fff  libquic.dylib (4277.81.1) <F39717BD-0C54-3A7A-8C46-DCE046FF377B> /usr/lib/libquic.dylib
+       0x1b025f000 -        0x1b0283fff  com.apple.private.SystemPolicy (1.0 - 1) <24144DD3-FFF1-364A-8359-05A83237BE1C> /System/Library/PrivateFrameworks/SystemPolicy.framework/Versions/A/SystemPolicy
+       0x1b0f79000 -        0x1b0ff6fff  com.apple.LoggingSupport (1.0 - 1612.80.7) <50A234EA-EC0F-3739-9693-4550EE03023B> /System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport
+       0x1b0ff7000 -        0x1b1003ffb  com.apple.MallocStackLogging (1.0 - 64567.3.3) <05EF3C0E-574F-3F1B-8A57-046AF3E4E177> /System/Library/PrivateFrameworks/MallocStackLogging.framework/Versions/A/MallocStackLogging
+       0x1b1029000 -        0x1b105cfff  libmis.dylib (436.40.5) <464330D9-7AC7-3C6A-BA8E-27B51C699CD9> /usr/lib/libmis.dylib
+       0x1b105d000 -        0x1b1060fff  com.apple.gpusw.GPURawCounter (34 - 34) <E020FC9F-27E2-3D04-A5E1-16DAFA84C5D7> /System/Library/PrivateFrameworks/GPURawCounter.framework/Versions/A/GPURawCounter
+       0x1b1086000 -        0x1b108cff7  libswiftCoreFoundation.dylib (2401) <CE98BE37-7964-3224-9B67-3EB7F8626D4A> /usr/lib/swift/libswiftCoreFoundation.dylib
+       0x1b1098000 -        0x1b10e2ffa  libswiftXPC.dylib (62.0.1) <EBBE8050-7CB6-3648-BF57-8A5567AE19E2> /usr/lib/swift/libswiftXPC.dylib
+       0x1b10e4000 -        0x1b10e4fff  libswiftIOKit.dylib (1) <6D0023B3-BF29-3B24-B543-1EF99646B39C> /usr/lib/swift/libswiftIOKit.dylib
+       0x1b485c000 -        0x1b4874ff3  libswiftsimd.dylib (21) <ABB84DF3-BFAC-3F22-817F-EA6DF17D7C64> /usr/lib/swift/libswiftsimd.dylib
+       0x1b5bc6000 -        0x1b5bcffff  com.apple.IOAccelMemoryInfo (1.0 - 1) <2F3B9565-AAB1-362A-A4E1-635D584B78E5> /System/Library/PrivateFrameworks/IOAccelMemoryInfo.framework/Versions/A/IOAccelMemoryInfo
+       0x1bd911000 -        0x1bd917ff8  libswiftMetal.dylib (367.6) <7574A46D-14FD-3B85-8E41-4D18AFD7C436> /usr/lib/swift/libswiftMetal.dylib
+       0x1c18d0000 -        0x1c192cfff  com.apple.osanalytics.OSAnalytics (1.0 - 1) <7EFA8BCB-16FD-374F-87D6-9963539F6D70> /System/Library/PrivateFrameworks/OSAnalytics.framework/Versions/A/OSAnalytics
+       0x1c223c000 -        0x1c223dffd  libswiftQuartzCore.dylib (4) <D66E9A4B-02CA-3320-86C9-2F0C0901E242> /usr/lib/swift/libswiftQuartzCore.dylib
+       0x1c2638000 -        0x1c263dfff  com.apple.kperf (1.0 - 1) <9C05D89A-81CE-3252-9079-384A3F6CE319> /System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf
+       0x1c2744000 -        0x1c2749fff  com.apple.MobileSystemServices (1.0 - 1) <4B77859F-005B-37CC-AF62-EA090BE1F069> /System/Library/PrivateFrameworks/MobileSystemServices.framework/Versions/A/MobileSystemServices
+       0x1c676b000 -        0x1c6779ff5  libswiftUniformTypeIdentifiers.dylib (827.5.4) <96AF8EAB-2D50-3442-A752-416AB8B5F8ED> /usr/lib/swift/libswiftUniformTypeIdentifiers.dylib
+       0x1cbc0f000 -        0x1cbc10ffb  libswiftOSLog.dylib (8) <452649CE-D8F8-3EF2-8861-20D21F793FF9> /usr/lib/swift/libswiftOSLog.dylib
+       0x1cf3a5000 -        0x1cf49bfff  com.apple.Symbolication (16.0 - 64567.3.3) <81116151-EC8C-3F0D-B0FC-CA815F946D31> /System/Library/PrivateFrameworks/Symbolication.framework/Versions/A/Symbolication
+       0x1d3064000 -        0x1d3074fff  com.apple.OSLog (1.0 - 1612.80.7) <AFA32EDE-E96E-35B1-9CB2-954FA4A250FE> /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog
+       0x1d3298000 -        0x1d33a9ff4  com.apple.InternalSwiftProtobuf (1.0 - 1.26.0) <93F647EA-926F-31DD-891A-B519C06203DE> /System/Library/PrivateFrameworks/InternalSwiftProtobuf.framework/Versions/A/InternalSwiftProtobuf
+       0x1d3471000 -        0x1d347cfff  com.apple.HIDDisplay (1.0 - 1) <CB108F05-CBA5-3895-8FA5-DED7EF57E2EE> /System/Library/PrivateFrameworks/HIDDisplay.framework/Versions/A/HIDDisplay
+       0x1da3ca000 -        0x1da3caffb  com.apple.FeatureFlags (1.0 - 94) <9F44F557-BCC9-3C5F-BD15-2E2206E39272> /System/Library/PrivateFrameworks/FeatureFlags.framework/Versions/A/FeatureFlags
+       0x1e2dd5000 -        0x1e2dd7fff  com.apple.ConfigProfileHelper (17.0 - 1721) <C0673608-67FF-3277-B1FF-407B0803EDC6> /System/Library/PrivateFrameworks/ConfigProfileHelper.framework/Versions/A/ConfigProfileHelper
+       0x1e5e67000 -        0x1e5e6eff7  libCoreFSCache.dylib (301) <1FEC93F6-CFEB-3317-B3C8-CAE341AC204D> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreFSCache.dylib
+       0x1e5e6f000 -        0x1e5e74fff  libCoreVMClient.dylib (301) <BA339196-BC44-3D08-9447-60C525F0B5D6> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreVMClient.dylib
+       0x1e5e75000 -        0x1e5e85ff7  com.apple.opengl (21.0.27 - 21.0.27) <B755A682-2EBA-3CB4-8864-82F48EC15100> /System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL
+       0x1e5e86000 -        0x1e5e88fff  libCVMSPluginSupport.dylib (21.0.27) <3F2AED4F-78D3-37C3-9146-46E5BBBB7518> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCVMSPluginSupport.dylib
+       0x1e5e89000 -        0x1e5e91fff  libGFXShared.dylib (21.0.27) <E87429AE-E8DE-3E3E-84D3-42B073D1FB28> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGFXShared.dylib
+       0x1e5e92000 -        0x1e5ec6ff3  libGLImage.dylib (21.0.27) <48405265-388D-3924-89B2-A3FE2F5E8E24> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLImage.dylib
+       0x1e5ec7000 -        0x1e5f00ff7  libGLU.dylib (21.0.27) <6794A70E-34C2-395F-9C8C-2DCCB7B6F24D> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLU.dylib
+       0x1e605a000 -        0x1e6063fff  libGL.dylib (21.0.27) <ADE2B449-DE1D-3247-B965-404DD2D4D49A> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+       0x1e7aca000 -        0x1e7b94fff  com.apple.ExtensionFoundation (97 - 97) <C92A99B4-4ADF-3935-8B99-B0440F294894> /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/ExtensionFoundation
+       0x1e9c23000 -        0x1e9c3efff  com.apple.MPSBenchmarkLoop (1.0 - 1) <EFE47D01-4814-3EFF-A5DA-D1C3CC84A2E9> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSBenchmarkLoop.framework/Versions/A/MPSBenchmarkLoop
+       0x1e9c3f000 -        0x1e9c53fff  com.apple.MPSFunctions (1.0 - 1) <B6A91DE6-D0BB-32D3-A008-21376070154D> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSFunctions.framework/Versions/A/MPSFunctions
+       0x22e4a0000 -        0x22e4feff7  com.apple.AppleKeyStore (1.0 - 1.0) <9B00219C-7CE4-39CB-A9E8-EB449DA39CC5> /System/Library/PrivateFrameworks/AppleKeyStore.framework/Versions/A/AppleKeyStore
+       0x22e6a0000 -        0x22e6b7fff  com.apple.private.AppleMobileFileIntegrity-fmk (1.0 - 1) <90625AE8-01B2-3B79-9E84-F4A9286DB7A3> /System/Library/PrivateFrameworks/AppleMobileFileIntegrity.framework/Versions/A/AppleMobileFileIntegrity
+       0x22ea85000 -        0x22eab2ff5  com.apple.imgaudio.AudioAnalytics (1.0 - 1) <568509E7-2444-3AB9-A78B-9F36DA2BB2DE> /System/Library/PrivateFrameworks/AudioAnalytics.framework/Versions/A/AudioAnalytics
+       0x231d17000 -        0x231e66ff7  com.apple.CollectionsInternal (1.1.0 - 102) <05707086-CE88-39A4-84F3-622E04F0DF5A> /System/Library/PrivateFrameworks/CollectionsInternal.framework/Versions/A/CollectionsInternal
+       0x2387b6000 -        0x2387b6ffb  com.apple.FontServices (1.0 - 1) <F78070A2-AAD5-38E4-8A50-66A29BCA2160> /System/Library/PrivateFrameworks/FontServices.framework/Versions/A/FontServices
+       0x2387b7000 -        0x23887afff  libXTFontStaticRegistryData.dylib (309.2.0.3) <DB36CEF2-B5E8-3BE8-8D8D-C56DA3347835> /System/Library/PrivateFrameworks/FontServices.framework/libXTFontStaticRegistryData.dylib
+       0x23887c000 -        0x238888fff  com.apple.FramePacing (1.0 - 1) <5B56E55B-D4AA-3560-9395-65C2D729356D> /System/Library/PrivateFrameworks/FramePacing.framework/Versions/A/FramePacing
+       0x239427000 -        0x23942ffff  libGPUCompilerUtils.dylib (32023.406) <99DE9A8D-AE1E-360C-B128-162EB4A7D3BF> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libGPUCompilerUtils.dylib
+       0x23d57e000 -        0x23d5c5ffb  libllvm-flatbuffers.dylib (32023.406) <194DE919-DB06-35DF-8385-EAB059773B9D> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libllvm-flatbuffers.dylib
+       0x2413a2000 -        0x241482fff  com.apple.InstalledContentLibrary (1.0 - 1.0) <33C949F0-4F22-3E1A-A628-AB938FDBF953> /System/Library/PrivateFrameworks/InstalledContentLibrary.framework/Versions/A/InstalledContentLibrary
+       0x2454db000 -        0x245b70ff7  com.apple.MIL (3402.3 - 3402.3.2) <86506C70-B1CB-33F1-9619-707079F6A646> /System/Library/PrivateFrameworks/MIL.framework/Versions/A/MIL
+       0x247338000 -        0x24738bfff  com.apple.MessageSecurity (1.0 - 115.80.1) <AE9B5751-647E-3331-A3D0-6034D16A7B5F> /System/Library/PrivateFrameworks/MessageSecurity.framework/Versions/A/MessageSecurity
+       0x24a7c6000 -        0x24a98afff  com.apple.ParsingInternal (0.0.1 - 102) <7B3659A4-27F5-3ED0-8D52-C33EE249DE6B> /System/Library/PrivateFrameworks/ParsingInternal.framework/Versions/A/ParsingInternal
+       0x24d979000 -        0x24d996fff  com.apple.accessibility.PhotosensitivityProcessing (1.0 - 1) <16C340C0-9879-3FC2-8FF3-014A05EAC06A> /System/Library/PrivateFrameworks/PhotosensitivityProcessing.framework/Versions/A/PhotosensitivityProcessing
+       0x24e763000 -        0x24e7e4fff  com.apple.ProDisplayLibrary (9.2.1 - 9.2.1) <181ACFAC-7212-3A9D-95AF-091CB1FFB978> /System/Library/PrivateFrameworks/ProDisplayLibrary.framework/Versions/A/ProDisplayLibrary
+       0x24f23b000 -        0x24f244ffb  com.apple.ReflectionInternal (1.0.0 - 102) <B8CECFDD-B977-38DB-B858-71CEC236A651> /System/Library/PrivateFrameworks/ReflectionInternal.framework/Versions/A/ReflectionInternal
+       0x24fed3000 -        0x24fee8ff7  com.apple.RuntimeInternal (1.0.0 - 102) <4C62BB76-FEED-3562-9B83-6B91AD6D7EF1> /System/Library/PrivateFrameworks/RuntimeInternal.framework/Versions/A/RuntimeInternal
+       0x25efe6000 -        0x25efe7fff  com.apple.VideoToolboxParavirtualizationSupport (40.3.2 - 40.3.2) <11749B78-DC74-3B8A-8890-61C8DD086080> /System/Library/PrivateFrameworks/VideoToolboxParavirtualizationSupport.framework/Versions/A/VideoToolboxParavirtualizationSupport
+       0x268b44000 -        0x268b50fff  libCoreEntitlements.dylib (60) <97BA470F-1660-3BA6-B136-7DCC9EBCFBB0> /usr/lib/libCoreEntitlements.dylib
+       0x268ce8000 -        0x268ceffff  libRosetta.dylib (342) <D8407F3E-5522-3C66-8A60-C29567136FD5> /usr/lib/libRosetta.dylib
+       0x268d2e000 -        0x268d38fff  libTLE.dylib (60) <9B5668CD-D7AB-32E9-9709-8F23F1242917> /usr/lib/libTLE.dylib
+       0x268f67000 -        0x269077ff7  libcrypto.46.dylib (106) <3FDC0A45-F59E-3966-954B-6D5084BDF6A6> /usr/lib/libcrypto.46.dylib
+       0x2694b4000 -        0x2694ecfff  libssl.48.dylib (106) <4B29315F-CF5C-33F9-AAC3-D3D48011E359> /usr/lib/libssl.48.dylib
+       0x2696d8000 -        0x2696effff  libswiftDistributed.dylib (6.0.3 - 6.0.3.1.5) <FE73CBEF-B2C1-3127-BB0E-6D8300D02875> /usr/lib/swift/libswiftDistributed.dylib
+       0x269710000 -        0x26971fff7  libswiftObservation.dylib (6.0.3 - 6.0.3.1.5) <D90BC6C5-3413-39EF-8590-9B8B8B4DFC47> /usr/lib/swift/libswiftObservation.dylib
+       0x26972f000 -        0x26973dfff  libswiftRegexBuilder.dylib (6.0.3 - 6.0.3.1.5) <20CB4264-87BE-3DE6-A0E7-228BCF61FC61> /usr/lib/swift/libswiftRegexBuilder.dylib
+       0x26978d000 -        0x2697a7fff  libswiftSystem.dylib (61) <280537C8-7A26-35CC-B20C-AE56C6BC406E> /usr/lib/swift/libswiftSystem.dylib
+       0x269806000 -        0x26980afff  libswift_Builtin_float.dylib (6.0.3 - 6.0.3.1.5) <05F272FE-DCD9-3EE9-9BED-83448AEBE2C5> /usr/lib/swift/libswift_Builtin_float.dylib
+       0x26980b000 -        0x26988dfff  libswift_Concurrency.dylib (6.0.3 - 6.0.3.1.5) <B71CFFCA-9AE0-33F0-9F6F-AEC0CC705CA3> /usr/lib/swift/libswift_Concurrency.dylib
+       0x2698cc000 -        0x269972ff7  libswift_RegexParser.dylib (6.0.3 - 6.0.3.1.5) <AEF7E67F-EB58-372A-AEC8-BC5C0B31E24D> /usr/lib/swift/libswift_RegexParser.dylib
+       0x269973000 -        0x269a25fff  libswift_StringProcessing.dylib (6.0.3 - 6.0.3.1.5) <3E482EDC-F47B-3AA7-8047-B7F0FA5CF0F7> /usr/lib/swift/libswift_StringProcessing.dylib
+       0x269a26000 -        0x269a27fff  libswift_errno.dylib (234.60.42) <BE7F6428-0CFE-3F23-BC2A-F85F512979E9> /usr/lib/swift/libswift_errno.dylib
+       0x269a28000 -        0x269a2afff  libswift_math.dylib (234.60.42) <BEF97918-5E18-3196-9B1B-7042DF931CBD> /usr/lib/swift/libswift_math.dylib
+       0x269a2b000 -        0x269a2bfff  libswift_signal.dylib (234.60.42) <F1A52006-9AC2-3F24-91FF-7AE756976AAD> /usr/lib/swift/libswift_signal.dylib
+       0x269a2c000 -        0x269a2cfff  libswift_stdio.dylib (234.60.42) <E35F7E21-ACFF-3D2B-8B88-9EF16961ED77> /usr/lib/swift/libswift_stdio.dylib
+       0x269a2d000 -        0x269a2dfff  libswift_time.dylib (234.60.42) <FA91508A-A0A8-35D0-A74B-8D0DBA7FD66D> /usr/lib/swift/libswift_time.dylib
+       0x269a2e000 -        0x269a2efff  libswiftsys_time.dylib (234.60.42) <55561AF2-CC0D-36D5-882A-8A66AF7E53E7> /usr/lib/swift/libswiftsys_time.dylib
+       0x269a2f000 -        0x269a2ffff  libswiftunistd.dylib (234.60.42) <913CEEB0-2466-3AF1-8CC1-AA931F1257DE> /usr/lib/swift/libswiftunistd.dylib
+       0x269b72000 -        0x269b75fff  libsystem_darwindirectory.dylib (122) <E3036CCB-95CF-3BD6-AA4F-58543B923EA5> /usr/lib/system/libsystem_darwindirectory.dylib
+       0x269b76000 -        0x269b7cfff  libsystem_eligibility.dylib (160.60.1) <4C8AC363-F171-3A08-85F8-7542B9C79A87> /usr/lib/system/libsystem_eligibility.dylib
+       0x269b7d000 -        0x269b82fff  libsystem_sanitizers.dylib (17.1) <F0A7379E-6861-3B3F-BB56-1B08B1BEE98A> /usr/lib/system/libsystem_sanitizers.dylib

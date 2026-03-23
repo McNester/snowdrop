@@ -25,6 +25,8 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub is_pk: bool,
     pub table_id: u32,
+    pub indexed: bool,
+    pub index_name: Option<String>,
 }
 
 impl Neo4jConnection {
@@ -413,7 +415,8 @@ impl Neo4jConnection {
                     "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
                      -[:HAS_COLUMN]->(c:Column) \
                      RETURN c.id AS id, c.name AS name, c.data_type AS data_type, \
-                            c.nullable AS nullable, c.is_pk AS is_pk, c.table_id AS table_id \
+                            c.nullable AS nullable, c.is_pk AS is_pk, c.table_id AS table_id, \
+                            COALESCE(c.indexed, false) AS indexed, c.index_name AS index_name \
                      ORDER BY c.id",
                 )
                 .param("db_name", db_name)
@@ -429,6 +432,8 @@ impl Neo4jConnection {
             let nullable: bool = row.get("nullable")?;
             let is_pk: bool = row.get("is_pk")?;
             let table_id: i64 = row.get("table_id")?;
+            let indexed: bool = row.get("indexed").unwrap_or(false);
+            let index_name: Option<String> = row.get("index_name").ok();
             columns.push(ColumnInfo {
                 id: id as u32,
                 name,
@@ -436,6 +441,8 @@ impl Neo4jConnection {
                 nullable,
                 is_pk,
                 table_id: table_id as u32,
+                indexed,
+                index_name,
             });
         }
         Ok(columns)
@@ -493,6 +500,8 @@ impl Neo4jConnection {
             nullable,
             is_pk: false,
             table_id: table.id,
+            indexed: false,
+            index_name: None,
         })
     }
 
@@ -528,6 +537,114 @@ impl Neo4jConnection {
             }
         }
         Ok(rows)
+    }
+
+    // ── CREATE INDEX ──
+
+    /// Marks a column as indexed in Neo4j. Does not create index entries --
+    /// the caller is responsible for backfilling via executor::index::backfill_index.
+    pub async fn create_index(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        index_name: &str,
+        column_name: &str,
+    ) -> Result<ColumnInfo> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        let col = cols.iter().find(|c| c.name == column_name)
+            .context(format!("column '{}' not found in table '{}'", column_name, table_name))?;
+
+        if col.indexed {
+            bail!("column '{}' is already indexed", column_name);
+        }
+
+        // Check index name uniqueness across this table
+        if cols.iter().any(|c| c.index_name.as_deref() == Some(index_name)) {
+            bail!("index '{}' already exists on table '{}'", index_name, table_name);
+        }
+
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     -[:HAS_COLUMN]->(c:Column {name: $col_name}) \
+                     SET c.indexed = true, c.index_name = $index_name",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("col_name", column_name)
+                .param("index_name", index_name),
+            )
+            .await
+            .context("failed to mark column as indexed")?;
+
+        info!(db_name, table_name, column_name, index_name, "index created");
+        Ok(col.clone())
+    }
+
+    // ── DROP INDEX ──
+
+    /// Removes index metadata from a column. Returns the column name.
+    /// The caller is responsible for deleting index entries via executor::index::drop_index_entries.
+    pub async fn drop_index(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        index_name: &str,
+    ) -> Result<ColumnInfo> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        let col = cols.iter()
+            .find(|c| c.index_name.as_deref() == Some(index_name))
+            .context(format!("index '{}' not found on table '{}'", index_name, table_name))?
+            .clone();
+
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     -[:HAS_COLUMN]->(c:Column {index_name: $index_name}) \
+                     SET c.indexed = false \
+                     REMOVE c.index_name",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("index_name", index_name),
+            )
+            .await
+            .context("failed to remove index metadata")?;
+
+        info!(db_name, table_name, index_name, col_name = col.name, "index dropped");
+        Ok(col)
+    }
+
+    // ── LIST INDEXES ──
+
+    /// Returns (index_name, column_name) for all indexed columns in a table.
+    pub async fn list_indexes(
+        &self,
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        Ok(cols.into_iter()
+            .filter_map(|c| {
+                if c.indexed {
+                    Some((c.index_name.unwrap_or_default(), c.name))
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    /// Returns all indexed columns for a table.
+    pub async fn get_indexed_columns(
+        &self,
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<ColumnInfo>> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        Ok(cols.into_iter().filter(|c| c.indexed).collect())
     }
 
     /// Lookup the PK column ID for a table by db_id and table_id.

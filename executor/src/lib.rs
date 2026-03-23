@@ -1,6 +1,7 @@
 pub mod column_store;
 pub mod dml;
 pub mod filter;
+pub mod index;
 pub mod kvrocks;
 pub mod rocks;
 pub mod row_format;

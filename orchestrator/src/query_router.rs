@@ -1,4 +1,5 @@
 use executor::column_store::{self, Bitmap, CmpOp, TableColumns, TypedColumn};
+use executor::index::{self, encode_index_value};
 use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
@@ -205,6 +206,19 @@ impl QueryRouter {
     }
 
     async fn dispatch_statement<'a>(&self, stmt: Statement) -> PgWireResult<Response<'a>> {
+        let t_start = std::time::Instant::now();
+        let stmt_type = classify_statement(&stmt);
+
+        let result = self.dispatch_statement_inner(stmt).await;
+
+        let elapsed = t_start.elapsed().as_secs_f64();
+        metrics::counter!("snowdrop_queries_total", "type" => stmt_type).increment(1);
+        metrics::histogram!("snowdrop_query_duration_seconds", "type" => stmt_type).record(elapsed);
+
+        result
+    }
+
+    async fn dispatch_statement_inner<'a>(&self, stmt: Statement) -> PgWireResult<Response<'a>> {
         match stmt {
             Statement::CreateDatabase { db_name, .. } => {
                 self.handle_create_database(&db_name.to_string()).await
@@ -219,6 +233,10 @@ impl QueryRouter {
                 sqlparser::ast::ObjectType::Table => {
                     let name = names.first().map(|n| n.to_string()).unwrap_or_default();
                     self.handle_drop_table(&name).await
+                }
+                sqlparser::ast::ObjectType::Index => {
+                    let name = names.first().map(|n| n.to_string()).unwrap_or_default();
+                    self.handle_drop_index(&name).await
                 }
                 _ => Err(user_error(format!(
                     "DROP {:?} is not supported",
@@ -250,6 +268,9 @@ impl QueryRouter {
                     return self.handle_info_schema_columns().await;
                 }
                 self.handle_select(*q).await
+            }
+            Statement::CreateIndex(ci) => {
+                self.handle_create_index(ci).await
             }
             _ => {
                 warn!(stmt = ?stmt, "unhandled statement type");
@@ -393,6 +414,90 @@ impl QueryRouter {
                 other
             ))),
         }
+    }
+
+    // ── Index DDL handlers (M7) ──
+
+    async fn handle_create_index<'a>(
+        &self,
+        ci: sqlparser::ast::CreateIndex,
+    ) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+
+        let table_name_obj = ci.table_name;
+        let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
+
+        let index_name = ci.name
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unnamed_index".to_string());
+
+        if ci.columns.is_empty() {
+            return Err(user_error("CREATE INDEX requires at least one column".to_string()));
+        }
+        let col_name = ci.columns[0].expr.to_string();
+
+        // Mark column as indexed in Neo4j
+        let neo4j = self.neo4j.read().await;
+        let col = neo4j
+            .create_index(&db_name, &table_name, &index_name, &col_name)
+            .await
+            .map_err(to_err)?;
+
+        // Get table info for backfill
+        let table = self.cached_get_table(&db_name, &table_name).await?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+        let db = self.cached_get_database(&db_name).await?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let schema_cols = self.cached_describe_table(&db_name, &table_name).await?;
+
+        // Backfill index entries for existing rows
+        let count = index::backfill_index(
+            self.storage.as_ref(), db.id, table.id, col.id, &col.data_type, &schema_cols,
+        ).await.map_err(to_err)?;
+
+        tracing::info!(index_name, col_name, count, "index created and backfilled");
+
+        // Invalidate caches
+        let mut cache = self.schema_cache.write().await;
+        cache.invalidate_table(&db_name, &table_name);
+        drop(cache);
+        self.invalidate_column_cache(db.id, table.id).await;
+
+        Ok(Response::Execution(Tag::new("CREATE INDEX")))
+    }
+
+    async fn handle_drop_index<'a>(&self, index_name: &str) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+
+        // Need to find which table this index belongs to by searching all tables
+        let neo4j = self.neo4j.read().await;
+        let tables = neo4j.show_tables(&current_db).await.map_err(to_err)?;
+
+        for table in &tables {
+            let indexes = neo4j.list_indexes(&current_db, &table.name).await.map_err(to_err)?;
+            if let Some((_, col_name)) = indexes.iter().find(|(name, _)| name == index_name) {
+                let col = neo4j.drop_index(&current_db, &table.name, index_name)
+                    .await.map_err(to_err)?;
+
+                let db = self.cached_get_database(&current_db).await?
+                    .ok_or_else(|| user_error("database not found".to_string()))?;
+
+                index::drop_index_entries(
+                    self.storage.as_ref(), db.id, table.id, col.id,
+                ).await.map_err(to_err)?;
+
+                tracing::info!(index_name, col_name, "index dropped");
+
+                let mut cache = self.schema_cache.write().await;
+                cache.invalidate_table(&current_db, &table.name);
+                drop(cache);
+                self.invalidate_column_cache(db.id, table.id).await;
+
+                return Ok(Response::Execution(Tag::new("DROP INDEX")));
+            }
+        }
+
+        Err(user_error(format!("index '{}' does not exist", index_name)))
     }
 
     // ── DML handlers (M3) ──
@@ -606,21 +711,32 @@ impl QueryRouter {
             &schema_cols,
         );
 
-        // Columnar scan: SIMD-filtered typed arrays, only materialize matching rows
+        // Try index scan first; fall back to columnar scan
         let t_fetch = std::time::Instant::now();
-        let filtered = self
-            .fetch_columnar(
-                db.id, table.id, &schema_cols,
-                &needed_col_ids,
-                select.selection.as_ref(),
-            )
-            .await?;
+        let (filtered, scan_type) = if let Some(pred) = select.selection.as_ref() {
+            if let Some(rows) = self.try_index_scan(
+                db.id, table.id, &schema_cols, &needed_col_ids, pred,
+            ).await? {
+                (rows, "index")
+            } else {
+                let rows = self.fetch_columnar(
+                    db.id, table.id, &schema_cols, &needed_col_ids, Some(pred),
+                ).await?;
+                (rows, "columnar")
+            }
+        } else {
+            let rows = self.fetch_columnar(
+                db.id, table.id, &schema_cols, &needed_col_ids, None,
+            ).await?;
+            (rows, "columnar")
+        };
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
         let filtered_count = filtered.len();
 
         tracing::info!(
             schema_ms = format!("{:.1}", schema_ms),
             fetch_ms = format!("{:.1}", fetch_ms),
+            scan_type,
             needed_cols = needed_col_ids.len(),
             filtered_rows = filtered_count,
             total_ms = format!("{:.1}", t_total.elapsed().as_secs_f64() * 1000.0),
@@ -1038,7 +1154,130 @@ impl QueryRouter {
             "columnar scan"
         );
 
+        metrics::counter!("snowdrop_full_scans_total").increment(1);
+        metrics::counter!("snowdrop_rows_scanned_total").increment(table_cols.row_count as u64);
+        metrics::counter!("snowdrop_rows_returned_total").increment(match_count as u64);
+        if cache_hit {
+            metrics::counter!("snowdrop_column_cache_hits").increment(1);
+        } else {
+            metrics::counter!("snowdrop_column_cache_misses").increment(1);
+        }
+
         Ok(rows)
+    }
+
+    /// Try to satisfy the query using a secondary index scan.
+    /// Returns Some(rows) if an index was used, None to fall back to columnar scan.
+    async fn try_index_scan(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+        needed_col_ids: &HashSet<u32>,
+        predicate: &Expr,
+    ) -> PgWireResult<Option<Vec<Row>>> {
+        // Extract simple predicates that can use an index
+        let indexed_cols: Vec<&ColumnInfo> = schema_cols.iter().filter(|c| c.indexed).collect();
+        if indexed_cols.is_empty() {
+            return Ok(None);
+        }
+
+        // Try to extract an index-usable predicate from the WHERE clause
+        let candidate = extract_index_candidate(predicate, &indexed_cols);
+        if candidate.is_none() {
+            return Ok(None);
+        }
+        let (col, op, encoded_value, encoded_high) = candidate.unwrap();
+
+        let t_index = std::time::Instant::now();
+
+        // Execute index scan
+        let row_ids = match op.as_str() {
+            "eq" => {
+                index::index_point_lookup(
+                    self.storage.as_ref(), db_id, table_id, col.id, &encoded_value,
+                ).await.map_err(to_err)?
+            }
+            "range" => {
+                let high = encoded_high.as_deref();
+                index::index_range_scan(
+                    self.storage.as_ref(), db_id, table_id, col.id,
+                    Some(&encoded_value), high, true, false,
+                ).await.map_err(to_err)?
+            }
+            "gt" => {
+                index::index_range_scan(
+                    self.storage.as_ref(), db_id, table_id, col.id,
+                    Some(&encoded_value), None, false, false,
+                ).await.map_err(to_err)?
+            }
+            "gte" => {
+                index::index_range_scan(
+                    self.storage.as_ref(), db_id, table_id, col.id,
+                    Some(&encoded_value), None, true, false,
+                ).await.map_err(to_err)?
+            }
+            "lt" => {
+                index::index_range_scan(
+                    self.storage.as_ref(), db_id, table_id, col.id,
+                    None, Some(&encoded_value), false, false,
+                ).await.map_err(to_err)?
+            }
+            "lte" => {
+                index::index_range_scan(
+                    self.storage.as_ref(), db_id, table_id, col.id,
+                    None, Some(&encoded_value), false, true,
+                ).await.map_err(to_err)?
+            }
+            _ => return Ok(None),
+        };
+
+        if row_ids.is_empty() {
+            tracing::info!(col = col.name, op, "index scan: 0 rows");
+            return Ok(Some(Vec::new()));
+        }
+
+        // Fetch rows by row_ids via MGET
+        let row_keys: Vec<String> = row_ids.iter()
+            .filter_map(|rid| keys::build_row_key(db_id, table_id, *rid).ok())
+            .collect();
+        let values = self.storage.mget(&row_keys).await.map_err(to_err)?;
+
+        // Deserialize and apply remaining predicates
+        let mut rows = Vec::new();
+        for val in values.into_iter().flatten() {
+            let cols = deserialize_columns(&val);
+            let mut row = Row::new();
+            for sc in schema_cols {
+                if needed_col_ids.contains(&sc.id) {
+                    let raw = cols.iter().find(|(id, _)| *id == sc.id).map(|(_, v)| v.as_slice());
+                    let typed = match raw {
+                        Some(b) if !b.is_empty() => TypedValue::from_bytes(b, &sc.data_type),
+                        _ => TypedValue::Null,
+                    };
+                    row.insert(sc.name.to_lowercase(), typed);
+                }
+            }
+            // Apply the full predicate (handles AND with non-indexed columns)
+            if evaluate_predicate(predicate, &row, schema_cols) {
+                rows.push(row);
+            }
+        }
+
+        let index_ms = t_index.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(
+            col = col.name,
+            op,
+            index_hits = row_ids.len(),
+            post_filter = rows.len(),
+            index_ms = format!("{:.2}", index_ms),
+            "index scan"
+        );
+
+        metrics::counter!("snowdrop_index_scans_total").increment(1);
+        metrics::counter!("snowdrop_rows_returned_total").increment(rows.len() as u64);
+
+        Ok(Some(rows))
     }
 
     /// Invalidate the column cache for a table (called after INSERT/UPDATE/DELETE).
@@ -1402,6 +1641,18 @@ fn text_field(name: &str) -> FieldInfo {
 fn query_response<'a>(fields: Arc<Vec<FieldInfo>>, rows: Vec<DataRow>) -> QueryResponse<'a> {
     let row_stream = stream::iter(rows.into_iter().map(Ok));
     QueryResponse::new(fields, row_stream)
+}
+
+fn classify_statement(stmt: &Statement) -> &'static str {
+    match stmt {
+        Statement::Query(_) => "select",
+        Statement::Insert(_) => "insert",
+        Statement::Update { .. } => "update",
+        Statement::Delete(_) => "delete",
+        Statement::CreateDatabase { .. } | Statement::CreateTable(_) | Statement::CreateIndex(_) => "ddl",
+        Statement::Drop { .. } | Statement::AlterTable { .. } => "ddl",
+        _ => "other",
+    }
 }
 
 fn to_err(e: anyhow::Error) -> PgWireError {
@@ -2273,4 +2524,88 @@ fn reverse_cmp(op: CmpOp) -> CmpOp {
         CmpOp::GtEq => CmpOp::LtEq,
         CmpOp::Eq => CmpOp::Eq,
     }
+}
+
+/// Extract a single index-usable predicate from a WHERE clause.
+/// Returns (column, op_type, encoded_value, optional_high_for_range).
+/// op_type: "eq", "gt", "gte", "lt", "lte", "range"
+fn extract_index_candidate<'a>(
+    expr: &Expr,
+    indexed_cols: &[&'a ColumnInfo],
+) -> Option<(&'a ColumnInfo, String, String, Option<String>)> {
+    match expr {
+        // Simple comparison: col op literal
+        Expr::BinaryOp { left, op, right } => {
+            use sqlparser::ast::BinaryOperator;
+
+            // Handle AND: try left first, then right
+            if matches!(op, BinaryOperator::And) {
+                let left_result = extract_index_candidate(left, indexed_cols);
+                if left_result.is_some() {
+                    return left_result;
+                }
+                return extract_index_candidate(right, indexed_cols);
+            }
+
+            // col op literal
+            let (col_name, literal, op_str) = if let (Expr::Identifier(ident), Some(lit)) =
+                (left.as_ref(), resolve_literal(right))
+            {
+                let op_str = match op {
+                    BinaryOperator::Eq => "eq",
+                    BinaryOperator::Gt => "gt",
+                    BinaryOperator::GtEq => "gte",
+                    BinaryOperator::Lt => "lt",
+                    BinaryOperator::LtEq => "lte",
+                    _ => return None,
+                };
+                (ident.value.to_lowercase(), lit, op_str)
+            } else if let (Some(lit), Expr::Identifier(ident)) =
+                (resolve_literal(left), right.as_ref())
+            {
+                // literal op col -> reverse the op
+                let op_str = match op {
+                    BinaryOperator::Eq => "eq",
+                    BinaryOperator::Gt => "lte",
+                    BinaryOperator::GtEq => "lt",
+                    BinaryOperator::Lt => "gte",
+                    BinaryOperator::LtEq => "gt",
+                    _ => return None,
+                };
+                (ident.value.to_lowercase(), lit, op_str)
+            } else {
+                return None;
+            };
+
+            // Check if the column is indexed
+            let col = indexed_cols.iter().find(|c| c.name.to_lowercase() == col_name)?;
+
+            let encoded = encode_typed_value(&literal, &col.data_type);
+            Some((col, op_str.to_string(), encoded, None))
+        }
+        // BETWEEN: col BETWEEN low AND high
+        Expr::Between { expr: col_expr, low, high, negated, .. } => {
+            if *negated {
+                return None;
+            }
+            if let Expr::Identifier(ident) = col_expr.as_ref() {
+                let col_name = ident.value.to_lowercase();
+                let col = indexed_cols.iter().find(|c| c.name.to_lowercase() == col_name)?;
+                let low_val = resolve_literal(low)?;
+                let high_val = resolve_literal(high)?;
+                let encoded_low = encode_typed_value(&low_val, &col.data_type);
+                let encoded_high = encode_typed_value(&high_val, &col.data_type);
+                Some((col, "range".to_string(), encoded_low, Some(encoded_high)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Encode a TypedValue for index lookup using the same encoding as index storage.
+fn encode_typed_value(val: &TypedValue, data_type: &str) -> String {
+    let raw = val.to_string();
+    encode_index_value(raw.as_bytes(), data_type)
 }

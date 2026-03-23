@@ -1,3 +1,4 @@
+use crate::index::{build_index_entries_for_row, build_index_keys_for_row};
 use crate::row_format::{encode_row, RowView};
 use crate::storage::StorageBackend;
 use anyhow::{bail, Context, Result};
@@ -84,10 +85,20 @@ impl<'a> WriteEngine<'a> {
         // Step 3: WAL status -> Neo4jCommitted
         self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
-        // Step 4: Storage write (one key per row)
+        // Step 4: Storage write (row + index entries in one batch)
         let row_key = build_row_key(db.id, table.id, row_id_raw)?;
         let row_value = serialize_columns(&wal_columns);
-        self.storage.mset(&[(row_key, row_value)]).await?;
+        let mut pairs = vec![(row_key, row_value)];
+
+        // Write index entries for any indexed columns
+        let indexed_cols = get_indexed_cols(&schema_cols);
+        if !indexed_cols.is_empty() {
+            pairs.extend(build_index_entries_for_row(
+                db.id, table.id, row_id_raw, &wal_columns, &indexed_cols,
+            ));
+        }
+
+        self.storage.mset(&pairs).await?;
 
         // Step 5: WAL status -> Committed
         self.wal.update_status(file_offset, WalStatus::Committed)?;
@@ -140,16 +151,28 @@ impl<'a> WriteEngine<'a> {
             // WAL append
             let (_entry_id, file_offset) = self.wal.append(payload)?;
 
-            // WAL -> Neo4jCommitted (no index updates in M3)
             self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
             // Read-modify-write: merge updated columns into existing row
             let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
-            let mut existing = if let Some(data) = self.storage.get(&row_key).await? {
-                deserialize_columns(&data)
+            let existing_data = self.storage.get(&row_key).await?;
+            let mut existing = if let Some(ref data) = existing_data {
+                deserialize_columns(data)
             } else {
                 Vec::new()
             };
+
+            // Delete old index entries, then build new ones after merge
+            let indexed_cols = get_indexed_cols(&schema_cols);
+            if !indexed_cols.is_empty() {
+                let old_keys = build_index_keys_for_row(
+                    db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                );
+                if !old_keys.is_empty() {
+                    self.storage.del(&old_keys).await?;
+                }
+            }
+
             for (col_id, val) in &wal_columns {
                 if let Some(entry) = existing.iter_mut().find(|(id, _)| id == col_id) {
                     entry.1 = val.clone();
@@ -158,16 +181,23 @@ impl<'a> WriteEngine<'a> {
                 }
             }
             let row_value = serialize_columns(&existing);
-            self.storage.mset(&[(row_key, row_value)]).await?;
+            let mut pairs = vec![(row_key, row_value)];
+
+            // Write new index entries
+            if !indexed_cols.is_empty() {
+                pairs.extend(build_index_entries_for_row(
+                    db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                ));
+            }
+
+            self.storage.mset(&pairs).await?;
 
             // If PK column is being updated, update the pk: mapping
             let pk_col = schema_cols.iter().find(|c| c.is_pk);
             if let Some(pk_col) = pk_col {
                 if let Some((_, new_pk_val)) = wal_columns.iter().find(|(id, _)| *id == pk_col.id) {
-                    // Remove old pk mapping
                     let old_pk_key = format!("pk:{}:{}:{}", db.id, table.id, where_val);
                     self.storage.del(&[old_pk_key]).await?;
-                    // Add new pk mapping
                     let new_pk_str = String::from_utf8_lossy(new_pk_val);
                     let new_pk_key = format!("pk:{}:{}:{}", db.id, table.id, new_pk_str);
                     self.storage.mset(&[(new_pk_key, row_id_str.as_bytes().to_vec())]).await?;
@@ -217,22 +247,35 @@ impl<'a> WriteEngine<'a> {
 
             let (_entry_id, file_offset) = self.wal.append(payload)?;
 
-            // Neo4j: delete IndexEntry nodes for this row (future: M7)
-            // For now, just delete RowMeta if exists
+            // Delete RowMeta if exists
             self.neo4j.graph()
                 .run(neo4rs::query(
                     "MATCH (m:RowMeta {row_id: $row_id}) DELETE m"
                 ).param("row_id", row_id_str.as_str()))
                 .await
-                .ok(); // Ignore if not found
+                .ok();
 
             self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
-            // Delete the row key
+            // Read row to get column values for index cleanup
             let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
+            let indexed_cols = get_indexed_cols(&schema_cols);
+            if !indexed_cols.is_empty() {
+                if let Some(data) = self.storage.get(&row_key).await? {
+                    let existing = deserialize_columns(&data);
+                    let old_keys = build_index_keys_for_row(
+                        db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                    );
+                    if !old_keys.is_empty() {
+                        self.storage.del(&old_keys).await?;
+                    }
+                }
+            }
+
+            // Delete the row key
             self.storage.del(&[row_key]).await?;
 
-            // Also delete the pk: mapping
+            // Delete the pk: mapping
             if schema_cols.iter().any(|c| c.is_pk) {
                 let pk_key = format!("pk:{}:{}:{}", db.id, table.id, where_val);
                 self.storage.del(&[pk_key]).await?;
@@ -318,6 +361,11 @@ impl<'a> WriteEngine<'a> {
     }
 }
 
+/// Filter schema columns to only indexed ones.
+fn get_indexed_cols(schema_cols: &[ColumnInfo]) -> Vec<ColumnInfo> {
+    schema_cols.iter().filter(|c| c.indexed).cloned().collect()
+}
+
 /// Resolve column names to ColumnInfo + values.
 /// If column_names is empty, assumes all columns in schema order.
 fn resolve_columns(
@@ -396,7 +444,10 @@ pub async fn replay_wal_entries(
     entries: &[wal::WalEntry],
     wal_file: &WalFile,
 ) -> Result<()> {
-    let mut pk_cache: std::collections::HashMap<(u32, u32), Option<u32>> = std::collections::HashMap::new();
+    use std::collections::HashMap;
+
+    let mut pk_cache: HashMap<(u32, u32), Option<u32>> = HashMap::new();
+    let mut idx_cache: HashMap<(u32, u32), Vec<ColumnInfo>> = HashMap::new();
 
     for entry in entries {
         match &entry.payload {
@@ -404,28 +455,49 @@ pub async fn replay_wal_entries(
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
                 let row_value = serialize_columns(columns);
-                storage.mset(&[(row_key, row_value)]).await?;
+                let mut pairs = vec![(row_key, row_value)];
 
                 let pk_col_id = lookup_pk_col_id(neo4j, &mut pk_cache, *db_id, *table_id).await?;
                 if let Some(pk_col_id) = pk_col_id {
                     if let Some((_, pk_value)) = columns.iter().find(|(id, _)| *id == pk_col_id) {
                         let pk_str = String::from_utf8_lossy(pk_value);
                         let pk_key = format!("pk:{}:{}:{}", db_id, table_id, pk_str);
-                        storage.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
+                        pairs.push((pk_key, row_id.as_bytes().to_vec()));
                     }
                 }
 
+                // Replay index entries
+                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                if !indexed.is_empty() {
+                    pairs.extend(build_index_entries_for_row(
+                        *db_id, *table_id, row_id_raw, columns, &indexed,
+                    ));
+                }
+
+                storage.mset(&pairs).await?;
                 info!(entry_id = entry.header.entry_id, "replayed INSERT");
             }
             WalPayload::V1(WalPayloadV1::Update { db_id, table_id, row_id, columns }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
-                // Read-modify-write for partial update
+
                 let mut existing = if let Some(data) = storage.get(&row_key).await? {
                     deserialize_columns(&data)
                 } else {
                     Vec::new()
                 };
+
+                // Delete old index entries
+                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                if !indexed.is_empty() {
+                    let old_keys = build_index_keys_for_row(
+                        *db_id, *table_id, row_id_raw, &existing, &indexed,
+                    );
+                    if !old_keys.is_empty() {
+                        storage.del(&old_keys).await?;
+                    }
+                }
+
                 for (col_id, val) in columns {
                     if let Some(entry) = existing.iter_mut().find(|(id, _)| id == col_id) {
                         entry.1 = val.clone();
@@ -434,12 +506,36 @@ pub async fn replay_wal_entries(
                     }
                 }
                 let row_value = serialize_columns(&existing);
-                storage.mset(&[(row_key, row_value)]).await?;
+                let mut pairs = vec![(row_key, row_value)];
+
+                // Write new index entries
+                if !indexed.is_empty() {
+                    pairs.extend(build_index_entries_for_row(
+                        *db_id, *table_id, row_id_raw, &existing, &indexed,
+                    ));
+                }
+
+                storage.mset(&pairs).await?;
                 info!(entry_id = entry.header.entry_id, "replayed UPDATE");
             }
             WalPayload::V1(WalPayloadV1::Delete { db_id, table_id, row_id, .. }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
+
+                // Delete index entries before deleting row
+                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                if !indexed.is_empty() {
+                    if let Some(data) = storage.get(&row_key).await? {
+                        let existing = deserialize_columns(&data);
+                        let old_keys = build_index_keys_for_row(
+                            *db_id, *table_id, row_id_raw, &existing, &indexed,
+                        );
+                        if !old_keys.is_empty() {
+                            storage.del(&old_keys).await?;
+                        }
+                    }
+                }
+
                 storage.del(&[row_key]).await?;
                 info!(entry_id = entry.header.entry_id, "replayed DELETE");
             }
@@ -447,6 +543,39 @@ pub async fn replay_wal_entries(
         wal_file.update_status(entry.file_offset, WalStatus::Committed)?;
     }
     Ok(())
+}
+
+/// Resolve indexed columns for a table during WAL replay, caching results.
+async fn lookup_indexed_cols(
+    neo4j: &Neo4jConnection,
+    cache: &mut std::collections::HashMap<(u32, u32), Vec<ColumnInfo>>,
+    db_id: u32,
+    table_id: u32,
+) -> Result<Vec<ColumnInfo>> {
+    if let Some(cached) = cache.get(&(db_id, table_id)) {
+        return Ok(cached.clone());
+    }
+
+    // Find the database and table names from IDs to call get_indexed_columns
+    // For replay, we need to look up via Neo4j by IDs
+    let mut result = neo4j.graph()
+        .execute(neo4rs::query(
+            "MATCH (db:Database)-[:HAS_TABLE]->(t:Table {id: $table_id}) \
+             WHERE db.id = $db_id \
+             RETURN db.name AS db_name, t.name AS table_name"
+        ).param("db_id", db_id as i64).param("table_id", table_id as i64))
+        .await?;
+
+    let indexed = if let Some(row) = result.next().await? {
+        let db_name: String = row.get("db_name")?;
+        let table_name: String = row.get("table_name")?;
+        neo4j.get_indexed_columns(&db_name, &table_name).await?
+    } else {
+        Vec::new()
+    };
+
+    cache.insert((db_id, table_id), indexed.clone());
+    Ok(indexed)
 }
 
 /// Resolve the PK column ID for a table, caching results.
@@ -478,6 +607,8 @@ mod tests {
                 nullable: false,
                 is_pk: true,
                 table_id: 1,
+                indexed: false,
+                index_name: None,
             },
             ColumnInfo {
                 id: 2,
@@ -486,6 +617,8 @@ mod tests {
                 nullable: false,
                 is_pk: false,
                 table_id: 1,
+                indexed: false,
+                index_name: None,
             },
             ColumnInfo {
                 id: 3,
@@ -494,6 +627,8 @@ mod tests {
                 nullable: true,
                 is_pk: false,
                 table_id: 1,
+                indexed: false,
+                index_name: None,
             },
         ]
     }

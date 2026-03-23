@@ -430,9 +430,9 @@ mod tests {
 
     fn test_schema() -> Vec<ColumnInfo> {
         vec![
-            ColumnInfo { id: 1, name: "id".into(), data_type: "BIGINT".into(), nullable: false, is_pk: true, table_id: 1 },
-            ColumnInfo { id: 2, name: "name".into(), data_type: "VARCHAR(255)".into(), nullable: false, is_pk: false, table_id: 1 },
-            ColumnInfo { id: 3, name: "age".into(), data_type: "INT".into(), nullable: true, is_pk: false, table_id: 1 },
+            ColumnInfo { id: 1, name: "id".into(), data_type: "BIGINT".into(), nullable: false, is_pk: true, table_id: 1, indexed: false, index_name: None },
+            ColumnInfo { id: 2, name: "name".into(), data_type: "VARCHAR(255)".into(), nullable: false, is_pk: false, table_id: 1, indexed: false, index_name: None },
+            ColumnInfo { id: 3, name: "age".into(), data_type: "INT".into(), nullable: true, is_pk: false, table_id: 1, indexed: false, index_name: None },
         ]
     }
 

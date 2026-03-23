@@ -23,3 +23,5 @@ bytes.workspace = true
 serde.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true

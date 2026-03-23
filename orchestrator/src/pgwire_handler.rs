@@ -104,9 +104,11 @@ pub async fn serve_pgwire(
 
         let h = handlers.clone();
         tokio::spawn(async move {
+            metrics::gauge!("snowdrop_active_connections").increment(1.0);
             if let Err(e) = process_socket(socket, None, h).await {
                 error!(%peer_addr, "connection error: {e}");
             }
+            metrics::gauge!("snowdrop_active_connections").decrement(1.0);
             info!(%peer_addr, "client disconnected");
         });
     }
