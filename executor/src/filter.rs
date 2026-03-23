@@ -84,7 +84,7 @@ fn eval_binary_op(
 }
 
 /// Resolve an AST expression to a TypedValue using the row's data.
-fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedValue {
+pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedValue {
     match expr {
         Expr::Identifier(ident) => {
             let col_name = ident.value.to_lowercase();
@@ -114,8 +114,100 @@ fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedVal
                 TypedValue::Null
             }
         }
+        Expr::BinaryOp { left, op, right } => {
+            eval_arithmetic(left, op, right, row, schema_cols)
+        }
+        Expr::Nested(inner) => resolve_value(inner, row, schema_cols),
+        Expr::Case { operand, conditions, results, else_result, .. } => {
+            eval_case(operand.as_deref(), conditions, results, else_result.as_deref(), row, schema_cols)
+        }
         _ => TypedValue::Null,
     }
+}
+
+/// Evaluate arithmetic binary operations (+, -, *, /).
+fn eval_arithmetic(
+    left: &Expr,
+    op: &BinaryOperator,
+    right: &Expr,
+    row: &Row,
+    schema_cols: &[ColumnInfo],
+) -> TypedValue {
+    let lval = resolve_value(left, row, schema_cols);
+    let rval = resolve_value(right, row, schema_cols);
+
+    if lval.is_null() || rval.is_null() {
+        return TypedValue::Null;
+    }
+
+    let lf = lval.as_f64();
+    let rf = rval.as_f64();
+
+    match (lf, rf) {
+        (Some(l), Some(r)) => {
+            let result = match op {
+                BinaryOperator::Plus => l + r,
+                BinaryOperator::Minus => l - r,
+                BinaryOperator::Multiply => l * r,
+                BinaryOperator::Divide => {
+                    if r == 0.0 {
+                        return TypedValue::Null;
+                    }
+                    l / r
+                }
+                BinaryOperator::Modulo => {
+                    if r == 0.0 {
+                        return TypedValue::Null;
+                    }
+                    l % r
+                }
+                _ => return TypedValue::Null,
+            };
+            // Preserve integer type when both inputs are integers and result is whole
+            if matches!(lval, TypedValue::Int(_))
+                && matches!(rval, TypedValue::Int(_))
+                && result == (result as i64) as f64
+                && !matches!(op, BinaryOperator::Divide)
+            {
+                TypedValue::Int(result as i64)
+            } else {
+                TypedValue::Float(result)
+            }
+        }
+        _ => TypedValue::Null,
+    }
+}
+
+/// Evaluate a CASE WHEN expression.
+fn eval_case(
+    operand: Option<&Expr>,
+    conditions: &[Expr],
+    results: &[Expr],
+    else_result: Option<&Expr>,
+    row: &Row,
+    schema_cols: &[ColumnInfo],
+) -> TypedValue {
+    if let Some(op) = operand {
+        // Simple CASE: CASE expr WHEN val1 THEN res1 ...
+        let op_val = resolve_value(op, row, schema_cols);
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            let cond_val = resolve_value(cond, row, schema_cols);
+            if op_val.sql_eq(&cond_val) {
+                return resolve_value(res, row, schema_cols);
+            }
+        }
+    } else {
+        // Searched CASE: CASE WHEN cond1 THEN res1 ...
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            if evaluate_predicate(cond, row, schema_cols) {
+                return resolve_value(res, row, schema_cols);
+            }
+        }
+    }
+    // ELSE
+    else_result
+        .map(|e| resolve_value(e, row, schema_cols))
+        .unwrap_or(TypedValue::Null)
 }
 
 /// Convert a SQL literal value to TypedValue.
@@ -156,6 +248,7 @@ pub fn bytes_to_row(col_values: &[(&ColumnInfo, Option<Vec<u8>>)]) -> Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlparser::ast::SelectItem;
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
 
@@ -284,5 +377,52 @@ mod tests {
         assert_eq!(row["id"], TypedValue::Int(42));
         assert_eq!(row["name"], TypedValue::Text("alice".into()));
         assert_eq!(row["age"], TypedValue::Null);
+    }
+
+    #[test]
+    fn arithmetic_multiply_in_where() {
+        let expr = parse_where("id * age > 20");
+        assert!(evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn arithmetic_add_in_where() {
+        let expr = parse_where("id + age = 31");
+        assert!(evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn arithmetic_subtract_in_where() {
+        let expr = parse_where("age - id = 29");
+        assert!(evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn arithmetic_nested_expr() {
+        // age * (id + 1) = 30 * (1+1) = 60
+        let expr = parse_where("age * (id + 1) = 60");
+        assert!(evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn arithmetic_resolve_value() {
+        let full = "SELECT id * age FROM t WHERE id = 1";
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, full).unwrap();
+        if let sqlparser::ast::Statement::Query(q) = &stmts[0] {
+            if let sqlparser::ast::SetExpr::Select(sel) = q.body.as_ref() {
+                if let SelectItem::UnnamedExpr(ref expr) = sel.projection[0] {
+                    let val = resolve_value(expr, &test_row(), &test_schema());
+                    assert_eq!(val, TypedValue::Int(30)); // 1 * 30
+                    return;
+                }
+            }
+        }
+        panic!("failed to parse");
+    }
+
+    #[test]
+    fn arithmetic_division_by_zero() {
+        let expr = parse_where("age / 0 = 1");
+        assert!(!evaluate_predicate(&expr, &test_row(), &test_schema()));
     }
 }

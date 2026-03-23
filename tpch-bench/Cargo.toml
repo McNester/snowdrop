@@ -1,0 +1,13 @@
+[package]
+name = "tpch-bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tpch-bench"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+rand = "0.8"

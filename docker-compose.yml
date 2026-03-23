@@ -48,7 +48,20 @@ services:
     volumes:
       - wal_data:/data/wal
 
+  postgres:
+    image: postgres:16
+    platform: linux/arm64
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tpch
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
 volumes:
   neo4j_data: {}
   kvrocks_data: {}
   wal_data: {}
+  pg_data: {}

@@ -1,4 +1,4 @@
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.86-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY orchestrator/ orchestrator/
@@ -6,6 +6,8 @@ COPY executor/ executor/
 COPY wal/ wal/
 COPY schema/ schema/
 COPY keys/ keys/
+COPY sndsql/ sndsql/
+COPY tpch-bench/ tpch-bench/
 RUN cargo build --release --bin orchestrator
 
 FROM debian:bookworm-slim

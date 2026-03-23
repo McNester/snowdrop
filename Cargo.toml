@@ -6,6 +6,8 @@ members = [
     "wal",
     "schema",
     "keys",
+    "sndsql",
+    "tpch-bench",
 ]
 
 [workspace.dependencies]
