@@ -88,10 +88,19 @@ fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedVal
     match expr {
         Expr::Identifier(ident) => {
             let col_name = ident.value.to_lowercase();
-            row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
+            // Try exact match first, then search for any key ending with .col_name (for JOIN rows)
+            row.get(&col_name)
+                .or_else(|| row.iter().find(|(k, _)| k.ends_with(&format!(".{}", col_name))).map(|(_, v)| v))
+                .cloned()
+                .unwrap_or(TypedValue::Null)
         }
         Expr::CompoundIdentifier(parts) => {
-            // table.column or schema.table.column -- use the last part
+            // Try fully qualified alias.column first (for JOIN rows)
+            let qualified = parts.iter().map(|p| p.value.to_lowercase()).collect::<Vec<_>>().join(".");
+            if let Some(val) = row.get(&qualified) {
+                return val.clone();
+            }
+            // Fall back to last part only
             let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
             row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
         }

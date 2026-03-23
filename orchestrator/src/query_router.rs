@@ -5,8 +5,8 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use schema::{ColumnInfo, ColumnType, Neo4jConnection};
 use sqlparser::ast::{
-    AlterTableOperation, ColumnOption, Expr, FunctionArg, FunctionArgExpr, ObjectName, OrderByExpr,
-    SelectItem, SetExpr, Statement, Value, Values,
+    AlterTableOperation, ColumnOption, Expr, FunctionArg, FunctionArgExpr, JoinConstraint,
+    JoinOperator, ObjectName, OrderByExpr, SelectItem, SetExpr, Statement, Value, Values,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -397,6 +397,12 @@ impl QueryRouter {
         if select.from.is_empty() {
             return Err(user_error("SELECT requires FROM clause".to_string()));
         }
+
+        // Detect JOIN queries
+        if !select.from[0].joins.is_empty() {
+            return self.handle_join_select(*select, query).await;
+        }
+
         let table_factor = &select.from[0].relation;
         let table_name_obj = match table_factor {
             sqlparser::ast::TableFactor::Table { name, .. } => name.clone(),
@@ -482,6 +488,171 @@ impl QueryRouter {
 
         // Build pgwire response
         self.rows_to_response(&paged, &projected_cols)
+    }
+
+    // ── JOIN handler (M5) ──
+
+    async fn handle_join_select<'a>(
+        &self,
+        select: sqlparser::ast::Select,
+        query: sqlparser::ast::Query,
+    ) -> PgWireResult<Response<'a>> {
+        let current_db = self.current_db.read().await.clone();
+        let neo4j = self.neo4j.read().await;
+
+        // Parse left table
+        let (left_name, left_alias) = extract_table_info(&select.from[0].relation)?;
+        let (left_db, left_tbl) = self.resolve_table_name(&left_name, &current_db);
+        let left_schema = neo4j.describe_table(&left_db, &left_tbl).await.map_err(to_err)?;
+        let left_db_info = neo4j.get_database(&left_db).await.map_err(to_err)?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", left_db)))?;
+        let left_tbl_info = neo4j.get_table(&left_db, &left_tbl).await.map_err(to_err)?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", left_tbl)))?;
+
+        // Parse first JOIN (M5 scope: single join only)
+        let join = &select.from[0].joins[0];
+        let (right_name, right_alias) = extract_table_info(&join.relation)?;
+        let (right_db, right_tbl) = self.resolve_table_name(&right_name, &current_db);
+        let right_schema = neo4j.describe_table(&right_db, &right_tbl).await.map_err(to_err)?;
+        let right_db_info = neo4j.get_database(&right_db).await.map_err(to_err)?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", right_db)))?;
+        let right_tbl_info = neo4j.get_table(&right_db, &right_tbl).await.map_err(to_err)?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", right_tbl)))?;
+
+        // Determine join type and ON condition
+        let (is_left_join, on_expr) = match &join.join_operator {
+            JoinOperator::Inner(JoinConstraint::On(expr)) => (false, expr.clone()),
+            JoinOperator::LeftOuter(JoinConstraint::On(expr)) => (true, expr.clone()),
+            _ => return Err(user_error(
+                "only INNER JOIN ... ON and LEFT JOIN ... ON are supported".to_string(),
+            )),
+        };
+
+        // Extract equi-join condition: left_col = right_col
+        let join_conds = extract_join_conditions(&on_expr)?;
+
+        // Fetch rows from both tables
+        let left_rows = self.fetch_rows(left_db_info.id, left_tbl_info.id, &left_schema).await?;
+        let right_rows = self.fetch_rows(right_db_info.id, right_tbl_info.id, &right_schema).await?;
+
+        // Prefix rows with alias/table name
+        let left_prefix = left_alias.as_deref().unwrap_or(&left_tbl);
+        let right_prefix = right_alias.as_deref().unwrap_or(&right_tbl);
+
+        let left_prefixed: Vec<Row> = left_rows
+            .into_iter()
+            .map(|r| prefix_row(r, left_prefix))
+            .collect();
+        let right_prefixed: Vec<Row> = right_rows
+            .into_iter()
+            .map(|r| prefix_row(r, right_prefix))
+            .collect();
+
+        // Build hash map on the right side's join key
+        let right_join_keys: Vec<String> = join_conds
+            .iter()
+            .map(|(_, rc)| format!("{}.{}", right_prefix, rc))
+            .collect();
+        let left_join_keys: Vec<String> = join_conds
+            .iter()
+            .map(|(lc, _)| format!("{}.{}", left_prefix, lc))
+            .collect();
+
+        // Hash join: index right rows by join key values
+        let mut right_hash: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
+        for row in &right_prefixed {
+            let key: Vec<String> = right_join_keys
+                .iter()
+                .map(|k| row.get(k).map(|v| v.to_string()).unwrap_or_default())
+                .collect();
+            right_hash.entry(key).or_default().push(row);
+        }
+
+        // Build combined schema for result columns
+        let combined_schema = build_combined_schema(
+            &left_schema, left_prefix, &right_schema, right_prefix,
+        );
+
+        // Perform join
+        let mut joined_rows: Vec<Row> = Vec::new();
+        for left_row in &left_prefixed {
+            let left_key: Vec<String> = left_join_keys
+                .iter()
+                .map(|k| left_row.get(k).map(|v| v.to_string()).unwrap_or_default())
+                .collect();
+
+            if let Some(matching_rights) = right_hash.get(&left_key) {
+                for right_row in matching_rights {
+                    let mut combined = left_row.clone();
+                    combined.extend((*right_row).clone());
+                    joined_rows.push(combined);
+                }
+            } else if is_left_join {
+                // No match: fill right columns with NULL
+                let mut combined = left_row.clone();
+                for col in &right_schema {
+                    let key = format!("{}.{}", right_prefix, col.name.to_lowercase());
+                    combined.insert(key, TypedValue::Null);
+                }
+                joined_rows.push(combined);
+            }
+        }
+
+        // Apply WHERE filter
+        if let Some(ref selection) = select.selection {
+            joined_rows.retain(|row| evaluate_predicate(selection, row, &combined_schema));
+        }
+
+        // Check for aggregates
+        let agg_exprs = extract_aggregates(&select.projection);
+        if !agg_exprs.is_empty() {
+            return self.handle_aggregate_result(
+                &select.projection,
+                &joined_rows,
+                &combined_schema,
+                &select.group_by,
+            );
+        }
+
+        // Resolve projection
+        let projected = resolve_join_projection(
+            &select.projection, &combined_schema, left_prefix, right_prefix,
+        )?;
+
+        // Apply ORDER BY
+        if let Some(ref order_by) = query.order_by {
+            sort_rows(&mut joined_rows, &order_by.exprs, &combined_schema)?;
+        }
+
+        // Apply OFFSET and LIMIT
+        let offset = query.offset.as_ref().and_then(|o| expr_to_usize(&o.value)).unwrap_or(0);
+        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+
+        let paged: Vec<Row> = if let Some(lim) = limit {
+            joined_rows.into_iter().skip(offset).take(lim).collect()
+        } else {
+            joined_rows.into_iter().skip(offset).collect()
+        };
+
+        // Build response
+        let fields = Arc::new(
+            projected.iter().map(|(name, _)| text_field(name)).collect::<Vec<_>>(),
+        );
+
+        let mut data_rows: Vec<DataRow> = Vec::new();
+        for row in &paged {
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for (_name, key) in &projected {
+                let val = row.get(key);
+                match val {
+                    Some(TypedValue::Null) | None => encoder.encode_field(&None::<&str>)?,
+                    Some(tv) => encoder.encode_field(&tv.to_string())?,
+                }
+            }
+            data_rows.push(encoder.finish()?);
+        }
+
+        Ok(Response::Query(query_response(fields, data_rows)))
     }
 
     /// Fast row count: SCAN keys and count unique row_ids without MGET.
@@ -973,8 +1144,7 @@ fn compute_aggregates(
                 // Non-aggregate column in GROUP BY result: take from first row
                 let val = rows
                     .first()
-                    .and_then(|r| r.get(&ident.value.to_lowercase()))
-                    .cloned()
+                    .map(|r| lookup_row_value(r, &ident.value.to_lowercase()))
                     .unwrap_or(TypedValue::Null);
                 result.push((ident.value.clone(), val));
             }
@@ -1009,6 +1179,10 @@ fn extract_function_col_arg(f: &sqlparser::ast::Function) -> Option<String> {
                 FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                     Some(ident.value.to_lowercase())
                 }
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
+                    // Handle qualified column: e.g., o.amount -> "amount"
+                    parts.last().map(|p| p.value.to_lowercase())
+                }
                 _ => None,
             }
         }
@@ -1025,16 +1199,15 @@ fn compute_single_aggregate(
     match func_name {
         "COUNT" => {
             if let Some(col) = col_name {
-                // COUNT(col): count non-NULL values
                 let count = rows
                     .iter()
                     .filter(|r| {
-                        r.get(col).map_or(false, |v| !v.is_null())
+                        let v = lookup_row_value(r, col);
+                        !v.is_null()
                     })
                     .count();
                 Ok(TypedValue::Int(count as i64))
             } else {
-                // COUNT(*)
                 Ok(TypedValue::Int(rows.len() as i64))
             }
         }
@@ -1046,15 +1219,13 @@ fn compute_single_aggregate(
             let mut sum = 0.0f64;
             let mut has_value = false;
             for row in rows {
-                if let Some(val) = row.get(col) {
-                    if let Some(n) = val.as_f64() {
-                        sum += n;
-                        has_value = true;
-                    }
+                let val = lookup_row_value(row, col);
+                if let Some(n) = val.as_f64() {
+                    sum += n;
+                    has_value = true;
                 }
             }
             if has_value {
-                // Return Int if all values were integers
                 if sum == (sum as i64) as f64 {
                     Ok(TypedValue::Int(sum as i64))
                 } else {
@@ -1072,11 +1243,10 @@ fn compute_single_aggregate(
             let mut sum = 0.0f64;
             let mut count = 0u64;
             for row in rows {
-                if let Some(val) = row.get(col) {
-                    if let Some(n) = val.as_f64() {
-                        sum += n;
-                        count += 1;
-                    }
+                let val = lookup_row_value(row, col);
+                if let Some(n) = val.as_f64() {
+                    sum += n;
+                    count += 1;
                 }
             }
             if count > 0 {
@@ -1089,16 +1259,15 @@ fn compute_single_aggregate(
             let col = col_name.ok_or_else(|| user_error("MIN requires a column".to_string()))?;
             let mut min: Option<TypedValue> = None;
             for row in rows {
-                if let Some(val) = row.get(col) {
-                    if val.is_null() {
-                        continue;
-                    }
-                    min = Some(match min {
-                        None => val.clone(),
-                        Some(ref current) if val.sql_lt(current) => val.clone(),
-                        Some(current) => current,
-                    });
+                let val = lookup_row_value(row, col);
+                if val.is_null() {
+                    continue;
                 }
+                min = Some(match min {
+                    None => val,
+                    Some(ref current) if val.sql_lt(current) => val,
+                    Some(current) => current,
+                });
             }
             Ok(min.unwrap_or(TypedValue::Null))
         }
@@ -1106,16 +1275,15 @@ fn compute_single_aggregate(
             let col = col_name.ok_or_else(|| user_error("MAX requires a column".to_string()))?;
             let mut max: Option<TypedValue> = None;
             for row in rows {
-                if let Some(val) = row.get(col) {
-                    if val.is_null() {
-                        continue;
-                    }
-                    max = Some(match max {
-                        None => val.clone(),
-                        Some(ref current) if val.sql_gt(current) => val.clone(),
-                        Some(current) => current,
-                    });
+                let val = lookup_row_value(row, col);
+                if val.is_null() {
+                    continue;
                 }
+                max = Some(match max {
+                    None => val,
+                    Some(ref current) if val.sql_gt(current) => val,
+                    Some(current) => current,
+                });
             }
             Ok(max.unwrap_or(TypedValue::Null))
         }
@@ -1133,10 +1301,13 @@ fn sort_rows(
         for ob in order_by {
             let col_name = match &ob.expr {
                 Expr::Identifier(ident) => ident.value.to_lowercase(),
+                Expr::CompoundIdentifier(parts) => {
+                    parts.iter().map(|p| p.value.to_lowercase()).collect::<Vec<_>>().join(".")
+                }
                 _ => continue,
             };
-            let a_val = a.get(&col_name).cloned().unwrap_or(TypedValue::Null);
-            let b_val = b.get(&col_name).cloned().unwrap_or(TypedValue::Null);
+            let a_val = lookup_row_value(a, &col_name);
+            let b_val = lookup_row_value(b, &col_name);
 
             let cmp = a_val.cmp_order(&b_val);
             let cmp = if ob.asc == Some(false) { cmp.reverse() } else { cmp };
@@ -1147,6 +1318,17 @@ fn sort_rows(
         std::cmp::Ordering::Equal
     });
     Ok(())
+}
+
+/// Lookup a value in a row, handling both plain and qualified (alias.col) keys.
+fn lookup_row_value(row: &Row, col_name: &str) -> TypedValue {
+    row.get(col_name)
+        .or_else(|| {
+            // Try fuzzy match: find key ending with .col_name
+            row.iter().find(|(k, _)| k.ends_with(&format!(".{}", col_name))).map(|(_, v)| v)
+        })
+        .cloned()
+        .unwrap_or(TypedValue::Null)
 }
 
 /// Try to extract a usize from a SQL expression (for LIMIT/OFFSET).
@@ -1212,5 +1394,165 @@ fn parse_simple_where(selection: Option<&Expr>) -> PgWireResult<(String, String)
         _ => Err(user_error(
             "WHERE clause must be a simple col = value expression".to_string(),
         )),
+    }
+}
+
+// ── JOIN helpers ──
+
+/// Extract table name and optional alias from a TableFactor.
+fn extract_table_info(
+    factor: &sqlparser::ast::TableFactor,
+) -> PgWireResult<(ObjectName, Option<String>)> {
+    match factor {
+        sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+            let alias_str = alias.as_ref().map(|a| a.name.value.clone());
+            Ok((name.clone(), alias_str))
+        }
+        _ => Err(user_error("JOIN requires table names".to_string())),
+    }
+}
+
+/// Extract equi-join conditions from ON expression.
+/// Returns pairs of (left_col_name, right_col_name).
+fn extract_join_conditions(expr: &Expr) -> PgWireResult<Vec<(String, String)>> {
+    match expr {
+        Expr::BinaryOp { left, op, right } => match op {
+            sqlparser::ast::BinaryOperator::Eq => {
+                let left_col = extract_column_name(left)?;
+                let right_col = extract_column_name(right)?;
+                Ok(vec![(left_col, right_col)])
+            }
+            sqlparser::ast::BinaryOperator::And => {
+                let mut conds = extract_join_conditions(left)?;
+                conds.extend(extract_join_conditions(right)?);
+                Ok(conds)
+            }
+            _ => Err(user_error(
+                "only equi-join (=) conditions supported in ON clause".to_string(),
+            )),
+        },
+        Expr::Nested(inner) => extract_join_conditions(inner),
+        _ => Err(user_error(
+            "unsupported ON clause expression".to_string(),
+        )),
+    }
+}
+
+/// Extract the bare column name from qualified (alias.col) or unqualified identifier.
+fn extract_column_name(expr: &Expr) -> PgWireResult<String> {
+    match expr {
+        Expr::Identifier(ident) => Ok(ident.value.to_lowercase()),
+        Expr::CompoundIdentifier(parts) => {
+            // Return just the column name (last part)
+            Ok(parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default())
+        }
+        _ => Err(user_error("ON condition must reference column names".to_string())),
+    }
+}
+
+/// Prefix all keys in a row with "alias.".
+fn prefix_row(row: Row, prefix: &str) -> Row {
+    let prefix_lower = prefix.to_lowercase();
+    row.into_iter()
+        .map(|(k, v)| (format!("{}.{}", prefix_lower, k), v))
+        .collect()
+}
+
+/// Build combined schema for joined tables with prefixed column names.
+fn build_combined_schema(
+    left: &[ColumnInfo],
+    left_prefix: &str,
+    right: &[ColumnInfo],
+    right_prefix: &str,
+) -> Vec<ColumnInfo> {
+    let mut combined = Vec::new();
+    for col in left {
+        let mut c = col.clone();
+        c.name = format!("{}.{}", left_prefix.to_lowercase(), col.name.to_lowercase());
+        combined.push(c);
+    }
+    for col in right {
+        let mut c = col.clone();
+        c.name = format!("{}.{}", right_prefix.to_lowercase(), col.name.to_lowercase());
+        combined.push(c);
+    }
+    combined
+}
+
+/// Resolve projection for JOIN queries. Handles alias.col, *, and bare col names.
+fn resolve_join_projection(
+    items: &[SelectItem],
+    combined_schema: &[ColumnInfo],
+    left_prefix: &str,
+    right_prefix: &str,
+) -> PgWireResult<Vec<(String, String)>> {
+    let mut result: Vec<(String, String)> = Vec::new(); // (display_name, row_key)
+
+    for item in items {
+        match item {
+            SelectItem::Wildcard(_) => {
+                for col in combined_schema {
+                    result.push((col.name.clone(), col.name.clone()));
+                }
+            }
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                if parts.len() == 2 {
+                    let qualifier = parts[0].value.to_lowercase();
+                    let col_name = parts[1].value.to_lowercase();
+                    let key = format!("{}.{}", qualifier, col_name);
+                    // Display name: alias.col
+                    result.push((col_name.clone(), key));
+                } else {
+                    let name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
+                    // Try to find in combined schema
+                    let key = find_column_key(&name, combined_schema, left_prefix, right_prefix)?;
+                    result.push((name, key));
+                }
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                let name = ident.value.to_lowercase();
+                let key = find_column_key(&name, combined_schema, left_prefix, right_prefix)?;
+                result.push((name, key));
+            }
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let key = match expr {
+                    Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                        format!("{}.{}", parts[0].value.to_lowercase(), parts[1].value.to_lowercase())
+                    }
+                    Expr::Identifier(ident) => {
+                        find_column_key(&ident.value.to_lowercase(), combined_schema, left_prefix, right_prefix)?
+                    }
+                    _ => return Err(user_error("unsupported expression in JOIN projection".to_string())),
+                };
+                result.push((alias.value.clone(), key));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(result)
+}
+
+/// Find the fully qualified column key for an unqualified column name.
+fn find_column_key(
+    col_name: &str,
+    combined_schema: &[ColumnInfo],
+    left_prefix: &str,
+    right_prefix: &str,
+) -> PgWireResult<String> {
+    let left_key = format!("{}.{}", left_prefix.to_lowercase(), col_name);
+    let right_key = format!("{}.{}", right_prefix.to_lowercase(), col_name);
+
+    let left_exists = combined_schema.iter().any(|c| c.name == left_key);
+    let right_exists = combined_schema.iter().any(|c| c.name == right_key);
+
+    match (left_exists, right_exists) {
+        (true, false) => Ok(left_key),
+        (false, true) => Ok(right_key),
+        (true, true) => Err(user_error(format!(
+            "column '{}' is ambiguous, qualify with table alias",
+            col_name
+        ))),
+        (false, false) => Err(user_error(format!("column '{}' not found", col_name))),
     }
 }
