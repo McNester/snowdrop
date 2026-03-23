@@ -1,4 +1,6 @@
+use crate::storage::StorageBackend;
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use tracing::{debug, info};
@@ -25,8 +27,11 @@ impl KvrocksConnection {
 
         Ok(kv)
     }
+}
 
-    pub async fn ping(&self) -> Result<()> {
+#[async_trait]
+impl StorageBackend for KvrocksConnection {
+    async fn ping(&self) -> Result<()> {
         let mut conn = self.conn.clone();
         let pong: String = redis::cmd("PING")
             .query_async(&mut conn)
@@ -41,29 +46,31 @@ impl KvrocksConnection {
         Ok(())
     }
 
-    /// MSET: write multiple key-value pairs atomically.
-    pub async fn mset(&self, pairs: &[(String, Vec<u8>)]) -> Result<()> {
+    async fn mset(&self, pairs: &[(String, Vec<u8>)]) -> Result<()> {
         if pairs.is_empty() {
             return Ok(());
         }
 
         let mut conn = self.conn.clone();
-        let kv_pairs: Vec<(&str, &[u8])> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_slice())).collect();
-        conn.mset::<_, _, ()>(&kv_pairs).await.context("Kvrocks MSET failed")?;
+        let kv_pairs: Vec<(&str, &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        conn.mset::<_, _, ()>(&kv_pairs)
+            .await
+            .context("Kvrocks MSET failed")?;
 
         debug!(count = pairs.len(), "MSET complete");
         Ok(())
     }
 
-    /// GET: read a single key.
-    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let mut conn = self.conn.clone();
         let val: Option<Vec<u8>> = conn.get(key).await.context("Kvrocks GET failed")?;
         Ok(val)
     }
 
-    /// MGET: read multiple keys in a single round trip.
-    pub async fn mget(&self, keys: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+    async fn mget(&self, keys: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
@@ -73,8 +80,7 @@ impl KvrocksConnection {
         Ok(vals)
     }
 
-    /// DEL: delete multiple keys.
-    pub async fn del(&self, keys: &[String]) -> Result<u64> {
+    async fn del(&self, keys: &[String]) -> Result<u64> {
         if keys.is_empty() {
             return Ok(0);
         }
@@ -86,8 +92,8 @@ impl KvrocksConnection {
         Ok(deleted)
     }
 
-    /// SCAN with pattern match. Returns all matching keys.
-    pub async fn scan_keys(&self, pattern: &str) -> Result<Vec<String>> {
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let pattern = format!("{prefix}*");
         let mut conn = self.conn.clone();
         let mut keys = Vec::new();
         let mut cursor: u64 = 0;
@@ -96,7 +102,7 @@ impl KvrocksConnection {
             let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
                 .arg(cursor)
                 .arg("MATCH")
-                .arg(pattern)
+                .arg(&pattern)
                 .arg("COUNT")
                 .arg(1000)
                 .query_async(&mut conn)
@@ -110,17 +116,22 @@ impl KvrocksConnection {
             }
         }
 
-        Ok(keys)
+        // Fetch values for all scanned keys
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let vals: Vec<Option<Vec<u8>>> = conn.mget(&keys).await.context("Kvrocks MGET failed")?;
+        let result = keys
+            .into_iter()
+            .zip(vals)
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .collect();
+        Ok(result)
     }
 
-    /// Check if a key exists.
-    pub async fn exists(&self, key: &str) -> Result<bool> {
+    async fn exists(&self, key: &str) -> Result<bool> {
         let mut conn = self.conn.clone();
         let exists: bool = conn.exists(key).await.context("Kvrocks EXISTS failed")?;
         Ok(exists)
-    }
-
-    pub fn connection(&self) -> MultiplexedConnection {
-        self.conn.clone()
     }
 }

@@ -1,23 +1,23 @@
-use crate::kvrocks::KvrocksConnection;
+use crate::storage::StorageBackend;
 use anyhow::{bail, Context, Result};
-use keys::{build_key, encode_row_id};
+use keys::{build_row_key, encode_row_id};
 use schema::{ColumnInfo, Neo4jConnection};
 use tracing::{debug, info};
 use wal::{WalFile, WalPayload, WalPayloadV1, WalStatus};
 
 pub struct WriteEngine<'a> {
-    kvrocks: &'a KvrocksConnection,
+    storage: &'a dyn StorageBackend,
     neo4j: &'a Neo4jConnection,
     wal: &'a mut WalFile,
 }
 
 impl<'a> WriteEngine<'a> {
     pub fn new(
-        kvrocks: &'a KvrocksConnection,
+        storage: &'a dyn StorageBackend,
         neo4j: &'a Neo4jConnection,
         wal: &'a mut WalFile,
     ) -> Self {
-        Self { kvrocks, neo4j, wal }
+        Self { storage, neo4j, wal }
     }
 
     /// INSERT INTO table VALUES (...)
@@ -77,15 +77,16 @@ impl<'a> WriteEngine<'a> {
         if let Some((_, pk_value)) = resolved.iter().find(|(col, _)| col.id == pk_col.id) {
             let pk_str = String::from_utf8_lossy(pk_value);
             let pk_key = format!("pk:{}:{}:{}", db.id, table.id, pk_str);
-            self.kvrocks.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
+            self.storage.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
         }
 
         // Step 3: WAL status -> Neo4jCommitted
         self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
-        // Step 4: Kvrocks MSET
-        let kv_pairs = build_kv_pairs(db.id, table.id, row_id_raw, &wal_columns)?;
-        self.kvrocks.mset(&kv_pairs).await?;
+        // Step 4: Storage write (one key per row)
+        let row_key = build_row_key(db.id, table.id, row_id_raw)?;
+        let row_value = serialize_columns(&wal_columns);
+        self.storage.mset(&[(row_key, row_value)]).await?;
 
         // Step 5: WAL status -> Committed
         self.wal.update_status(file_offset, WalStatus::Committed)?;
@@ -141,9 +142,22 @@ impl<'a> WriteEngine<'a> {
             // WAL -> Neo4jCommitted (no index updates in M3)
             self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
-            // Kvrocks MSET for changed columns only
-            let kv_pairs = build_kv_pairs(db.id, table.id, *row_id_raw, &wal_columns)?;
-            self.kvrocks.mset(&kv_pairs).await?;
+            // Read-modify-write: merge updated columns into existing row
+            let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
+            let mut existing = if let Some(data) = self.storage.get(&row_key).await? {
+                deserialize_columns(&data)
+            } else {
+                Vec::new()
+            };
+            for (col_id, val) in &wal_columns {
+                if let Some(entry) = existing.iter_mut().find(|(id, _)| id == col_id) {
+                    entry.1 = val.clone();
+                } else {
+                    existing.push((*col_id, val.clone()));
+                }
+            }
+            let row_value = serialize_columns(&existing);
+            self.storage.mset(&[(row_key, row_value)]).await?;
 
             // If PK column is being updated, update the pk: mapping
             let pk_col = schema_cols.iter().find(|c| c.is_pk);
@@ -151,11 +165,11 @@ impl<'a> WriteEngine<'a> {
                 if let Some((_, new_pk_val)) = wal_columns.iter().find(|(id, _)| *id == pk_col.id) {
                     // Remove old pk mapping
                     let old_pk_key = format!("pk:{}:{}:{}", db.id, table.id, where_val);
-                    self.kvrocks.del(&[old_pk_key]).await?;
+                    self.storage.del(&[old_pk_key]).await?;
                     // Add new pk mapping
                     let new_pk_str = String::from_utf8_lossy(new_pk_val);
                     let new_pk_key = format!("pk:{}:{}:{}", db.id, table.id, new_pk_str);
-                    self.kvrocks.mset(&[(new_pk_key, row_id_str.as_bytes().to_vec())]).await?;
+                    self.storage.mset(&[(new_pk_key, row_id_str.as_bytes().to_vec())]).await?;
                 }
             }
 
@@ -213,17 +227,14 @@ impl<'a> WriteEngine<'a> {
 
             self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
-            // Kvrocks DEL for all columns
-            let keys: Vec<String> = col_ids
-                .iter()
-                .filter_map(|col_id| build_key(db.id, table.id, *row_id_raw, *col_id).ok())
-                .collect();
-            self.kvrocks.del(&keys).await?;
+            // Delete the row key
+            let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
+            self.storage.del(&[row_key]).await?;
 
             // Also delete the pk: mapping
             if schema_cols.iter().any(|c| c.is_pk) {
                 let pk_key = format!("pk:{}:{}:{}", db.id, table.id, where_val);
-                self.kvrocks.del(&[pk_key]).await?;
+                self.storage.del(&[pk_key]).await?;
             }
 
             self.wal.update_status(file_offset, WalStatus::Committed)?;
@@ -251,7 +262,7 @@ impl<'a> WriteEngine<'a> {
         if col.is_pk {
             // PK lookup via pk: key
             let pk_key = format!("pk:{}:{}:{}", db_id, table_id, where_val);
-            if let Some(row_id_bytes) = self.kvrocks.get(&pk_key).await? {
+            if let Some(row_id_bytes) = self.storage.get(&pk_key).await? {
                 let row_id_str = String::from_utf8(row_id_bytes)
                     .context("invalid row_id encoding")?;
                 let row_id_raw = keys::decode_base62(&row_id_str)?;
@@ -260,32 +271,24 @@ impl<'a> WriteEngine<'a> {
             return Ok(Vec::new());
         }
 
-        // Non-PK: scan all rows and filter
-        let pattern = keys::table_scan_pattern(db_id, table_id)?;
-        let all_keys = self.kvrocks.scan_keys(&pattern).await?;
-
-        // Group keys by row_id
-        let mut row_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-        for key in &all_keys {
-            let parts: Vec<&str> = key.split(':').collect();
-            if parts.len() == 4 {
-                row_map.entry(parts[2].to_string()).or_default().push(key.clone());
-            }
-        }
-
-        // For each row, check if the where_col value matches
-        let col_id_encoded = keys::encode_col_id(col.id)?;
+        // Non-PK: scan all rows (row-oriented) and check the target column
+        let prefix = keys::table_scan_prefix(db_id, table_id)?;
         let mut matches = Vec::new();
 
-        for (row_id_str, keys) in &row_map {
-            for key in keys {
-                if key.ends_with(&format!(":{}", col_id_encoded)) {
-                    if let Some(val_bytes) = self.kvrocks.get(key).await? {
-                        let val_str = String::from_utf8_lossy(&val_bytes);
-                        if val_str == where_val {
-                            let row_id_raw = keys::decode_base62(row_id_str)?;
-                            matches.push((row_id_str.clone(), row_id_raw));
-                        }
+        let all_kv = self.storage.scan_prefix(&prefix).await?;
+        for (key, row_data) in &all_kv {
+            // Skip pk: keys
+            if key.starts_with("pk:") {
+                continue;
+            }
+            let cols = deserialize_columns(row_data);
+            if let Some((_, val_bytes)) = cols.iter().find(|(id, _)| *id == col.id) {
+                let val_str = String::from_utf8_lossy(val_bytes);
+                if val_str == where_val {
+                    let parts: Vec<&str> = key.split(':').collect();
+                    if parts.len() == 3 {
+                        let row_id_raw = keys::decode_base62(parts[2])?;
+                        matches.push((parts[2].to_string(), row_id_raw));
                     }
                 }
             }
@@ -302,7 +305,7 @@ impl<'a> WriteEngine<'a> {
         pk_value: &str,
     ) -> Result<()> {
         let pk_key = format!("pk:{}:{}:{}", db_id, table_id, pk_value);
-        if self.kvrocks.exists(&pk_key).await? {
+        if self.storage.exists(&pk_key).await? {
             bail!("duplicate primary key value: {}", pk_value);
         }
         Ok(())
@@ -364,65 +367,70 @@ fn validate_not_null(schema_cols: &[ColumnInfo], resolved: &[(ColumnInfo, Vec<u8
     Ok(())
 }
 
-/// Build Kvrocks key-value pairs from WAL column data.
-fn build_kv_pairs(
-    db_id: u32,
-    table_id: u32,
-    row_id: u64,
-    columns: &[(u32, Vec<u8>)],
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut pairs = Vec::new();
-    for (col_id, value) in columns {
-        let key = build_key(db_id, table_id, row_id, *col_id)?;
-        pairs.push((key, value.clone()));
-    }
-    Ok(pairs)
+/// Serialize column data into a single byte vector.
+/// Format: bincode-encoded Vec<(u32, Vec<u8>)>
+pub fn serialize_columns(columns: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    bincode::serialize(columns).expect("bincode serialize should not fail")
 }
 
-/// Replay WAL entries to Kvrocks (called on startup for Neo4jCommitted entries).
-/// Restores row data and PK mappings. Neo4j is used to resolve PK columns.
+/// Deserialize column data from a single byte vector.
+pub fn deserialize_columns(data: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    bincode::deserialize(data).unwrap_or_default()
+}
+
+/// Replay WAL entries to storage (called on startup for Neo4jCommitted entries).
 pub async fn replay_wal_entries(
-    kvrocks: &KvrocksConnection,
+    storage: &dyn StorageBackend,
     neo4j: &Neo4jConnection,
     entries: &[wal::WalEntry],
     wal_file: &WalFile,
 ) -> Result<()> {
-    // Cache schema lookups to avoid repeated Neo4j queries
     let mut pk_cache: std::collections::HashMap<(u32, u32), Option<u32>> = std::collections::HashMap::new();
 
     for entry in entries {
         match &entry.payload {
             WalPayload::V1(WalPayloadV1::Insert { db_id, table_id, row_id, columns }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
-                let kv_pairs = build_kv_pairs(*db_id, *table_id, row_id_raw, columns)?;
-                kvrocks.mset(&kv_pairs).await?;
+                let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
+                let row_value = serialize_columns(columns);
+                storage.mset(&[(row_key, row_value)]).await?;
 
-                // Restore PK mapping
                 let pk_col_id = lookup_pk_col_id(neo4j, &mut pk_cache, *db_id, *table_id).await?;
                 if let Some(pk_col_id) = pk_col_id {
                     if let Some((_, pk_value)) = columns.iter().find(|(id, _)| *id == pk_col_id) {
                         let pk_str = String::from_utf8_lossy(pk_value);
                         let pk_key = format!("pk:{}:{}:{}", db_id, table_id, pk_str);
-                        kvrocks.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
+                        storage.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
                     }
                 }
 
-                info!(entry_id = entry.header.entry_id, "replayed INSERT to Kvrocks");
+                info!(entry_id = entry.header.entry_id, "replayed INSERT");
             }
             WalPayload::V1(WalPayloadV1::Update { db_id, table_id, row_id, columns }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
-                let kv_pairs = build_kv_pairs(*db_id, *table_id, row_id_raw, columns)?;
-                kvrocks.mset(&kv_pairs).await?;
-                info!(entry_id = entry.header.entry_id, "replayed UPDATE to Kvrocks");
+                let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
+                // Read-modify-write for partial update
+                let mut existing = if let Some(data) = storage.get(&row_key).await? {
+                    deserialize_columns(&data)
+                } else {
+                    Vec::new()
+                };
+                for (col_id, val) in columns {
+                    if let Some(entry) = existing.iter_mut().find(|(id, _)| id == col_id) {
+                        entry.1 = val.clone();
+                    } else {
+                        existing.push((*col_id, val.clone()));
+                    }
+                }
+                let row_value = serialize_columns(&existing);
+                storage.mset(&[(row_key, row_value)]).await?;
+                info!(entry_id = entry.header.entry_id, "replayed UPDATE");
             }
-            WalPayload::V1(WalPayloadV1::Delete { db_id, table_id, row_id, col_ids }) => {
+            WalPayload::V1(WalPayloadV1::Delete { db_id, table_id, row_id, .. }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
-                let keys: Vec<String> = col_ids
-                    .iter()
-                    .filter_map(|col_id| build_key(*db_id, *table_id, row_id_raw, *col_id).ok())
-                    .collect();
-                kvrocks.del(&keys).await?;
-                info!(entry_id = entry.header.entry_id, "replayed DELETE to Kvrocks");
+                let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
+                storage.del(&[row_key]).await?;
+                info!(entry_id = entry.header.entry_id, "replayed DELETE");
             }
         }
         wal_file.update_status(entry.file_offset, WalStatus::Committed)?;
@@ -553,18 +561,24 @@ mod tests {
     }
 
     #[test]
-    fn build_kv_pairs_produces_correct_keys() {
+    fn serialize_deserialize_columns_roundtrip() {
         let columns = vec![
             (1u32, b"value1".to_vec()),
             (2u32, b"value2".to_vec()),
+            (3u32, b"value3".to_vec()),
         ];
 
-        let pairs = build_kv_pairs(1, 1, 12345, &columns).unwrap();
-        assert_eq!(pairs.len(), 2);
-        for (key, _) in &pairs {
-            assert_eq!(key.len(), 21);
-            assert_eq!(key.chars().filter(|c| *c == ':').count(), 3);
-        }
+        let serialized = serialize_columns(&columns);
+        let deserialized = deserialize_columns(&serialized);
+        assert_eq!(deserialized.len(), 3);
+        assert_eq!(deserialized[0], (1, b"value1".to_vec()));
+        assert_eq!(deserialized[1], (2, b"value2".to_vec()));
+        assert_eq!(deserialized[2], (3, b"value3".to_vec()));
+    }
+
+    #[test]
+    fn deserialize_empty_returns_empty() {
+        assert!(deserialize_columns(&[]).is_empty());
     }
 
 }

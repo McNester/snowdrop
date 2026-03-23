@@ -51,8 +51,7 @@ async fn main() -> Result<()> {
         .context("WAL replay failed")?;
 
     if !needs_replay.is_empty() {
-        info!(count = needs_replay.len(), "WAL entries need Kvrocks replay");
-        // Kvrocks replay will happen after connection is established (step 5)
+        info!(count = needs_replay.len(), "WAL entries need replay");
     }
 
     // Step 3: Verify Neo4j connectivity
@@ -64,25 +63,38 @@ async fn main() -> Result<()> {
         .await
         .context("Neo4j connection failed")?;
 
-    // Initialize schema constraints and counters
     neo4j.init_schema().await.context("schema initialization failed")?;
     info!("Neo4j connectivity verified");
 
-    // Step 4: Verify Kvrocks connectivity
-    let kvrocks_addr = std::env::var("KVROCKS_ADDR").unwrap_or_else(|_| "localhost:6666".to_string());
+    // Step 4: Open storage backend (embedded RocksDB or remote Kvrocks)
+    let storage_backend = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "rocksdb".to_string());
+    let storage: Arc<dyn executor::StorageBackend> = match storage_backend.as_str() {
+        "kvrocks" => {
+            let kvrocks_addr = std::env::var("KVROCKS_ADDR").unwrap_or_else(|_| "localhost:6666".to_string());
+            let kv = executor::KvrocksConnection::connect(&kvrocks_addr)
+                .await
+                .context("Kvrocks connection failed")?;
+            info!("Storage: Kvrocks (remote)");
+            Arc::new(kv)
+        }
+        _ => {
+            let rocks_path = std::env::var("ROCKS_PATH").unwrap_or_else(|_| "/data/rocks".to_string());
+            let rocks = executor::RocksStorage::open(&rocks_path)
+                .context("RocksDB open failed")?;
+            info!("Storage: RocksDB (embedded)");
+            Arc::new(rocks)
+        }
+    };
 
-    let kvrocks = executor::KvrocksConnection::connect(&kvrocks_addr)
-        .await
-        .context("Kvrocks connection failed")?;
+    storage.ping().await?;
+    info!("Storage connectivity verified");
 
-    info!("Kvrocks connectivity verified");
-
-    // Step 5: Re-execute Kvrocks writes for Neo4jCommitted entries
+    // Step 5: Re-execute writes for Neo4jCommitted entries
     if !needs_replay.is_empty() {
-        info!(count = needs_replay.len(), "replaying WAL entries to Kvrocks");
-        executor::replay_wal_entries(&kvrocks, &neo4j, &needs_replay, &wal)
+        info!(count = needs_replay.len(), "replaying WAL entries to storage");
+        executor::replay_wal_entries(storage.as_ref(), &neo4j, &needs_replay, &wal)
             .await
-            .context("WAL replay to Kvrocks failed")?;
+            .context("WAL replay failed")?;
     }
 
     // Step 6: Mark ready, begin accepting pgwire connections
@@ -92,7 +104,6 @@ async fn main() -> Result<()> {
     }
     info!("Snowdrop ready - accepting connections on :5432");
 
-    // Start pgwire listener
     let pgwire_addr = "0.0.0.0:5432";
-    pgwire_handler::serve_pgwire(pgwire_addr, neo4j, kvrocks, wal).await
+    pgwire_handler::serve_pgwire(pgwire_addr, neo4j, storage, wal).await
 }

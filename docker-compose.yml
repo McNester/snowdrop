@@ -44,9 +44,12 @@ services:
       NEO4J_PASS: snowdroppassword
       KVROCKS_ADDR: kvrocks:6666
       WAL_PATH: /data/wal
+      ROCKS_PATH: /data/rocks
+      STORAGE_BACKEND: rocksdb
       RUST_LOG: info
     volumes:
       - wal_data:/data/wal
+      - rocks_data:/data/rocks
 
   postgres:
     image: postgres:16
@@ -64,4 +67,5 @@ volumes:
   neo4j_data: {}
   kvrocks_data: {}
   wal_data: {}
+  rocks_data: {}
   pg_data: {}

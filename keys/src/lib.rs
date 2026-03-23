@@ -73,6 +73,18 @@ pub fn encode_col_id(id: u32) -> Result<String, KeyError> {
     encode_base62(id as u64, COL_ID_WIDTH)
 }
 
+/// Constructs a row-level key: {db_id}:{table_id}:{row_id}
+/// Total length: 18 chars (2+1+3+1+11 = 18)
+/// Used for row-oriented storage where all columns are in one value.
+pub fn build_row_key(db_id: u32, table_id: u32, row_id: u64) -> Result<String, KeyError> {
+    Ok(format!(
+        "{}:{}:{}",
+        encode_db_id(db_id)?,
+        encode_table_id(table_id)?,
+        encode_row_id(row_id)?
+    ))
+}
+
 /// Constructs a full Kvrocks key: {db_id}:{table_id}:{row_id}:{col_id}
 /// Total length: 21 chars (2+1+3+1+11+1+2 = 21)
 pub fn build_key(db_id: u32, table_id: u32, row_id: u64, col_id: u32) -> Result<String, KeyError> {
@@ -89,6 +101,16 @@ pub fn build_key(db_id: u32, table_id: u32, row_id: u64, col_id: u32) -> Result<
 pub fn table_scan_pattern(db_id: u32, table_id: u32) -> Result<String, KeyError> {
     Ok(format!(
         "{}:{}:*",
+        encode_db_id(db_id)?,
+        encode_table_id(table_id)?
+    ))
+}
+
+/// Prefix for all keys in a table (no wildcard): {db_id}:{table_id}:
+/// Used for RocksDB prefix iteration.
+pub fn table_scan_prefix(db_id: u32, table_id: u32) -> Result<String, KeyError> {
+    Ok(format!(
+        "{}:{}:",
         encode_db_id(db_id)?,
         encode_table_id(table_id)?
     ))

@@ -1,9 +1,9 @@
-use executor::{bytes_to_row, evaluate_predicate, resolve_value, KvrocksConnection, Row, TypedValue, WriteEngine};
+use executor::{bytes_to_row, deserialize_columns, evaluate_predicate, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
-use schema::{ColumnInfo, ColumnType, Neo4jConnection};
+use schema::{ColumnInfo, ColumnType, DatabaseInfo, Neo4jConnection, TableInfo};
 use sqlparser::ast::{
     AlterTableOperation, ColumnOption, Expr, FunctionArg, FunctionArgExpr, JoinConstraint,
     JoinOperator, ObjectName, OrderByExpr, SelectItem, SetExpr, Statement, Value, Values,
@@ -16,21 +16,131 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use wal::WalFile;
 
+/// In-memory schema cache. Eliminates Neo4j round-trips on the read path.
+/// Loaded on startup, invalidated by DDL operations.
+struct SchemaCache {
+    databases: HashMap<String, DatabaseInfo>,
+    tables: HashMap<(String, String), TableInfo>,
+    columns: HashMap<(String, String), Vec<ColumnInfo>>,
+}
+
+impl SchemaCache {
+    fn new() -> Self {
+        Self {
+            databases: HashMap::new(),
+            tables: HashMap::new(),
+            columns: HashMap::new(),
+        }
+    }
+
+    fn invalidate_database(&mut self, db_name: &str) {
+        self.databases.remove(db_name);
+        self.tables.retain(|(d, _), _| d != db_name);
+        self.columns.retain(|(d, _), _| d != db_name);
+    }
+
+    fn invalidate_table(&mut self, db_name: &str, table_name: &str) {
+        self.tables.remove(&(db_name.to_string(), table_name.to_string()));
+        self.columns.remove(&(db_name.to_string(), table_name.to_string()));
+    }
+}
+
 pub struct QueryRouter {
     neo4j: Arc<RwLock<Neo4jConnection>>,
-    kvrocks: Arc<KvrocksConnection>,
+    storage: Arc<dyn StorageBackend>,
     wal: Arc<RwLock<WalFile>>,
     current_db: Arc<RwLock<String>>,
+    schema_cache: Arc<RwLock<SchemaCache>>,
 }
 
 impl QueryRouter {
-    pub fn new(neo4j: Neo4jConnection, kvrocks: KvrocksConnection, wal: WalFile) -> Self {
+    pub fn new(neo4j: Neo4jConnection, storage: Arc<dyn StorageBackend>, wal: WalFile) -> Self {
         Self {
             neo4j: Arc::new(RwLock::new(neo4j)),
-            kvrocks: Arc::new(kvrocks),
+            storage,
             wal: Arc::new(RwLock::new(wal)),
             current_db: Arc::new(RwLock::new("default".to_string())),
+            schema_cache: Arc::new(RwLock::new(SchemaCache::new())),
         }
+    }
+
+    /// Load all existing schemas into cache on startup.
+    pub async fn warm_schema_cache(&self) -> PgWireResult<()> {
+        let neo4j = self.neo4j.read().await;
+        let dbs = neo4j.show_databases().await.map_err(to_err)?;
+        let mut cache = self.schema_cache.write().await;
+        for db in &dbs {
+            cache.databases.insert(db.name.clone(), db.clone());
+            let tables = neo4j.show_tables(&db.name).await.map_err(to_err)?;
+            for tbl in &tables {
+                cache.tables.insert(
+                    (db.name.clone(), tbl.name.clone()),
+                    tbl.clone(),
+                );
+                let cols = neo4j.describe_table(&db.name, &tbl.name).await.map_err(to_err)?;
+                cache.columns.insert(
+                    (db.name.clone(), tbl.name.clone()),
+                    cols,
+                );
+            }
+        }
+        tracing::info!(
+            databases = cache.databases.len(),
+            tables = cache.tables.len(),
+            "schema cache warmed"
+        );
+        Ok(())
+    }
+
+    /// Get database info from cache, falling back to Neo4j.
+    async fn cached_get_database(&self, db_name: &str) -> PgWireResult<Option<DatabaseInfo>> {
+        {
+            let cache = self.schema_cache.read().await;
+            if let Some(db) = cache.databases.get(db_name) {
+                return Ok(Some(db.clone()));
+            }
+        }
+        let neo4j = self.neo4j.read().await;
+        let db = neo4j.get_database(db_name).await.map_err(to_err)?;
+        if let Some(ref db_info) = db {
+            let mut cache = self.schema_cache.write().await;
+            cache.databases.insert(db_name.to_string(), db_info.clone());
+        }
+        Ok(db)
+    }
+
+    /// Get table info from cache, falling back to Neo4j.
+    async fn cached_get_table(&self, db_name: &str, table_name: &str) -> PgWireResult<Option<TableInfo>> {
+        let key = (db_name.to_string(), table_name.to_string());
+        {
+            let cache = self.schema_cache.read().await;
+            if let Some(tbl) = cache.tables.get(&key) {
+                return Ok(Some(tbl.clone()));
+            }
+        }
+        let neo4j = self.neo4j.read().await;
+        let tbl = neo4j.get_table(db_name, table_name).await.map_err(to_err)?;
+        if let Some(ref tbl_info) = tbl {
+            let mut cache = self.schema_cache.write().await;
+            cache.tables.insert(key, tbl_info.clone());
+        }
+        Ok(tbl)
+    }
+
+    /// Get column schema from cache, falling back to Neo4j.
+    async fn cached_describe_table(&self, db_name: &str, table_name: &str) -> PgWireResult<Vec<ColumnInfo>> {
+        let key = (db_name.to_string(), table_name.to_string());
+        {
+            let cache = self.schema_cache.read().await;
+            if let Some(cols) = cache.columns.get(&key) {
+                return Ok(cols.clone());
+            }
+        }
+        let neo4j = self.neo4j.read().await;
+        let cols = neo4j.describe_table(db_name, table_name).await.map_err(to_err)?;
+        let mut cache = self.schema_cache.write().await;
+        cache.columns.insert(key, cols.clone());
+        Ok(cols)
     }
 
     pub async fn route<'a>(&self, query_str: &'a str) -> PgWireResult<Vec<Response<'a>>> {
@@ -157,12 +267,19 @@ impl QueryRouter {
     async fn handle_create_database<'a>(&self, name: &str) -> PgWireResult<Response<'a>> {
         let neo4j = self.neo4j.read().await;
         neo4j.create_database(name).await.map_err(to_err)?;
+        // Warm cache for the new database
+        if let Ok(Some(db)) = neo4j.get_database(name).await {
+            let mut cache = self.schema_cache.write().await;
+            cache.databases.insert(name.to_string(), db);
+        }
         Ok(Response::Execution(Tag::new("CREATE DATABASE")))
     }
 
     async fn handle_drop_database<'a>(&self, name: &str) -> PgWireResult<Response<'a>> {
         let neo4j = self.neo4j.read().await;
         neo4j.drop_database(name).await.map_err(to_err)?;
+        let mut cache = self.schema_cache.write().await;
+        cache.invalidate_database(name);
         Ok(Response::Execution(Tag::new("DROP DATABASE")))
     }
 
@@ -203,6 +320,15 @@ impl QueryRouter {
             .await
             .map_err(to_err)?;
 
+        // Warm cache for the new table
+        if let Ok(Some(tbl)) = neo4j.get_table(&db_name, &table_name).await {
+            if let Ok(cols) = neo4j.describe_table(&db_name, &table_name).await {
+                let mut cache = self.schema_cache.write().await;
+                cache.tables.insert((db_name.clone(), table_name.clone()), tbl);
+                cache.columns.insert((db_name, table_name), cols);
+            }
+        }
+
         Ok(Response::Execution(Tag::new("CREATE TABLE")))
     }
 
@@ -217,6 +343,8 @@ impl QueryRouter {
 
         let neo4j = self.neo4j.read().await;
         neo4j.drop_table(db_name, table_name).await.map_err(to_err)?;
+        let mut cache = self.schema_cache.write().await;
+        cache.invalidate_table(db_name, table_name);
         Ok(Response::Execution(Tag::new("DROP TABLE")))
     }
 
@@ -249,6 +377,9 @@ impl QueryRouter {
                     )
                     .await
                     .map_err(to_err)?;
+
+                let mut cache = self.schema_cache.write().await;
+                cache.invalidate_table(&db_name, &table_name);
 
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
@@ -290,7 +421,7 @@ impl QueryRouter {
                 .collect::<Result<_, _>>()?;
 
             let mut wal = self.wal.write().await;
-            let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+            let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
             let n = engine
                 .insert(&db_name, &table_name, &column_names, &values)
                 .await
@@ -337,7 +468,7 @@ impl QueryRouter {
 
         let neo4j = self.neo4j.read().await;
         let mut wal = self.wal.write().await;
-        let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+        let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
         let n = engine
             .update(&db_name, &table_name, &set_pairs, &where_col, &where_val)
             .await
@@ -374,7 +505,7 @@ impl QueryRouter {
 
         let neo4j = self.neo4j.read().await;
         let mut wal = self.wal.write().await;
-        let mut engine = WriteEngine::new(&self.kvrocks, &neo4j, &mut wal);
+        let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
         let n = engine
             .delete(&db_name, &table_name, &where_col, &where_val)
             .await
@@ -388,6 +519,7 @@ impl QueryRouter {
     // ── SELECT handler (M4) ──
 
     async fn handle_select<'a>(&self, query: sqlparser::ast::Query) -> PgWireResult<Response<'a>> {
+        let t_total = std::time::Instant::now();
         let select = match query.body.as_ref() {
             SetExpr::Select(sel) => sel.clone(),
             _ => return Err(user_error("only simple SELECT supported".to_string())),
@@ -412,21 +544,13 @@ impl QueryRouter {
         let current_db = self.current_db.read().await.clone();
         let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
 
-        let neo4j = self.neo4j.read().await;
-        let schema_cols = neo4j
-            .describe_table(&db_name, &table_name)
-            .await
-            .map_err(to_err)?;
-        let db = neo4j
-            .get_database(&db_name)
-            .await
-            .map_err(to_err)?
+        let t_schema = std::time::Instant::now();
+        let schema_cols = self.cached_describe_table(&db_name, &table_name).await?;
+        let db = self.cached_get_database(&db_name).await?
             .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
-        let table = neo4j
-            .get_table(&db_name, &table_name)
-            .await
-            .map_err(to_err)?
+        let table = self.cached_get_table(&db_name, &table_name).await?
             .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+        let schema_ms = t_schema.elapsed().as_secs_f64() * 1000.0;
 
         // Detect aggregates vs. plain select
         let agg_exprs = extract_aggregates(&select.projection);
@@ -447,11 +571,15 @@ impl QueryRouter {
         }
 
         // Fetch all rows from Kvrocks
+        let t_fetch = std::time::Instant::now();
         let rows = self
             .fetch_rows(db.id, table.id, &schema_cols)
             .await?;
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+        let row_count = rows.len();
 
         // Apply WHERE filter
+        let t_filter = std::time::Instant::now();
         let filtered: Vec<Row> = if let Some(ref selection) = select.selection {
             rows.into_iter()
                 .filter(|row| evaluate_predicate(selection, row, &schema_cols))
@@ -459,6 +587,18 @@ impl QueryRouter {
         } else {
             rows
         };
+        let filter_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
+        let filtered_count = filtered.len();
+
+        tracing::info!(
+            schema_ms = format!("{:.1}", schema_ms),
+            fetch_ms = format!("{:.1}", fetch_ms),
+            filter_ms = format!("{:.1}", filter_ms),
+            total_rows = row_count,
+            filtered_rows = filtered_count,
+            total_ms = format!("{:.1}", t_total.elapsed().as_secs_f64() * 1000.0),
+            "SELECT perf breakdown"
+        );
 
         // Handle aggregates
         if is_aggregate {
@@ -508,15 +648,14 @@ impl QueryRouter {
         query: sqlparser::ast::Query,
     ) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
 
         // Parse left (base) table
         let (left_name, left_alias) = extract_table_info(&select.from[0].relation)?;
         let (left_db, left_tbl) = self.resolve_table_name(&left_name, &current_db);
-        let left_schema = neo4j.describe_table(&left_db, &left_tbl).await.map_err(to_err)?;
-        let left_db_info = neo4j.get_database(&left_db).await.map_err(to_err)?
+        let left_schema = self.cached_describe_table(&left_db, &left_tbl).await?;
+        let left_db_info = self.cached_get_database(&left_db).await?
             .ok_or_else(|| user_error(format!("database '{}' does not exist", left_db)))?;
-        let left_tbl_info = neo4j.get_table(&left_db, &left_tbl).await.map_err(to_err)?
+        let left_tbl_info = self.cached_get_table(&left_db, &left_tbl).await?
             .ok_or_else(|| user_error(format!("table '{}' does not exist", left_tbl)))?;
 
         let left_prefix = left_alias.as_deref().unwrap_or(&left_tbl);
@@ -537,10 +676,10 @@ impl QueryRouter {
         for join in &select.from[0].joins {
             let (right_name, right_alias) = extract_table_info(&join.relation)?;
             let (right_db, right_tbl) = self.resolve_table_name(&right_name, &current_db);
-            let right_schema = neo4j.describe_table(&right_db, &right_tbl).await.map_err(to_err)?;
-            let right_db_info = neo4j.get_database(&right_db).await.map_err(to_err)?
+            let right_schema = self.cached_describe_table(&right_db, &right_tbl).await?;
+            let right_db_info = self.cached_get_database(&right_db).await?
                 .ok_or_else(|| user_error(format!("database '{}' does not exist", right_db)))?;
-            let right_tbl_info = neo4j.get_table(&right_db, &right_tbl).await.map_err(to_err)?
+            let right_tbl_info = self.cached_get_table(&right_db, &right_tbl).await?
                 .ok_or_else(|| user_error(format!("table '{}' does not exist", right_tbl)))?;
 
             let (is_left_join, on_expr) = match &join.join_operator {
@@ -706,18 +845,10 @@ impl QueryRouter {
 
     /// Fast row count: SCAN keys and count unique row_ids without MGET.
     async fn count_rows_fast(&self, db_id: u32, table_id: u32) -> PgWireResult<i64> {
-        let pattern = keys::table_scan_pattern(db_id, table_id)
+        let prefix = keys::table_scan_prefix(db_id, table_id)
             .map_err(|e| user_error(e.to_string()))?;
-        let all_keys = self.kvrocks.scan_keys(&pattern).await.map_err(to_err)?;
-
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for key in &all_keys {
-            let parts: Vec<&str> = key.split(':').collect();
-            if parts.len() == 4 {
-                seen.insert(parts[2]);
-            }
-        }
-        Ok(seen.len() as i64)
+        let all_kv = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        Ok(all_kv.len() as i64)
     }
 
     /// Build a simple COUNT(*) = N response.
@@ -729,57 +860,48 @@ impl QueryRouter {
         Ok(Response::Query(query_response(fields, data_rows)))
     }
 
-    /// Fetch all rows for a table from Kvrocks, deserialize into Row maps.
+    /// Fetch all rows for a table, deserialize into Row maps.
+    /// Row-oriented: one key per row, value is bincode-serialized column map.
     async fn fetch_rows(
         &self,
         db_id: u32,
         table_id: u32,
         schema_cols: &[ColumnInfo],
     ) -> PgWireResult<Vec<Row>> {
-        let pattern = keys::table_scan_pattern(db_id, table_id)
+        let t_scan = std::time::Instant::now();
+        let prefix = keys::table_scan_prefix(db_id, table_id)
             .map_err(|e| user_error(e.to_string()))?;
-        let all_keys = self.kvrocks.scan_keys(&pattern).await.map_err(to_err)?;
+        let all_kv = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        let scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
 
-        if all_keys.is_empty() {
+        if all_kv.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Single MGET for all keys at once
-        let all_vals = self.kvrocks.mget(&all_keys).await.map_err(to_err)?;
-
-        // Build key -> value lookup
-        let mut key_val_map: HashMap<String, Vec<u8>> = HashMap::with_capacity(all_keys.len());
-        for (key, val) in all_keys.iter().zip(all_vals.into_iter()) {
-            if let Some(v) = val {
-                key_val_map.insert(key.clone(), v);
-            }
-        }
-
-        // Collect unique row_ids
-        let mut row_ids: Vec<String> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for key in &all_keys {
-            let parts: Vec<&str> = key.split(':').collect();
-            if parts.len() == 4 && seen.insert(parts[2].to_string()) {
-                row_ids.push(parts[2].to_string());
-            }
-        }
-
-        // Build rows by constructing expected keys per row
-        let mut rows = Vec::with_capacity(row_ids.len());
-        for row_id_str in &row_ids {
-            let row_id_raw = keys::decode_base62(row_id_str)
-                .map_err(|e| user_error(e.to_string()))?;
-
-            let mut col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = Vec::new();
-            for col in schema_cols {
-                let key = keys::build_key(db_id, table_id, row_id_raw, col.id)
-                    .map_err(|e| user_error(e.to_string()))?;
-                let val = key_val_map.get(&key).cloned();
-                col_values.push((col, val));
-            }
+        let t_assemble = std::time::Instant::now();
+        let mut rows = Vec::with_capacity(all_kv.len());
+        let mut num_rows = 0usize;
+        for (_key, row_data) in &all_kv {
+            let columns = deserialize_columns(row_data);
+            let col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = schema_cols
+                .iter()
+                .map(|sc| {
+                    let val = columns.iter().find(|(id, _)| *id == sc.id).map(|(_, v)| v.clone());
+                    (sc, val)
+                })
+                .collect();
             rows.push(bytes_to_row(&col_values));
+            num_rows += 1;
         }
+        let assemble_ms = t_assemble.elapsed().as_secs_f64() * 1000.0;
+
+        tracing::info!(
+            keys = all_kv.len(),
+            rows = num_rows,
+            scan_ms = format!("{:.1}", scan_ms),
+            assemble_ms = format!("{:.1}", assemble_ms),
+            "fetch_rows breakdown"
+        );
 
         Ok(rows)
     }
