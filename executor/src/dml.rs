@@ -1,3 +1,4 @@
+use crate::row_format::{encode_row, RowView};
 use crate::storage::StorageBackend;
 use anyhow::{bail, Context, Result};
 use keys::{build_row_key, encode_row_id};
@@ -277,13 +278,18 @@ impl<'a> WriteEngine<'a> {
 
         let all_kv = self.storage.scan_prefix(&prefix).await?;
         for (key, row_data) in &all_kv {
-            // Skip pk: keys
             if key.starts_with("pk:") {
                 continue;
             }
-            let cols = deserialize_columns(row_data);
-            if let Some((_, val_bytes)) = cols.iter().find(|(id, _)| *id == col.id) {
-                let val_str = String::from_utf8_lossy(val_bytes);
+            // Use RowView for zero-copy column lookup when possible
+            let val_bytes = if let Some(view) = RowView::new(row_data) {
+                view.find_col(col.id).map(|b| b.to_vec())
+            } else {
+                let cols = deserialize_columns(row_data);
+                cols.into_iter().find(|(id, _)| *id == col.id).map(|(_, v)| v)
+            };
+            if let Some(val_bytes) = val_bytes {
+                let val_str = String::from_utf8_lossy(&val_bytes);
                 if val_str == where_val {
                     let parts: Vec<&str> = key.split(':').collect();
                     if parts.len() == 3 {
@@ -367,15 +373,20 @@ fn validate_not_null(schema_cols: &[ColumnInfo], resolved: &[(ColumnInfo, Vec<u8
     Ok(())
 }
 
-/// Serialize column data into a single byte vector.
-/// Format: bincode-encoded Vec<(u32, Vec<u8>)>
+/// Serialize column data into the zero-copy binary row format.
 pub fn serialize_columns(columns: &[(u32, Vec<u8>)]) -> Vec<u8> {
-    bincode::serialize(columns).expect("bincode serialize should not fail")
+    let borrowed: Vec<(u32, &[u8])> = columns.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+    encode_row(&borrowed)
 }
 
-/// Deserialize column data from a single byte vector.
+/// Deserialize column data from either the new row format or legacy bincode.
 pub fn deserialize_columns(data: &[u8]) -> Vec<(u32, Vec<u8>)> {
-    bincode::deserialize(data).unwrap_or_default()
+    if let Some(view) = RowView::new(data) {
+        view.to_owned_columns()
+    } else {
+        // Legacy bincode fallback
+        bincode::deserialize(data).unwrap_or_default()
+    }
 }
 
 /// Replay WAL entries to storage (called on startup for Neo4jCommitted entries).

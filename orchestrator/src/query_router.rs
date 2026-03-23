@@ -1,4 +1,4 @@
-use executor::{bytes_to_row, deserialize_columns, evaluate_predicate, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
+use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
@@ -10,7 +10,7 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -570,31 +570,31 @@ impl QueryRouter {
             return self.make_count_star_response(count);
         }
 
-        // Fetch all rows from Kvrocks
+        // Compute columns needed by this query (WHERE + SELECT + ORDER BY + GROUP BY)
+        let needed_col_ids = compute_needed_col_ids(
+            select.selection.as_ref(),
+            &select.projection,
+            query.order_by.as_ref(),
+            &select.group_by,
+            &schema_cols,
+        );
+
+        // Fused fetch + decode + filter: only decodes needed columns, filters inline
         let t_fetch = std::time::Instant::now();
-        let rows = self
-            .fetch_rows(db.id, table.id, &schema_cols)
+        let filtered = self
+            .fetch_filtered_rows(
+                db.id, table.id, &schema_cols,
+                &needed_col_ids,
+                select.selection.as_ref(),
+            )
             .await?;
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
-        let row_count = rows.len();
-
-        // Apply WHERE filter
-        let t_filter = std::time::Instant::now();
-        let filtered: Vec<Row> = if let Some(ref selection) = select.selection {
-            rows.into_iter()
-                .filter(|row| evaluate_predicate(selection, row, &schema_cols))
-                .collect()
-        } else {
-            rows
-        };
-        let filter_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
         let filtered_count = filtered.len();
 
         tracing::info!(
             schema_ms = format!("{:.1}", schema_ms),
             fetch_ms = format!("{:.1}", fetch_ms),
-            filter_ms = format!("{:.1}", filter_ms),
-            total_rows = row_count,
+            needed_cols = needed_col_ids.len(),
             filtered_rows = filtered_count,
             total_ms = format!("{:.1}", t_total.elapsed().as_secs_f64() * 1000.0),
             "SELECT perf breakdown"
@@ -860,6 +860,82 @@ impl QueryRouter {
         Ok(Response::Query(query_response(fields, data_rows)))
     }
 
+    /// Fused scan + decode + filter. Only decodes needed columns, applies predicate inline.
+    async fn fetch_filtered_rows(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+        needed_col_ids: &HashSet<u32>,
+        predicate: Option<&Expr>,
+    ) -> PgWireResult<Vec<Row>> {
+        let t_scan = std::time::Instant::now();
+        let prefix = keys::table_scan_prefix(db_id, table_id)
+            .map_err(|e| user_error(e.to_string()))?;
+        let all_kv = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        let scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
+
+        if all_kv.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let needed_schema: Vec<&ColumnInfo> = schema_cols
+            .iter()
+            .filter(|c| needed_col_ids.contains(&c.id))
+            .collect();
+
+        let t_assemble = std::time::Instant::now();
+        let mut rows = Vec::with_capacity(all_kv.len());
+        let mut scanned = 0usize;
+        for (_key, row_data) in &all_kv {
+            scanned += 1;
+            if let Some(view) = executor::RowView::new(row_data) {
+                let col_values: Vec<(&ColumnInfo, Option<&[u8]>)> = needed_schema
+                    .iter()
+                    .map(|sc| (*sc, view.find_col(sc.id)))
+                    .collect();
+                let row = bytes_to_row_ref(&col_values);
+
+                if let Some(pred) = predicate {
+                    if !evaluate_predicate(pred, &row, schema_cols) {
+                        continue;
+                    }
+                }
+                rows.push(row);
+            } else {
+                let columns = deserialize_columns(row_data);
+                let col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = needed_schema
+                    .iter()
+                    .map(|sc| {
+                        let val = columns.iter().find(|(id, _)| *id == sc.id).map(|(_, v)| v.clone());
+                        (*sc, val)
+                    })
+                    .collect();
+                let row = bytes_to_row(&col_values);
+
+                if let Some(pred) = predicate {
+                    if !evaluate_predicate(pred, &row, schema_cols) {
+                        continue;
+                    }
+                }
+                rows.push(row);
+            }
+        }
+        let assemble_ms = t_assemble.elapsed().as_secs_f64() * 1000.0;
+
+        tracing::info!(
+            scanned,
+            matched = rows.len(),
+            needed_cols = needed_schema.len(),
+            total_cols = schema_cols.len(),
+            scan_ms = format!("{:.1}", scan_ms),
+            assemble_ms = format!("{:.1}", assemble_ms),
+            "fetch_filtered_rows breakdown"
+        );
+
+        Ok(rows)
+    }
+
     /// Fetch all rows for a table, deserialize into Row maps.
     /// Row-oriented: one key per row, value is bincode-serialized column map.
     async fn fetch_rows(
@@ -882,15 +958,25 @@ impl QueryRouter {
         let mut rows = Vec::with_capacity(all_kv.len());
         let mut num_rows = 0usize;
         for (_key, row_data) in &all_kv {
-            let columns = deserialize_columns(row_data);
-            let col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = schema_cols
-                .iter()
-                .map(|sc| {
-                    let val = columns.iter().find(|(id, _)| *id == sc.id).map(|(_, v)| v.clone());
-                    (sc, val)
-                })
-                .collect();
-            rows.push(bytes_to_row(&col_values));
+            if let Some(view) = executor::RowView::new(row_data) {
+                // Zero-copy path: read column bytes directly via offset arithmetic
+                let col_values: Vec<(&ColumnInfo, Option<&[u8]>)> = schema_cols
+                    .iter()
+                    .map(|sc| (sc, view.find_col(sc.id)))
+                    .collect();
+                rows.push(bytes_to_row_ref(&col_values));
+            } else {
+                // Legacy bincode fallback
+                let columns = deserialize_columns(row_data);
+                let col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = schema_cols
+                    .iter()
+                    .map(|sc| {
+                        let val = columns.iter().find(|(id, _)| *id == sc.id).map(|(_, v)| v.clone());
+                        (sc, val)
+                    })
+                    .collect();
+                rows.push(bytes_to_row(&col_values));
+            }
             num_rows += 1;
         }
         let assemble_ms = t_assemble.elapsed().as_secs_f64() * 1000.0;
@@ -1783,6 +1869,122 @@ fn resolve_join_projection(
 }
 
 /// Find the fully qualified column key for an unqualified column name.
+/// Extract all column names referenced in an AST expression tree.
+fn collect_expr_columns(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Identifier(ident) => {
+            out.insert(ident.value.to_lowercase());
+        }
+        Expr::CompoundIdentifier(parts) => {
+            if let Some(last) = parts.last() {
+                out.insert(last.value.to_lowercase());
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_expr_columns(left, out);
+            collect_expr_columns(right, out);
+        }
+        Expr::UnaryOp { expr, .. } => collect_expr_columns(expr, out),
+        Expr::Nested(inner) => collect_expr_columns(inner, out),
+        Expr::Between { expr, low, high, .. } => {
+            collect_expr_columns(expr, out);
+            collect_expr_columns(low, out);
+            collect_expr_columns(high, out);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_expr_columns(expr, out);
+            for item in list {
+                collect_expr_columns(item, out);
+            }
+        }
+        Expr::IsNull(inner) | Expr::IsNotNull(inner) => collect_expr_columns(inner, out),
+        Expr::Like { expr, pattern, .. } => {
+            collect_expr_columns(expr, out);
+            collect_expr_columns(pattern, out);
+        }
+        Expr::Function(f) => {
+            if let sqlparser::ast::FunctionArguments::List(list) = &f.args {
+                for arg in &list.args {
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg {
+                        collect_expr_columns(e, out);
+                    }
+                }
+            }
+        }
+        Expr::Case { operand, conditions, results, else_result, .. } => {
+            if let Some(op) = operand {
+                collect_expr_columns(op, out);
+            }
+            for c in conditions {
+                collect_expr_columns(c, out);
+            }
+            for r in results {
+                collect_expr_columns(r, out);
+            }
+            if let Some(e) = else_result {
+                collect_expr_columns(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compute the set of column IDs needed by a query (WHERE + SELECT + ORDER BY + GROUP BY).
+fn compute_needed_col_ids(
+    selection: Option<&Expr>,
+    projection: &[SelectItem],
+    order_by: Option<&sqlparser::ast::OrderBy>,
+    group_by: &sqlparser::ast::GroupByExpr,
+    schema_cols: &[ColumnInfo],
+) -> HashSet<u32> {
+    let mut col_names = HashSet::new();
+    let mut needs_all = false;
+
+    // WHERE clause columns
+    if let Some(expr) = selection {
+        collect_expr_columns(expr, &mut col_names);
+    }
+
+    // SELECT projection columns
+    for item in projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                needs_all = true;
+            }
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                collect_expr_columns(expr, &mut col_names);
+            }
+            SelectItem::QualifiedWildcard(_, _) => {
+                needs_all = true;
+            }
+        }
+    }
+
+    // ORDER BY columns
+    if let Some(ob) = order_by {
+        for oe in &ob.exprs {
+            collect_expr_columns(&oe.expr, &mut col_names);
+        }
+    }
+
+    // GROUP BY columns
+    if let sqlparser::ast::GroupByExpr::Expressions(exprs, _) = group_by {
+        for expr in exprs {
+            collect_expr_columns(expr, &mut col_names);
+        }
+    }
+
+    if needs_all {
+        return schema_cols.iter().map(|c| c.id).collect();
+    }
+
+    schema_cols
+        .iter()
+        .filter(|c| col_names.contains(&c.name.to_lowercase()))
+        .map(|c| c.id)
+        .collect()
+}
+
 fn find_column_key(
     col_name: &str,
     combined_schema: &[ColumnInfo],

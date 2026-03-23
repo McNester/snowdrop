@@ -231,9 +231,21 @@ fn literal_to_typed(val: &Value) -> TypedValue {
     }
 }
 
-/// Deserialize raw Kvrocks bytes into a Row.
-/// `col_values` maps column name -> Option<raw bytes>.
+/// Deserialize raw bytes into a Row (owned version).
 pub fn bytes_to_row(col_values: &[(&ColumnInfo, Option<Vec<u8>>)]) -> Row {
+    let mut row = Row::new();
+    for (col, val) in col_values {
+        let typed = match val {
+            Some(bytes) => TypedValue::from_bytes(bytes, &col.data_type),
+            None => TypedValue::Null,
+        };
+        row.insert(col.name.to_lowercase(), typed);
+    }
+    row
+}
+
+/// Zero-copy variant: takes borrowed byte slices, avoiding intermediate Vec allocations.
+pub fn bytes_to_row_ref(col_values: &[(&ColumnInfo, Option<&[u8]>)]) -> Row {
     let mut row = Row::new();
     for (col, val) in col_values {
         let typed = match val {
