@@ -1,3 +1,4 @@
+use crate::row_format::RowView;
 use crate::typed_value::TypedValue;
 use schema::ColumnInfo;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
@@ -255,6 +256,158 @@ pub fn bytes_to_row_ref(col_values: &[(&ColumnInfo, Option<&[u8]>)]) -> Row {
         row.insert(col.name.to_lowercase(), typed);
     }
     row
+}
+
+/// Evaluate a WHERE expression directly against a RowView without building a Row HashMap.
+/// Column values are resolved lazily from the RowView, enabling AND short-circuit
+/// to skip parsing columns for rows that fail early predicates.
+pub fn evaluate_predicate_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -> bool {
+    match expr {
+        Expr::BinaryOp { left, op, right } => eval_binary_op_view(left, op, right, view, schema_cols),
+        Expr::UnaryOp { op: UnaryOperator::Not, expr } => {
+            !evaluate_predicate_view(expr, view, schema_cols)
+        }
+        Expr::IsNull(inner) => resolve_value_view(inner, view, schema_cols).is_null(),
+        Expr::IsNotNull(inner) => !resolve_value_view(inner, view, schema_cols).is_null(),
+        Expr::Between { expr: col, low, high, negated } => {
+            let val = resolve_value_view(col, view, schema_cols);
+            let lo = resolve_value_view(low, view, schema_cols);
+            let hi = resolve_value_view(high, view, schema_cols);
+            let in_range = (val.sql_eq(&lo) || val.sql_gt(&lo))
+                && (val.sql_eq(&hi) || val.sql_lt(&hi));
+            if *negated { !in_range } else { in_range }
+        }
+        Expr::InList { expr: col, list, negated } => {
+            let val = resolve_value_view(col, view, schema_cols);
+            let found = list.iter().any(|item| {
+                let item_val = resolve_value_view(item, view, schema_cols);
+                val.sql_eq(&item_val)
+            });
+            if *negated { !found } else { found }
+        }
+        Expr::Like { expr: col_expr, pattern, negated, .. } => {
+            let val = resolve_value_view(col_expr, view, schema_cols);
+            let pat = resolve_value_view(pattern, view, schema_cols);
+            let matches = if let TypedValue::Text(p) = &pat {
+                val.sql_like(p)
+            } else {
+                false
+            };
+            if *negated { !matches } else { matches }
+        }
+        Expr::Nested(inner) => evaluate_predicate_view(inner, view, schema_cols),
+        _ => false,
+    }
+}
+
+fn eval_binary_op_view(
+    left: &Expr,
+    op: &BinaryOperator,
+    right: &Expr,
+    view: &RowView,
+    schema_cols: &[ColumnInfo],
+) -> bool {
+    match op {
+        BinaryOperator::And => {
+            evaluate_predicate_view(left, view, schema_cols)
+                && evaluate_predicate_view(right, view, schema_cols)
+        }
+        BinaryOperator::Or => {
+            evaluate_predicate_view(left, view, schema_cols)
+                || evaluate_predicate_view(right, view, schema_cols)
+        }
+        _ => {
+            let lval = resolve_value_view(left, view, schema_cols);
+            let rval = resolve_value_view(right, view, schema_cols);
+            match op {
+                BinaryOperator::Eq => lval.sql_eq(&rval),
+                BinaryOperator::NotEq => !lval.sql_eq(&rval) && !lval.is_null() && !rval.is_null(),
+                BinaryOperator::Lt => lval.sql_lt(&rval),
+                BinaryOperator::LtEq => lval.sql_lt(&rval) || lval.sql_eq(&rval),
+                BinaryOperator::Gt => lval.sql_gt(&rval),
+                BinaryOperator::GtEq => lval.sql_gt(&rval) || lval.sql_eq(&rval),
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Resolve an AST expression to a TypedValue using the RowView's raw data.
+fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -> TypedValue {
+    match expr {
+        Expr::Identifier(ident) => {
+            let col_name = ident.value.to_lowercase();
+            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+                view.find_col(col.id)
+                    .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
+                    .unwrap_or(TypedValue::Null)
+            } else {
+                TypedValue::Null
+            }
+        }
+        Expr::CompoundIdentifier(parts) => {
+            let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
+            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+                view.find_col(col.id)
+                    .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
+                    .unwrap_or(TypedValue::Null)
+            } else {
+                TypedValue::Null
+            }
+        }
+        Expr::Value(val) => literal_to_typed(val),
+        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+            if let TypedValue::Int(i) = resolve_value_view(expr, view, schema_cols) {
+                TypedValue::Int(-i)
+            } else if let TypedValue::Float(f) = resolve_value_view(expr, view, schema_cols) {
+                TypedValue::Float(-f)
+            } else {
+                TypedValue::Null
+            }
+        }
+        Expr::BinaryOp { left, op, right } => {
+            let lval = resolve_value_view(left, view, schema_cols);
+            let rval = resolve_value_view(right, view, schema_cols);
+            eval_arithmetic_typed(&lval, op, &rval)
+        }
+        Expr::Nested(inner) => resolve_value_view(inner, view, schema_cols),
+        _ => TypedValue::Null,
+    }
+}
+
+/// Arithmetic on already-resolved TypedValues (shared between Row and RowView paths).
+fn eval_arithmetic_typed(lval: &TypedValue, op: &BinaryOperator, rval: &TypedValue) -> TypedValue {
+    if lval.is_null() || rval.is_null() {
+        return TypedValue::Null;
+    }
+    match (lval.as_f64(), rval.as_f64()) {
+        (Some(l), Some(r)) => {
+            let result = match op {
+                BinaryOperator::Plus => l + r,
+                BinaryOperator::Minus => l - r,
+                BinaryOperator::Multiply => l * r,
+                BinaryOperator::Divide => {
+                    if r == 0.0 { return TypedValue::Null; }
+                    l / r
+                }
+                BinaryOperator::Modulo => {
+                    if r == 0.0 { return TypedValue::Null; }
+                    l % r
+                }
+                _ => return TypedValue::Null,
+            };
+            if matches!(lval, TypedValue::Int(_))
+                && matches!(rval, TypedValue::Int(_))
+                && result == (result as i64) as f64
+                && !matches!(op, BinaryOperator::Divide)
+            {
+                TypedValue::Int(result as i64)
+            } else {
+                TypedValue::Float(result)
+            }
+        }
+        _ => TypedValue::Null,
+    }
 }
 
 #[cfg(test)]

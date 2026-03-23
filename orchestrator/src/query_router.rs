@@ -1,4 +1,4 @@
-use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
+use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
@@ -890,19 +890,20 @@ impl QueryRouter {
         for (_key, row_data) in &all_kv {
             scanned += 1;
             if let Some(view) = executor::RowView::new(row_data) {
+                // Evaluate predicate directly on RowView (no HashMap, no upfront parsing)
+                if let Some(pred) = predicate {
+                    if !evaluate_predicate_view(pred, &view, schema_cols) {
+                        continue;
+                    }
+                }
+                // Only build Row for rows that pass the predicate
                 let col_values: Vec<(&ColumnInfo, Option<&[u8]>)> = needed_schema
                     .iter()
                     .map(|sc| (*sc, view.find_col(sc.id)))
                     .collect();
-                let row = bytes_to_row_ref(&col_values);
-
-                if let Some(pred) = predicate {
-                    if !evaluate_predicate(pred, &row, schema_cols) {
-                        continue;
-                    }
-                }
-                rows.push(row);
+                rows.push(bytes_to_row_ref(&col_values));
             } else {
+                // Legacy bincode fallback
                 let columns = deserialize_columns(row_data);
                 let col_values: Vec<(&ColumnInfo, Option<Vec<u8>>)> = needed_schema
                     .iter()
