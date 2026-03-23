@@ -1,3 +1,4 @@
+pub mod column_store;
 pub mod dml;
 pub mod filter;
 pub mod kvrocks;

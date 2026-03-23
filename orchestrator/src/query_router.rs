@@ -1,3 +1,4 @@
+use executor::column_store::{self, Bitmap, CmpOp, TableColumns, TypedColumn};
 use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
@@ -51,6 +52,9 @@ pub struct QueryRouter {
     wal: Arc<RwLock<WalFile>>,
     current_db: Arc<RwLock<String>>,
     schema_cache: Arc<RwLock<SchemaCache>>,
+    /// In-memory columnar cache for SIMD-filtered full scans.
+    /// Key: (db_id, table_id). Invalidated on mutations.
+    column_cache: Arc<RwLock<HashMap<(u32, u32), TableColumns>>>,
 }
 
 impl QueryRouter {
@@ -61,6 +65,7 @@ impl QueryRouter {
             wal: Arc::new(RwLock::new(wal)),
             current_db: Arc::new(RwLock::new("default".to_string())),
             schema_cache: Arc::new(RwLock::new(SchemaCache::new())),
+            column_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -429,6 +434,14 @@ impl QueryRouter {
             total_inserted += n;
         }
 
+        // Invalidate column cache for this table
+        if let (Some(db_info), Some(tbl_info)) = (
+            self.cached_get_database(&db_name).await.ok().flatten(),
+            self.cached_get_table(&db_name, &table_name).await.ok().flatten(),
+        ) {
+            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+        }
+
         Ok(Response::Execution(
             Tag::new("INSERT").with_rows(total_inserted as usize),
         ))
@@ -474,6 +487,13 @@ impl QueryRouter {
             .await
             .map_err(to_err)?;
 
+        if let (Some(db_info), Some(tbl_info)) = (
+            self.cached_get_database(&db_name).await.ok().flatten(),
+            self.cached_get_table(&db_name, &table_name).await.ok().flatten(),
+        ) {
+            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+        }
+
         Ok(Response::Execution(
             Tag::new("UPDATE").with_rows(n as usize),
         ))
@@ -510,6 +530,13 @@ impl QueryRouter {
             .delete(&db_name, &table_name, &where_col, &where_val)
             .await
             .map_err(to_err)?;
+
+        if let (Some(db_info), Some(tbl_info)) = (
+            self.cached_get_database(&db_name).await.ok().flatten(),
+            self.cached_get_table(&db_name, &table_name).await.ok().flatten(),
+        ) {
+            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+        }
 
         Ok(Response::Execution(
             Tag::new("DELETE").with_rows(n as usize),
@@ -579,10 +606,10 @@ impl QueryRouter {
             &schema_cols,
         );
 
-        // Fused fetch + decode + filter: only decodes needed columns, filters inline
+        // Columnar scan: SIMD-filtered typed arrays, only materialize matching rows
         let t_fetch = std::time::Instant::now();
         let filtered = self
-            .fetch_filtered_rows(
+            .fetch_columnar(
                 db.id, table.id, &schema_cols,
                 &needed_col_ids,
                 select.selection.as_ref(),
@@ -935,6 +962,89 @@ impl QueryRouter {
         );
 
         Ok(rows)
+    }
+
+    /// Columnar scan path: build/use in-memory typed arrays, apply SIMD filters.
+    async fn fetch_columnar(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+        needed_col_ids: &HashSet<u32>,
+        predicate: Option<&Expr>,
+    ) -> PgWireResult<Vec<Row>> {
+        let t_total = std::time::Instant::now();
+
+        // Build or retrieve column cache
+        let t_cache = std::time::Instant::now();
+        let cache_hit;
+        {
+            let cache = self.column_cache.read().await;
+            cache_hit = cache.contains_key(&(db_id, table_id));
+        }
+        if !cache_hit {
+            let prefix = keys::table_scan_prefix(db_id, table_id)
+                .map_err(|e| user_error(e.to_string()))?;
+            let all_kv = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+            let table_cols = TableColumns::build(&all_kv, schema_cols);
+            let mut cache = self.column_cache.write().await;
+            cache.insert((db_id, table_id), table_cols);
+        }
+        let cache_ms = t_cache.elapsed().as_secs_f64() * 1000.0;
+
+        let cache = self.column_cache.read().await;
+        let table_cols = cache.get(&(db_id, table_id)).unwrap();
+
+        if table_cols.row_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Apply predicate using columnar filters
+        let t_filter = std::time::Instant::now();
+        let bitmap = if let Some(pred) = predicate {
+            apply_columnar_predicate(pred, table_cols, schema_cols)
+        } else {
+            Bitmap::all_true(table_cols.row_count)
+        };
+        let filter_ms = t_filter.elapsed().as_secs_f64() * 1000.0;
+
+        // Materialize matching rows
+        let t_materialize = std::time::Instant::now();
+        let needed_schema: Vec<&ColumnInfo> = schema_cols
+            .iter()
+            .filter(|c| needed_col_ids.contains(&c.id))
+            .collect();
+
+        let match_count = bitmap.count_ones();
+        let mut rows = Vec::with_capacity(match_count);
+        for idx in bitmap.iter_set_bits() {
+            let mut row = Row::new();
+            for col in &needed_schema {
+                let val = table_cols.get_typed_value(idx, col);
+                row.insert(col.name.to_lowercase(), val);
+            }
+            rows.push(row);
+        }
+        let materialize_ms = t_materialize.elapsed().as_secs_f64() * 1000.0;
+
+        tracing::info!(
+            row_count = table_cols.row_count,
+            matched = match_count,
+            cache_hit,
+            cache_ms = format!("{:.2}", cache_ms),
+            filter_ms = format!("{:.2}", filter_ms),
+            materialize_ms = format!("{:.2}", materialize_ms),
+            total_ms = format!("{:.2}", t_total.elapsed().as_secs_f64() * 1000.0),
+            "columnar scan"
+        );
+
+        Ok(rows)
+    }
+
+    /// Invalidate the column cache for a table (called after INSERT/UPDATE/DELETE).
+    async fn invalidate_column_cache(&self, db_id: u32, table_id: u32) {
+        let mut cache = self.column_cache.write().await;
+        cache.remove(&(db_id, table_id));
     }
 
     /// Fetch all rows for a table, deserialize into Row maps.
@@ -2002,5 +2112,165 @@ fn find_column_key(
             "column '{}' is ambiguous, qualify with table alias",
             col_name
         ))),
+    }
+}
+
+// ── Columnar predicate evaluation ──
+
+/// Apply a WHERE predicate using columnar SIMD filters.
+/// Decomposes AND-connected conditions into per-column bitmap filters.
+/// Falls back to row-by-row for unsupported patterns.
+fn apply_columnar_predicate(
+    expr: &Expr,
+    table_cols: &TableColumns,
+    schema_cols: &[ColumnInfo],
+) -> Bitmap {
+    match expr {
+        Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::And, right } => {
+            let mut left_bm = apply_columnar_predicate(left, table_cols, schema_cols);
+            let right_bm = apply_columnar_predicate(right, table_cols, schema_cols);
+            left_bm.and_with(&right_bm);
+            left_bm
+        }
+        Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Or, right } => {
+            let left_bm = apply_columnar_predicate(left, table_cols, schema_cols);
+            let right_bm = apply_columnar_predicate(right, table_cols, schema_cols);
+            let mut result = left_bm;
+            for (rw, ow) in result.words.iter_mut().zip(right_bm.words.iter()) {
+                *rw |= ow;
+            }
+            result
+        }
+        Expr::Nested(inner) => apply_columnar_predicate(inner, table_cols, schema_cols),
+        Expr::Between { expr: col_expr, low, high, negated } => {
+            if let Some(col_id) = resolve_col_id(col_expr, schema_cols) {
+                if let (Some(lo_val), Some(hi_val)) = (resolve_literal(low), resolve_literal(high)) {
+                    if let Some((typed_col, null_bm)) = table_cols.columns.get(&col_id) {
+                        let bm_ge = column_store::filter_column(typed_col, null_bm, CmpOp::GtEq, &lo_val);
+                        let bm_le = column_store::filter_column(typed_col, null_bm, CmpOp::LtEq, &hi_val);
+                        let mut bm = bm_ge;
+                        bm.and_with(&bm_le);
+                        if *negated {
+                            for w in bm.words.iter_mut() {
+                                *w = !*w;
+                            }
+                            // Clear trailing bits
+                            let remainder = bm.len % 64;
+                            if remainder > 0 {
+                                if let Some(last) = bm.words.last_mut() {
+                                    *last &= (1u64 << remainder) - 1;
+                                }
+                            }
+                        }
+                        return bm;
+                    }
+                }
+            }
+            fallback_predicate(expr, table_cols, schema_cols)
+        }
+        Expr::BinaryOp { left, op, right } => {
+            if let Some(cmp_op) = sql_op_to_cmp(op) {
+                // Try column OP literal
+                if let (Some(col_id), Some(literal)) = (resolve_col_id(left, schema_cols), resolve_literal(right)) {
+                    if let Some((typed_col, null_bm)) = table_cols.columns.get(&col_id) {
+                        return column_store::filter_column(typed_col, null_bm, cmp_op, &literal);
+                    }
+                }
+                // Try literal OP column (reversed)
+                if let (Some(literal), Some(col_id)) = (resolve_literal(left), resolve_col_id(right, schema_cols)) {
+                    let reversed_op = reverse_cmp(cmp_op);
+                    if let Some((typed_col, null_bm)) = table_cols.columns.get(&col_id) {
+                        return column_store::filter_column(typed_col, null_bm, reversed_op, &literal);
+                    }
+                }
+            }
+            fallback_predicate(expr, table_cols, schema_cols)
+        }
+        _ => fallback_predicate(expr, table_cols, schema_cols),
+    }
+}
+
+/// Row-by-row fallback for predicates that can't be handled columnarly.
+fn fallback_predicate(
+    expr: &Expr,
+    table_cols: &TableColumns,
+    schema_cols: &[ColumnInfo],
+) -> Bitmap {
+    let mut bm = Bitmap::all_false(table_cols.row_count);
+    for idx in 0..table_cols.row_count {
+        let mut row = Row::new();
+        for col in schema_cols {
+            let val = table_cols.get_typed_value(idx, col);
+            row.insert(col.name.to_lowercase(), val);
+        }
+        if evaluate_predicate(expr, &row, schema_cols) {
+            bm.set(idx);
+        }
+    }
+    bm
+}
+
+/// Resolve an AST expression to a column ID (for simple column references).
+fn resolve_col_id(expr: &Expr, schema_cols: &[ColumnInfo]) -> Option<u32> {
+    match expr {
+        Expr::Identifier(ident) => {
+            let name = ident.value.to_lowercase();
+            schema_cols.iter().find(|c| c.name.to_lowercase() == name).map(|c| c.id)
+        }
+        Expr::CompoundIdentifier(parts) => {
+            let name = parts.last()?.value.to_lowercase();
+            schema_cols.iter().find(|c| c.name.to_lowercase() == name).map(|c| c.id)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve an AST expression to a literal TypedValue.
+fn resolve_literal(expr: &Expr) -> Option<TypedValue> {
+    match expr {
+        Expr::Value(Value::Number(n, _)) => {
+            if let Ok(i) = n.parse::<i64>() {
+                Some(TypedValue::Int(i))
+            } else if let Ok(f) = n.parse::<f64>() {
+                Some(TypedValue::Float(f))
+            } else {
+                None
+            }
+        }
+        Expr::Value(Value::SingleQuotedString(s)) | Expr::Value(Value::DoubleQuotedString(s)) => {
+            Some(TypedValue::Text(s.clone()))
+        }
+        Expr::Value(Value::Boolean(b)) => Some(TypedValue::Boolean(*b)),
+        Expr::UnaryOp { op: sqlparser::ast::UnaryOperator::Minus, expr } => {
+            if let Some(TypedValue::Int(i)) = resolve_literal(expr) {
+                Some(TypedValue::Int(-i))
+            } else if let Some(TypedValue::Float(f)) = resolve_literal(expr) {
+                Some(TypedValue::Float(-f))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn sql_op_to_cmp(op: &sqlparser::ast::BinaryOperator) -> Option<CmpOp> {
+    match op {
+        sqlparser::ast::BinaryOperator::Eq => Some(CmpOp::Eq),
+        sqlparser::ast::BinaryOperator::Lt => Some(CmpOp::Lt),
+        sqlparser::ast::BinaryOperator::LtEq => Some(CmpOp::LtEq),
+        sqlparser::ast::BinaryOperator::Gt => Some(CmpOp::Gt),
+        sqlparser::ast::BinaryOperator::GtEq => Some(CmpOp::GtEq),
+        _ => None,
+    }
+}
+
+fn reverse_cmp(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::LtEq => CmpOp::GtEq,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::GtEq => CmpOp::LtEq,
+        CmpOp::Eq => CmpOp::Eq,
     }
 }
