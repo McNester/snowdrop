@@ -27,7 +27,7 @@ pub struct SnowdropQueryHandler {
 impl SimpleQueryHandler for SnowdropQueryHandler {
     async fn do_query<'a, 'b: 'a, C>(
         &'b self,
-        _client: &mut C,
+        client: &mut C,
         query_str: &'a str,
     ) -> PgWireResult<Vec<Response<'a>>>
     where
@@ -36,6 +36,14 @@ impl SimpleQueryHandler for SnowdropQueryHandler {
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
         info!(query = query_str, "received query");
+
+        // Set current database from pgwire startup parameter if provided
+        if let Some(db) = client.metadata().get("database") {
+            if !db.is_empty() && db != "snowdrop" {
+                self.router.set_current_db(db).await;
+            }
+        }
+
         self.router.route(query_str).await
     }
 }

@@ -70,6 +70,12 @@ impl QueryRouter {
         }
     }
 
+    /// Set the current database context (called from pgwire startup params).
+    pub async fn set_current_db(&self, db_name: &str) {
+        let mut current = self.current_db.write().await;
+        *current = db_name.to_string();
+    }
+
     /// Load all existing schemas into cache on startup.
     pub async fn warm_schema_cache(&self) -> PgWireResult<()> {
         let neo4j = self.neo4j.read().await;

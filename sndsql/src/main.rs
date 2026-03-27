@@ -147,7 +147,11 @@ async fn execute_query(client: &tokio_postgres::Client, query: &str) {
             println!("Time: {:.3}ms", elapsed.as_secs_f64() * 1000.0);
         }
         Err(e) => {
-            eprintln!("ERROR: {}\n", e);
+            if let Some(db_err) = e.as_db_error() {
+                eprintln!("ERROR: {}\n", db_err.message());
+            } else {
+                eprintln!("ERROR: {}\n", e);
+            }
         }
     }
 }
