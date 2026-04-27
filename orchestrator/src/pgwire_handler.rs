@@ -85,13 +85,13 @@ impl PgWireServerHandlers for SnowdropHandlers {
 }
 
 pub async fn serve_pgwire(
-    addr: &str,
+    addr: String,
     neo4j: schema::Neo4jConnection,
     storage: std::sync::Arc<dyn executor::StorageBackend>,
     wal: wal::WalFile,
 ) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    info!(addr, "pgwire listener started");
+    let listener = TcpListener::bind(&addr).await?;
+    info!(addr = addr.as_str(), "pgwire listener started");
 
     let router = Arc::new(query_router::QueryRouter::new(neo4j, storage, wal));
     router.warm_schema_cache().await.map_err(|e| anyhow::anyhow!("{}", e))?;

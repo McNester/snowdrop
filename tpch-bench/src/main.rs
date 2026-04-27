@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Serialize;
 use std::time::Instant;
 use tokio_postgres::{NoTls, SimpleQueryMessage};
@@ -50,9 +50,12 @@ async fn main() {
     let mut scale = 1usize;
     let mut with_indexes = false;
     let mut output_path: Option<String> = None;
+    let mut snowdrop_host = "localhost".to_string();
+    let mut pg_host = "localhost".to_string();
     let mut snowdrop_port = 5432u16;
     let mut pg_port = 5433u16;
     let mut runs = 3u32;
+    let mut seed = 42u64;
 
     let mut i = 1;
     while i < args.len() {
@@ -60,20 +63,26 @@ async fn main() {
             "--scale" | "-s" => { i += 1; scale = args[i].parse().unwrap_or(1); }
             "--with-indexes" => { with_indexes = true; }
             "--output" | "-o" => { i += 1; output_path = Some(args[i].clone()); }
+            "--host" => { i += 1; snowdrop_host = args[i].clone(); }
+            "--pg-host" => { i += 1; pg_host = args[i].clone(); }
             "--port" => { i += 1; snowdrop_port = args[i].parse().unwrap_or(5432); }
             "--pg-port" => { i += 1; pg_port = args[i].parse().unwrap_or(5433); }
             "--runs" | "-r" => { i += 1; runs = args[i].parse().unwrap_or(3); }
+            "--seed" => { i += 1; seed = args[i].parse().unwrap_or(42); }
             _ => { scale = args[i].parse().unwrap_or(1); }
         }
         i += 1;
     }
 
     let total_lineitems = scale * ORDERS * LINEITEMS_PER_ORDER;
-    println!("TPC-H Benchmark (scale={}, ~{} lineitem rows, runs={})", scale, total_lineitems, runs);
+    println!(
+        "TPC-H Benchmark (scale={}, ~{} lineitem rows, runs={}, seed={})",
+        scale, total_lineitems, runs, seed
+    );
     if with_indexes { println!("Index mode: will create indexes after baseline"); }
 
     let snowdrop = Config {
-        host: "localhost".into(),
+        host: snowdrop_host,
         port: snowdrop_port,
         user: "snowdrop".into(),
         dbname: "snowdrop".into(),
@@ -81,7 +90,7 @@ async fn main() {
     };
 
     let postgres = Config {
-        host: "localhost".into(),
+        host: pg_host,
         port: pg_port,
         user: "postgres".into(),
         dbname: "tpch".into(),
@@ -92,14 +101,14 @@ async fn main() {
 
     // Run Snowdrop benchmark
     println!("\n--- Loading data into {} ---", snowdrop.label);
-    match run_full_benchmark(&snowdrop, scale, true, with_indexes, runs).await {
+    match run_full_benchmark(&snowdrop, scale, true, with_indexes, runs, seed).await {
         Ok(results) => { all_results.extend(results); }
         Err(e) => { eprintln!("Snowdrop error: {}", e); }
     }
 
     // Run PostgreSQL benchmark
     println!("\n--- Loading data into {} ---", postgres.label);
-    match run_full_benchmark(&postgres, scale, false, false, runs).await {
+    match run_full_benchmark(&postgres, scale, false, false, runs, seed).await {
         Ok(results) => { all_results.extend(results); }
         Err(e) => { eprintln!("PostgreSQL error: {}", e); }
     }
@@ -124,6 +133,7 @@ async fn run_full_benchmark(
     is_snowdrop: bool,
     with_indexes: bool,
     runs: u32,
+    seed: u64,
 ) -> Result<Vec<QueryResult>, Box<dyn std::error::Error>> {
     let password = if is_snowdrop { "" } else { " password=postgres" };
     let conn_str = format!(
@@ -136,7 +146,7 @@ async fn run_full_benchmark(
     create_schema(&client, is_snowdrop).await?;
 
     let load_start = Instant::now();
-    load_data(&client, scale, is_snowdrop).await?;
+    load_data(&client, scale, is_snowdrop, seed).await?;
     println!("Load time: {:.1}s", load_start.elapsed().as_secs_f64());
 
     let mut all_results = Vec::new();
@@ -400,8 +410,9 @@ fn generate_report(results: &[QueryResult], scale: usize, with_indexes: bool) {
     report.push_str("## Running\n\n");
     report.push_str("```bash\n");
     report.push_str("docker compose up -d\n");
-    report.push_str("cargo run --release -p tpch-bench -- --scale 1 --with-indexes --output results.json\n");
+    report.push_str("cargo run --release -p tpch-bench -- --scale 1 --with-indexes --seed 42 --output results.json\n");
     report.push_str("```\n\n");
+    report.push_str("For containerized benchmark clients, use `--host` and `--pg-host` to target service names on the Docker network.\n\n");
 
     report.push_str("## Flamegraph\n\n");
     report.push_str("```bash\n");
@@ -460,8 +471,9 @@ async fn load_data(
     client: &tokio_postgres::Client,
     scale: usize,
     is_snowdrop: bool,
+    seed: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut rng = rand::thread_rng();
+    let mut rng = StdRng::seed_from_u64(seed);
     let prefix = if is_snowdrop { "tpch." } else { "" };
     let batch_size = 100;
 
