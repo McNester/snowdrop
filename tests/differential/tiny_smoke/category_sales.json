@@ -1,0 +1,4 @@
+{
+  "name": "category_sales",
+  "sql": "SELECT i.category, SUM(s.qty) FROM items i INNER JOIN sales s ON i.id = s.item_id GROUP BY i.category ORDER BY i.category;"
+}

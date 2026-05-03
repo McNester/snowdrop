@@ -1,0 +1,5 @@
+{
+  "name": "null_notes",
+  "sql": "SELECT id FROM measurements WHERE note IS NULL ORDER BY id;",
+  "expected_rows": [["1"], ["3"]]
+}

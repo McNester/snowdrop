@@ -2,6 +2,8 @@
 
 > Embedded RocksDB, in-memory columnar cache, SIMD-filtered scans
 
+Note: `Snowdrop architecture.pdf` is now partially historical. The current source of truth is this document plus the repository code. In particular, secondary indexes now live in RocksDB, while Neo4j is used for schema metadata only.
+
 ---
 
 ## Overview
@@ -39,6 +41,12 @@ pub trait StorageBackend: Send + Sync {
 ```
 
 The `STORAGE_BACKEND` env var selects the implementation: `rocksdb` (default) or `kvrocks`.
+
+Runtime listener ports are also env-driven:
+
+- `PGWIRE_PORT` (default `5432`)
+- `HEALTH_PORT` (default `8080`)
+- `METRICS_PORT` (default `9090`)
 
 ### RocksDB Configuration
 
@@ -227,7 +235,18 @@ cargo test
 Run TPC-H benchmark:
 ```bash
 docker compose up -d
-cargo run --release -p tpch-bench -- --scale 1 --port 5432
+cargo run --release -p tpch-bench -- --scale 1 --port 5432 --seed 42
+```
+
+Custom host port example:
+```powershell
+$env:SNOWDROP_HOST_PG_PORT = "15432"
+$env:SNOWDROP_HOST_HEALTH_PORT = "18080"
+$env:SNOWDROP_HOST_METRICS_PORT = "19090"
+$env:POSTGRES_HOST_PORT = "15433"
+docker compose up -d
+
+cargo run --release -p tpch-bench -- --scale 1 --port 15432 --pg-port 15433 --seed 42
 ```
 
 The benchmark loads data, runs each TPC-H query 3 times (discarding cold run), and compares against PostgreSQL 16 on identical data.

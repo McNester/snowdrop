@@ -1,0 +1,5 @@
+{
+  "name": "non_negative_sum",
+  "sql": "SELECT COUNT(*), SUM(amount) FROM measurements WHERE amount >= 0;",
+  "expected_rows": [["3", "22.25"]]
+}

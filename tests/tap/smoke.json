@@ -1,0 +1,10 @@
+{
+  "name": "smoke",
+  "dataset": "tiny_smoke",
+  "checks": [
+    { "kind": "health", "name": "health endpoint", "path": "/health", "contains": "\"ok\"" },
+    { "kind": "metrics", "name": "metrics endpoint", "path": "/metrics", "contains": "snowdrop_" },
+    { "kind": "sql", "name": "count items", "sql": "SELECT COUNT(*) FROM items;", "expected_rows": [["3"]] },
+    { "kind": "sql", "name": "invalid query errors", "sql": "SELECT FROM items;", "expected_error": "*" }
+  ]
+}

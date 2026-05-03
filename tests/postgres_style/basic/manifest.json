@@ -1,0 +1,5 @@
+{
+  "name": "basic",
+  "description": "PostgreSQL-style sql/expected pair suite for tiny_smoke.",
+  "dataset": "tiny_smoke"
+}

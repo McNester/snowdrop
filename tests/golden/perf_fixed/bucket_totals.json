@@ -1,0 +1,5 @@
+{
+  "name": "bucket_totals",
+  "sql": "SELECT bucket, SUM(amount) FROM events GROUP BY bucket ORDER BY bucket;",
+  "expected_rows": [["A", "30.5"], ["B", "17.25"], ["C", "41"]]
+}

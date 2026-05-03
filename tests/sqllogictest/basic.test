@@ -1,0 +1,15 @@
+# dataset: tiny_smoke
+
+statement ok
+CREATE TABLE scratch (id BIGINT PRIMARY KEY, value VARCHAR(255));
+
+statement ok
+INSERT INTO scratch (id, value) VALUES (1, 'ok');
+
+statement error
+INSERT INTO scratch (id, value) VALUES (1, 'duplicate');
+
+query IT
+SELECT id, value FROM scratch ORDER BY id;
+----
+1	ok

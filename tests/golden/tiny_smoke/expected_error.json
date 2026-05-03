@@ -1,0 +1,5 @@
+{
+  "name": "expected_error",
+  "sql": "SELECT FROM items;",
+  "expected_error": "*"
+}
