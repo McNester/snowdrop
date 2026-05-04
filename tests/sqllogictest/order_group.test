@@ -1,0 +1,12 @@
+# dataset: order_group_cases
+
+query TI
+SELECT c.name, SUM(s.qty)
+FROM categories c
+INNER JOIN sales s ON c.id = s.category_id
+GROUP BY c.name
+ORDER BY c.name;
+----
+alpha 5
+beta 5
+gamma 1

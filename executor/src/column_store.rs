@@ -7,7 +7,7 @@
 
 use crate::row_format::RowView;
 use crate::storage::StorageBackend;
-use crate::typed_value::TypedValue;
+use crate::typed_value::{TypedValue, EMPTY_TEXT_SENTINEL};
 use anyhow::Result;
 use schema::ColumnInfo;
 use std::collections::HashMap;
@@ -237,7 +237,11 @@ impl ColumnBuilder {
                 self.dates.push(date_to_days(s).unwrap_or(0));
             }
             ColumnKind::Text => {
-                self.texts.push(s.to_string());
+                self.texts.push(if s == EMPTY_TEXT_SENTINEL {
+                    String::new()
+                } else {
+                    s.to_string()
+                });
             }
             ColumnKind::Boolean => {
                 self.bools.push(matches!(s, "true" | "1" | "t"));

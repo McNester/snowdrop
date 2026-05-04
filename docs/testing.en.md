@@ -7,11 +7,11 @@ Snowdrop now uses a dedicated testing foundation built around:
 - fixed SQL datasets in `tests/datasets/`
 - suite definitions in `tests/golden/`, `tests/differential/`, `tests/sqllogictest/`, `tests/tap/`, and `tests/postgres_style/`
 - a Docker-oriented runner crate: `snowdrop-testkit`
-- one unified generated report: `docs/test-report.md`
+- one unified generated report: `reports/test-report.md`
 
 This v1 testing system is intentionally Docker-first. Start the services with `docker compose up -d`, then run the harness commands from the repository root.
 
-When a suite needs PostgreSQL access, the runner now reads the password from `PGPASSWORD` first and falls back to `POSTGRES_PASSWORD`.
+When a suite needs PostgreSQL access, the runner reads the password from `PGPASSWORD` first and falls back to `POSTGRES_PASSWORD`.
 
 ## Folder Layout
 
@@ -27,6 +27,11 @@ tests/
   sqllogictest/
   tap/
   postgres_style/
+
+reports/
+  test-report.md
+  raw/
+    snowdrop-testkit-results.json
 ```
 
 ## Dataset Format
@@ -107,11 +112,11 @@ Notes:
 - `golden`, `sqllogictest`, and `tap` suites can run without PostgreSQL credentials.
 - `differential`, `postgres-style`, and `run-all --with-tpch` need `PGPASSWORD` or `POSTGRES_PASSWORD` to be set before launch.
 
-## Report
+## Generated Artifacts
 
 The main human-facing artifact is:
 
-- `docs/test-report.md`
+- `reports/test-report.md`
 
 It includes:
 
@@ -119,12 +124,12 @@ It includes:
 - dataset inventory
 - per-dataset suite summary
 - case tables for golden, differential, sqllogictest, TAP-style, and PostgreSQL-style suites
-- skipped/unsupported cases
+- skipped or unsupported cases
 - TPC-H benchmark summary when `--with-tpch` is used
 
 The raw machine-readable run artifact is stored at:
 
-- `target/snowdrop-testkit/results.json`
+- `reports/raw/snowdrop-testkit-results.json`
 
 ## Status Meanings
 
@@ -132,6 +137,13 @@ The raw machine-readable run artifact is stored at:
 - `fail`: query or workflow failed unexpectedly
 - `mismatch`: query succeeded but returned unexpected results
 - `skip`: intentionally not counted as a failure, usually because Snowdrop does not support that behavior yet
+
+## Related Docs
+
+- [benchmarking.md](/e:/snowdrop-1/docs/benchmarking.md:1)
+- [sql-compatibility-matrix.md](/e:/snowdrop-1/docs/sql-compatibility-matrix.md:1)
+- [postgres-migration-readiness-roadmap.md](/e:/snowdrop-1/docs/postgres-migration-readiness-roadmap.md:1)
+- [reports/README.md](/e:/snowdrop-1/reports/README.md:1)
 
 ## Limitations
 

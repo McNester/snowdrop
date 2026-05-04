@@ -74,7 +74,7 @@ The query planner tries an index scan first, then falls back to the columnar cac
 - Structured JSON output (`--output results.json`)
 - Multi-scale support (`--scale 1,10`)
 - Index benchmark mode (`--with-indexes`)
-- Auto-generated markdown report (`docs/benchmark-report.md`)
+- Auto-generated report flow now lives under `reports/`, with the unified harness report at `reports/test-report.md`
 - PostgreSQL 16 comparison (configurable via `--pg-port`)
 
 ## Test Coverage

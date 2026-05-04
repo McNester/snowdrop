@@ -1,5 +1,6 @@
 use executor::column_store::{self, Bitmap, CmpOp, TableColumns, TypedColumn};
 use executor::index::{self, encode_index_value};
+use executor::typed_value::EMPTY_TEXT_SENTINEL;
 use executor::{bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate, evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine};
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
@@ -1900,8 +1901,20 @@ fn expr_to_bytes(expr: &Expr) -> PgWireResult<Vec<u8>> {
 fn value_to_bytes(val: &Value) -> PgWireResult<Vec<u8>> {
     match val {
         Value::Number(n, _) => Ok(n.as_bytes().to_vec()),
-        Value::SingleQuotedString(s) => Ok(s.as_bytes().to_vec()),
-        Value::DoubleQuotedString(s) => Ok(s.as_bytes().to_vec()),
+        Value::SingleQuotedString(s) => {
+            if s.is_empty() {
+                Ok(EMPTY_TEXT_SENTINEL.as_bytes().to_vec())
+            } else {
+                Ok(s.as_bytes().to_vec())
+            }
+        }
+        Value::DoubleQuotedString(s) => {
+            if s.is_empty() {
+                Ok(EMPTY_TEXT_SENTINEL.as_bytes().to_vec())
+            } else {
+                Ok(s.as_bytes().to_vec())
+            }
+        }
         Value::Boolean(b) => Ok(if *b { b"true".to_vec() } else { b"false".to_vec() }),
         Value::Null => Ok(Vec::new()),
         _ => Err(user_error(format!("unsupported value type: {:?}", val))),

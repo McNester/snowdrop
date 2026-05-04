@@ -1,0 +1,4 @@
+{
+  "name": "left_join_rollup",
+  "sql": "SELECT c.name, COUNT(o.id), SUM(o.amount) FROM customers c LEFT JOIN orders o ON c.id = o.customer_id GROUP BY c.name ORDER BY c.name;"
+}

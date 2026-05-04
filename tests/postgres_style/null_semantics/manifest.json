@@ -1,0 +1,5 @@
+{
+  "name": "null_semantics",
+  "description": "PostgreSQL-style regression cases for NULL grouping and filtering.",
+  "dataset": "null_semantics"
+}

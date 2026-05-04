@@ -9,8 +9,9 @@ use tokio::net::TcpStream;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 use tpch_bench::{tpch_markdown_section, BenchmarkOptions, QueryResult};
 
-const RAW_RESULTS_PATH: &str = "target/snowdrop-testkit/results.json";
-const REPORT_PATH: &str = "docs/test-report.md";
+const RAW_RESULTS_PATH: &str = "reports/raw/snowdrop-testkit-results.json";
+const REPORT_PATH: &str = "reports/test-report.md";
+const LEGACY_RAW_RESULTS_PATH: &str = "target/snowdrop-testkit/results.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeConfig {
@@ -1044,15 +1045,30 @@ fn write_results_artifacts(repo_root: &Path, results: &UnifiedResults) -> Result
     fs::write(&raw_path, serde_json::to_string_pretty(results)?)?;
 
     let report = render_report(results);
-    fs::write(repo_root.join(REPORT_PATH), report)?;
+    let report_path = repo_root.join(REPORT_PATH);
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&report_path, report)?;
     println!("Wrote {}", raw_path.display());
     println!("Wrote {}", REPORT_PATH);
     Ok(())
 }
 
 fn read_results(repo_root: &Path) -> Result<UnifiedResults> {
-    let raw = fs::read_to_string(repo_root.join(RAW_RESULTS_PATH))
-        .with_context(|| format!("could not read {}", RAW_RESULTS_PATH))?;
+    let raw_path = repo_root.join(RAW_RESULTS_PATH);
+    let legacy_raw_path = repo_root.join(LEGACY_RAW_RESULTS_PATH);
+    let source_path = if raw_path.exists() {
+        raw_path
+    } else {
+        legacy_raw_path
+    };
+    let raw = fs::read_to_string(&source_path).with_context(|| {
+        format!(
+            "could not read {} or legacy fallback {}",
+            RAW_RESULTS_PATH, LEGACY_RAW_RESULTS_PATH
+        )
+    })?;
     Ok(serde_json::from_str(&raw)?)
 }
 
@@ -1344,5 +1360,125 @@ async fn http_get_text(host: &str, port: u16, path: &str) -> Result<String> {
         Ok(body.to_string())
     } else {
         Err(anyhow!("invalid HTTP response from {}:{}", host, port))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tpch_bench::RunResult;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("snowdrop-testkit-{label}-{ts}"))
+    }
+
+    fn sample_results(include_tpch: bool) -> UnifiedResults {
+        UnifiedResults {
+            generated_at: "2026-05-05T00:00:00Z".into(),
+            runtime: RuntimeConfig {
+                snowdrop_host: "orchestrator".into(),
+                snowdrop_port: 5432,
+                postgres_host: "postgres".into(),
+                postgres_port: 5432,
+                health_host: "orchestrator".into(),
+                health_port: 8080,
+                metrics_host: "orchestrator".into(),
+                metrics_port: 9090,
+            },
+            datasets: vec![DatasetManifest {
+                name: "tiny_smoke".into(),
+                database: "tiny_smoke".into(),
+                description: "test fixture".into(),
+                purpose: "unit test".into(),
+                tables: vec!["items".into()],
+                suites: vec!["golden".into()],
+                postgres_enabled: true,
+            }],
+            suite_runs: vec![SuiteRun {
+                suite: "golden".into(),
+                cases: vec![pass("golden", "tiny_smoke", "group", "case", "ok")],
+            }],
+            tpch_results: if include_tpch {
+                vec![QueryResult {
+                    query: "Q6".into(),
+                    system: "Snowdrop".into(),
+                    scale: 1,
+                    phase: "baseline".into(),
+                    runs: vec![
+                        RunResult {
+                            run: 1,
+                            latency_ms: 10.0,
+                            row_count: 1,
+                        },
+                        RunResult {
+                            run: 2,
+                            latency_ms: 1.0,
+                            row_count: 1,
+                        },
+                        RunResult {
+                            run: 3,
+                            latency_ms: 1.2,
+                            row_count: 1,
+                        },
+                    ],
+                }]
+            } else {
+                Vec::new()
+            },
+            tpch_options: include_tpch.then_some(TpchRunMeta {
+                scale: 1,
+                runs: 3,
+                seed: 42,
+                with_indexes: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn write_results_artifacts_uses_reports_directory() {
+        let repo_root = unique_temp_dir("write-results");
+        fs::create_dir_all(&repo_root).unwrap();
+
+        write_results_artifacts(&repo_root, &sample_results(false)).unwrap();
+
+        assert!(repo_root.join(REPORT_PATH).exists());
+        assert!(repo_root.join(RAW_RESULTS_PATH).exists());
+
+        let report = fs::read_to_string(repo_root.join(REPORT_PATH)).unwrap();
+        assert!(report.contains("# Snowdrop Test Report"));
+
+        fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn read_results_supports_legacy_raw_path() {
+        let repo_root = unique_temp_dir("legacy-read");
+        let legacy_path = repo_root.join(LEGACY_RAW_RESULTS_PATH);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(
+            &legacy_path,
+            serde_json::to_string_pretty(&sample_results(false)).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = read_results(&repo_root).unwrap();
+        assert_eq!(loaded.generated_at, "2026-05-05T00:00:00Z");
+        assert_eq!(loaded.datasets.len(), 1);
+        assert_eq!(loaded.suite_runs.len(), 1);
+
+        fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn render_report_includes_tpch_section_when_present() {
+        let report = render_report(&sample_results(true));
+        assert!(report.contains("## TPC-H Benchmark"));
+        assert!(report.contains("Q6"));
+        assert!(report.contains("Runs: `3`. Seed: `42`. Indexed phase: `enabled`."));
     }
 }

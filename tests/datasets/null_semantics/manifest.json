@@ -1,0 +1,9 @@
+{
+  "name": "null_semantics",
+  "database": "null_semantics",
+  "description": "NULL-heavy fixture for predicates, aggregates, and grouped output.",
+  "purpose": "Exercise NULL semantics in filters, counts, sums, and ordering.",
+  "tables": ["measurements"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style"],
+  "postgres_enabled": true
+}

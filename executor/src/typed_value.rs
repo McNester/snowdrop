@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+pub const EMPTY_TEXT_SENTINEL: &str = "\u{0000}";
+
 /// Runtime representation of a column value with type information.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypedValue {
@@ -38,7 +40,13 @@ impl TypedValue {
                 s.parse::<f64>().map(TypedValue::Float).unwrap_or(TypedValue::Text(s.into_owned()))
             }
             // VARCHAR, CHAR, TEXT, DATE, DATETIME, TIMESTAMP all stored as text
-            _ => TypedValue::Text(s.into_owned()),
+            _ => {
+                if s.as_ref() == EMPTY_TEXT_SENTINEL {
+                    TypedValue::Text(String::new())
+                } else {
+                    TypedValue::Text(s.into_owned())
+                }
+            }
         }
     }
 
@@ -172,6 +180,10 @@ mod tests {
         assert_eq!(
             TypedValue::from_bytes(b"hello", "VARCHAR(255)"),
             TypedValue::Text("hello".to_string())
+        );
+        assert_eq!(
+            TypedValue::from_bytes(EMPTY_TEXT_SENTINEL.as_bytes(), "TEXT"),
+            TypedValue::Text(String::new())
         );
         assert_eq!(
             TypedValue::from_bytes(b"2024-01-15", "DATE"),
