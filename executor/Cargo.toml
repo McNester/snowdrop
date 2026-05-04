@@ -19,6 +19,7 @@ neo4rs.workspace = true
 sqlparser.workspace = true
 rocksdb = "0.22"
 async-trait.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
+use sqlparser::ast::DataType;
 
 pub const EMPTY_TEXT_SENTINEL: &str = "\u{0000}";
 
@@ -63,6 +64,135 @@ impl TypedValue {
             TypedValue::Text(s) => s.parse::<f64>().ok(),
             _ => None,
         }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            TypedValue::Int(i) => Some(*i),
+            TypedValue::Float(f) if f.is_finite() => Some(*f as i64),
+            TypedValue::Text(s) => s.parse::<i64>().ok(),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            TypedValue::Boolean(b) => Some(*b),
+            TypedValue::Text(s) => parse_bool_text(s),
+            _ => None,
+        }
+    }
+
+    pub fn cast_to_data_type(&self, data_type: &DataType) -> Result<Self, String> {
+        if self.is_null() {
+            return Ok(TypedValue::Null);
+        }
+
+        match data_type {
+            DataType::Char(_)
+            | DataType::Character(_)
+            | DataType::CharacterVarying(_)
+            | DataType::CharVarying(_)
+            | DataType::Varchar(_)
+            | DataType::Nvarchar(_)
+            | DataType::Text
+            | DataType::TinyText
+            | DataType::MediumText
+            | DataType::LongText
+            | DataType::CharacterLargeObject(_)
+            | DataType::CharLargeObject(_)
+            | DataType::Clob(_) => Ok(TypedValue::Text(self.to_string())),
+            DataType::TinyInt(_)
+            | DataType::Int2(_)
+            | DataType::SmallInt(_)
+            | DataType::Int(_)
+            | DataType::Int4(_)
+            | DataType::Integer(_)
+            | DataType::Int8(_)
+            | DataType::BigInt(_)
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Int128
+            | DataType::Int256 => self
+                .as_i64()
+                .map(TypedValue::Int)
+                .ok_or_else(|| format!("cannot cast '{}' to {}", self, data_type)),
+            DataType::Float(_)
+            | DataType::Real
+            | DataType::Float4
+            | DataType::Float8
+            | DataType::Double
+            | DataType::DoublePrecision
+            | DataType::Numeric(_)
+            | DataType::Decimal(_)
+            | DataType::BigNumeric(_)
+            | DataType::BigDecimal(_)
+            | DataType::Dec(_) => self
+                .as_f64()
+                .map(TypedValue::Float)
+                .ok_or_else(|| format!("cannot cast '{}' to {}", self, data_type)),
+            DataType::Bool | DataType::Boolean => self
+                .as_bool()
+                .map(TypedValue::Boolean)
+                .ok_or_else(|| format!("cannot cast '{}' to {}", self, data_type)),
+            DataType::Date
+            | DataType::Datetime(_)
+            | DataType::Timestamp(_, _)
+            | DataType::Time(_, _)
+            | DataType::String(_) => Ok(TypedValue::Text(self.to_string())),
+            _ => Err(format!("CAST to {} is not supported", data_type)),
+        }
+    }
+
+    pub fn supports_cast_type(data_type: &DataType) -> bool {
+        matches!(
+            data_type,
+            DataType::Char(_)
+                | DataType::Character(_)
+                | DataType::CharacterVarying(_)
+                | DataType::CharVarying(_)
+                | DataType::Varchar(_)
+                | DataType::Nvarchar(_)
+                | DataType::Text
+                | DataType::TinyText
+                | DataType::MediumText
+                | DataType::LongText
+                | DataType::CharacterLargeObject(_)
+                | DataType::CharLargeObject(_)
+                | DataType::Clob(_)
+                | DataType::TinyInt(_)
+                | DataType::Int2(_)
+                | DataType::SmallInt(_)
+                | DataType::Int(_)
+                | DataType::Int4(_)
+                | DataType::Integer(_)
+                | DataType::Int8(_)
+                | DataType::BigInt(_)
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Int128
+                | DataType::Int256
+                | DataType::Float(_)
+                | DataType::Real
+                | DataType::Float4
+                | DataType::Float8
+                | DataType::Double
+                | DataType::DoublePrecision
+                | DataType::Numeric(_)
+                | DataType::Decimal(_)
+                | DataType::BigNumeric(_)
+                | DataType::BigDecimal(_)
+                | DataType::Dec(_)
+                | DataType::Bool
+                | DataType::Boolean
+                | DataType::Date
+                | DataType::Datetime(_)
+                | DataType::Timestamp(_, _)
+                | DataType::Time(_, _)
+                | DataType::String(_)
+        )
     }
 
     /// Compare two values. NULL is always "less than" non-NULL for ORDER BY purposes.
@@ -141,6 +271,14 @@ impl TypedValue {
     }
 }
 
+fn parse_bool_text(input: &str) -> Option<bool> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "1" => Some(true),
+        "false" | "f" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 impl fmt::Display for TypedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -156,6 +294,7 @@ impl fmt::Display for TypedValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlparser::ast::DataType;
 
     #[test]
     fn from_bytes_integer_types() {
@@ -278,5 +417,36 @@ mod tests {
         assert_eq!(format!("{}", TypedValue::Int(42)), "42");
         assert_eq!(format!("{}", TypedValue::Text("hi".into())), "hi");
         assert_eq!(format!("{}", TypedValue::Null), "NULL");
+    }
+
+    #[test]
+    fn cast_to_supported_types() {
+        assert_eq!(
+            TypedValue::Text("42".to_string())
+                .cast_to_data_type(&DataType::BigInt(None))
+                .unwrap(),
+            TypedValue::Int(42)
+        );
+        assert_eq!(
+            TypedValue::Text("true".to_string())
+                .cast_to_data_type(&DataType::Boolean)
+                .unwrap(),
+            TypedValue::Boolean(true)
+        );
+        assert_eq!(
+            TypedValue::Int(7)
+                .cast_to_data_type(&DataType::Varchar(None))
+                .unwrap(),
+            TypedValue::Text("7".to_string())
+        );
+    }
+
+    #[test]
+    fn cast_to_unsupported_type_errors() {
+        assert!(TypedValue::supports_cast_type(&DataType::BigInt(None)));
+        assert!(!TypedValue::supports_cast_type(&DataType::Uuid));
+        assert!(TypedValue::Text("alice".to_string())
+            .cast_to_data_type(&DataType::Uuid)
+            .is_err());
     }
 }

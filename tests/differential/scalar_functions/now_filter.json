@@ -1,0 +1,4 @@
+{
+  "name": "now_filter",
+  "sql": "SELECT COUNT(*) FROM profiles WHERE event_at IS NOT NULL AND event_at <= NOW();"
+}

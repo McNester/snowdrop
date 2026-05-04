@@ -1,7 +1,11 @@
 use crate::row_format::RowView;
 use crate::typed_value::TypedValue;
+use chrono::Utc;
 use schema::ColumnInfo;
-use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
+use sqlparser::ast::{
+    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments,
+    TrimWhereField, UnaryOperator, Value,
+};
 use std::collections::HashMap;
 
 /// A deserialized row: col_name -> TypedValue.
@@ -106,6 +110,7 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
             row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
         }
         Expr::Value(val) => literal_to_typed(val),
+        Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
         Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
             if let TypedValue::Int(i) = resolve_value(expr, row, schema_cols) {
                 TypedValue::Int(-i)
@@ -121,6 +126,28 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
         Expr::Nested(inner) => resolve_value(inner, row, schema_cols),
         Expr::Case { operand, conditions, results, else_result, .. } => {
             eval_case(operand.as_deref(), conditions, results, else_result.as_deref(), row, schema_cols)
+        }
+        Expr::Function(f) => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_function(f, &mut resolver)
+        }
+        Expr::Cast { expr, data_type, .. } => {
+            let val = resolve_value(expr, row, schema_cols);
+            val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
+        }
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_substring_expr(expr, substring_from.as_deref(), substring_for.as_deref(), &mut resolver)
+        }
+        Expr::Trim { expr, trim_where, trim_what, trim_characters } => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_trim_expr(
+                expr,
+                trim_where.as_ref(),
+                trim_what.as_deref(),
+                trim_characters.as_deref(),
+                &mut resolver,
+            )
         }
         _ => TypedValue::Null,
     }
@@ -230,6 +257,192 @@ fn literal_to_typed(val: &Value) -> TypedValue {
         Value::Null => TypedValue::Null,
         _ => TypedValue::Null,
     }
+}
+
+fn eval_function<F>(f: &Function, resolve_expr: &mut F) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let name = f.name.to_string().to_uppercase();
+    let args = match resolve_function_args(&f.args, resolve_expr) {
+        Some(args) => args,
+        None => return TypedValue::Null,
+    };
+
+    match name.as_str() {
+        "COALESCE" => args
+            .into_iter()
+            .find(|value| !value.is_null())
+            .unwrap_or(TypedValue::Null),
+        "NULLIF" => {
+            if args.len() != 2 {
+                return TypedValue::Null;
+            }
+            if args[0].sql_eq(&args[1]) {
+                TypedValue::Null
+            } else {
+                args[0].clone()
+            }
+        }
+        "LOWER" => unary_text_function(&args, |value| value.to_lowercase()),
+        "UPPER" => unary_text_function(&args, |value| value.to_uppercase()),
+        "LENGTH" => {
+            if args.len() != 1 {
+                return TypedValue::Null;
+            }
+            match &args[0] {
+                TypedValue::Null => TypedValue::Null,
+                TypedValue::Text(text) => TypedValue::Int(text.chars().count() as i64),
+                _ => TypedValue::Null,
+            }
+        }
+        "CONCAT" => {
+            let mut out = String::new();
+            for arg in args {
+                if !arg.is_null() {
+                    out.push_str(&arg.to_string());
+                }
+            }
+            TypedValue::Text(out)
+        }
+        "NOW" | "CURRENT_TIMESTAMP" | "LOCALTIMESTAMP" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Text(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
+        }
+        "CURRENT_DATE" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Text(Utc::now().date_naive().format("%Y-%m-%d").to_string())
+        }
+        "CURRENT_TIME" | "LOCALTIME" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Text(Utc::now().format("%H:%M:%S").to_string())
+        }
+        _ => TypedValue::Null,
+    }
+}
+
+fn resolve_function_args<F>(args: &FunctionArguments, resolve_expr: &mut F) -> Option<Vec<TypedValue>>
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    match args {
+        FunctionArguments::None => Some(Vec::new()),
+        FunctionArguments::List(list) => {
+            let mut values = Vec::with_capacity(list.args.len());
+            for arg in &list.args {
+                match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
+                        values.push(resolve_expr(expr));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(values)
+        }
+        FunctionArguments::Subquery(_) => None,
+    }
+}
+
+fn unary_text_function(args: &[TypedValue], mapper: impl FnOnce(&str) -> String) -> TypedValue {
+    if args.len() != 1 {
+        return TypedValue::Null;
+    }
+
+    match &args[0] {
+        TypedValue::Null => TypedValue::Null,
+        TypedValue::Text(text) => TypedValue::Text(mapper(text)),
+        _ => TypedValue::Null,
+    }
+}
+
+fn eval_substring_expr<F>(
+    expr: &Expr,
+    substring_from: Option<&Expr>,
+    substring_for: Option<&Expr>,
+    resolve_expr: &mut F,
+) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let value = resolve_expr(expr);
+    let text = match value {
+        TypedValue::Null => return TypedValue::Null,
+        TypedValue::Text(text) => text,
+        _ => return TypedValue::Null,
+    };
+
+    let start = substring_from
+        .map(|expr| resolve_expr(expr))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(1)
+        .max(1) as usize;
+    let length = substring_for
+        .map(|expr| resolve_expr(expr))
+        .and_then(|value| value.as_i64())
+        .map(|value| value.max(0) as usize);
+
+    let chars: Vec<char> = text.chars().collect();
+    let begin = start.saturating_sub(1);
+    if begin >= chars.len() {
+        return TypedValue::Text(String::new());
+    }
+
+    let end = length
+        .map(|len| begin.saturating_add(len).min(chars.len()))
+        .unwrap_or(chars.len());
+
+    TypedValue::Text(chars[begin..end].iter().collect())
+}
+
+fn eval_trim_expr<F>(
+    expr: &Expr,
+    trim_where: Option<&TrimWhereField>,
+    trim_what: Option<&Expr>,
+    trim_characters: Option<&[Expr]>,
+    resolve_expr: &mut F,
+) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let value = resolve_expr(expr);
+    let text = match value {
+        TypedValue::Null => return TypedValue::Null,
+        TypedValue::Text(text) => text,
+        _ => return TypedValue::Null,
+    };
+
+    let trim_chars = if let Some(chars) = trim_characters {
+        chars.first()
+            .map(resolve_expr)
+            .and_then(|value| match value {
+                TypedValue::Text(text) => Some(text),
+                _ => None,
+            })
+            .unwrap_or_else(|| " ".to_string())
+    } else if let Some(trim_expr) = trim_what {
+        match resolve_expr(trim_expr) {
+            TypedValue::Text(text) => text,
+            TypedValue::Null => return TypedValue::Null,
+            _ => return TypedValue::Null,
+        }
+    } else {
+        " ".to_string()
+    };
+
+    let char_set: Vec<char> = trim_chars.chars().collect();
+    let trimmed = match trim_where.unwrap_or(&TrimWhereField::Both) {
+        TrimWhereField::Both => text.trim_matches(|c| char_set.contains(&c)).to_string(),
+        TrimWhereField::Leading => text.trim_start_matches(|c| char_set.contains(&c)).to_string(),
+        TrimWhereField::Trailing => text.trim_end_matches(|c| char_set.contains(&c)).to_string(),
+    };
+
+    TypedValue::Text(trimmed)
 }
 
 /// Deserialize raw bytes into a Row (owned version).
@@ -356,6 +569,7 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             }
         }
         Expr::Value(val) => literal_to_typed(val),
+        Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
         Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
             if let TypedValue::Int(i) = resolve_value_view(expr, view, schema_cols) {
                 TypedValue::Int(-i)
@@ -371,8 +585,69 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             eval_arithmetic_typed(&lval, op, &rval)
         }
         Expr::Nested(inner) => resolve_value_view(inner, view, schema_cols),
+        Expr::Case { operand, conditions, results, else_result, .. } => {
+            eval_case_view(
+                operand.as_deref(),
+                conditions,
+                results,
+                else_result.as_deref(),
+                view,
+                schema_cols,
+            )
+        }
+        Expr::Function(f) => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_function(f, &mut resolver)
+        }
+        Expr::Cast { expr, data_type, .. } => {
+            let val = resolve_value_view(expr, view, schema_cols);
+            val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
+        }
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_substring_expr(expr, substring_from.as_deref(), substring_for.as_deref(), &mut resolver)
+        }
+        Expr::Trim { expr, trim_where, trim_what, trim_characters } => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_trim_expr(
+                expr,
+                trim_where.as_ref(),
+                trim_what.as_deref(),
+                trim_characters.as_deref(),
+                &mut resolver,
+            )
+        }
         _ => TypedValue::Null,
     }
+}
+
+fn eval_case_view(
+    operand: Option<&Expr>,
+    conditions: &[Expr],
+    results: &[Expr],
+    else_result: Option<&Expr>,
+    view: &RowView,
+    schema_cols: &[ColumnInfo],
+) -> TypedValue {
+    if let Some(op) = operand {
+        let op_val = resolve_value_view(op, view, schema_cols);
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            let cond_val = resolve_value_view(cond, view, schema_cols);
+            if op_val.sql_eq(&cond_val) {
+                return resolve_value_view(res, view, schema_cols);
+            }
+        }
+    } else {
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            if evaluate_predicate_view(cond, view, schema_cols) {
+                return resolve_value_view(res, view, schema_cols);
+            }
+        }
+    }
+
+    else_result
+        .map(|expr| resolve_value_view(expr, view, schema_cols))
+        .unwrap_or(TypedValue::Null)
 }
 
 /// Arithmetic on already-resolved TypedValues (shared between Row and RowView paths).
@@ -426,6 +701,19 @@ mod tests {
             }
         }
         panic!("failed to parse WHERE clause");
+    }
+
+    fn parse_select_expr(sql: &str) -> Expr {
+        let full = format!("SELECT {sql} FROM t");
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &full).unwrap();
+        if let sqlparser::ast::Statement::Query(q) = &stmts[0] {
+            if let sqlparser::ast::SetExpr::Select(sel) = q.body.as_ref() {
+                if let SelectItem::UnnamedExpr(expr) = &sel.projection[0] {
+                    return expr.clone();
+                }
+            }
+        }
+        panic!("failed to parse SELECT expression");
     }
 
     fn test_schema() -> Vec<ColumnInfo> {
@@ -589,5 +877,37 @@ mod tests {
     fn arithmetic_division_by_zero() {
         let expr = parse_where("age / 0 = 1");
         assert!(!evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn coalesce_prefers_first_non_null_value() {
+        let mut row = test_row();
+        row.insert("name".into(), TypedValue::Null);
+        let expr = parse_select_expr("COALESCE(name, 'fallback')");
+        assert_eq!(resolve_value(&expr, &row, &test_schema()), TypedValue::Text("fallback".into()));
+    }
+
+    #[test]
+    fn nullif_returns_null_for_equal_values() {
+        let expr = parse_select_expr("NULLIF(name, 'alice')");
+        assert_eq!(resolve_value(&expr, &test_row(), &test_schema()), TypedValue::Null);
+    }
+
+    #[test]
+    fn text_functions_and_substring_work() {
+        let expr = parse_select_expr("SUBSTRING(UPPER(TRIM(name)) FROM 2 FOR 3)");
+        assert_eq!(resolve_value(&expr, &test_row(), &test_schema()), TypedValue::Text("LIC".into()));
+    }
+
+    #[test]
+    fn cast_and_current_date_expressions_work() {
+        let cast_expr = parse_select_expr("CAST(age AS TEXT)");
+        assert_eq!(resolve_value(&cast_expr, &test_row(), &test_schema()), TypedValue::Text("30".into()));
+
+        let date_expr = parse_select_expr("CURRENT_DATE");
+        match resolve_value(&date_expr, &test_row(), &test_schema()) {
+            TypedValue::Text(date) => assert_eq!(date.len(), 10),
+            other => panic!("expected CURRENT_DATE text, got {:?}", other),
+        }
     }
 }

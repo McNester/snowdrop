@@ -32,6 +32,7 @@ The current fixed-dataset foundation now covers these semantic zones:
 | `join_edge_cases` | duplicate join matches, unmatched rows, left-join null filling |
 | `write_path_smoke` | insert, update, delete round-trips |
 | `perf_fixed` | stable non-synthetic micro-benchmark fixture |
+| `scalar_functions` | scalar functions, casts, and basic date/time helper coverage |
 
 These datasets are exercised through a mix of `golden`, `differential`, `sqllogictest`, `tap`, and `postgres_style` suites depending on the feature area.
 
@@ -87,10 +88,11 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 |---|---|---|---|
 | Scalar expressions | Arithmetic `+ - * / %` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:127). |
 | Scalar expressions | `CASE WHEN` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:183). |
-| Scalar functions | Generic functions like `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, `CONCAT` | Not Supported | `resolve_value()` does not implement generic `Expr::Function` evaluation in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:88). |
-| Null helpers | `COALESCE`, `NULLIF` | Not Supported | No dedicated function evaluation path exists yet. |
-| Conversion | `CAST` and PostgreSQL-style casts | Not Supported | No cast execution layer is implemented. |
-| Date/time functions | `NOW()`, `CURRENT_DATE`, truncation/extract helpers | Not Supported | No dedicated scalar date/time function layer exists yet. |
+| Scalar functions | `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, `CONCAT` | Supported | Implemented in the row and `RowView` expression evaluators in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) and covered by the `scalar_functions` dataset. |
+| Null helpers | `COALESCE`, `NULLIF` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) with fixed-dataset coverage in `tests/datasets/scalar_functions/`. |
+| Conversion | `CAST` and PostgreSQL-style casts | Partial | `CAST(...)` and `::` work for the current Phase 2 target set: text, integer, float, boolean, and string-backed date/time targets, with unsupported target types rejected up front in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs) and runtime conversion in [executor/src/typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs). |
+| Date/time functions | `NOW()`, `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP` | Partial | Basic helpers now evaluate as text-returning scalar expressions in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs), but richer date/time operators like `EXTRACT`, truncation, and interval arithmetic are still absent. |
+| Date/time functions | `EXTRACT`, truncation helpers, interval-aware scalar logic | Not Supported | No dedicated scalar date/time operator layer exists beyond the basic Phase 2 helpers. |
 | Columnar fast path | Arithmetic-only scalar expressions | Partial | Fast columnar evaluation supports a restricted expression subset in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2570). |
 
 ## Schema and Type Support
@@ -132,7 +134,7 @@ But it is not yet a PostgreSQL-compatible application substrate.
 
 The biggest functional gaps before migration work are:
 
-- scalar function coverage
+- broader scalar function coverage beyond the new Phase 2 baseline
 - richer schema fidelity
 - wider SQL surface (`HAVING`, subqueries, CTEs, compound queries)
 - better write-path semantics

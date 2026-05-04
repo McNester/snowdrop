@@ -8,8 +8,9 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use schema::{ColumnInfo, ColumnType, DatabaseInfo, Neo4jConnection, TableInfo};
 use sqlparser::ast::{
-    AlterTableOperation, ColumnOption, Expr, FunctionArg, FunctionArgExpr, JoinConstraint,
-    JoinOperator, ObjectName, OrderByExpr, SelectItem, SetExpr, Statement, Value, Values,
+    AlterTableOperation, ColumnOption, Expr, Function, FunctionArg, FunctionArgExpr,
+    FunctionArguments, JoinConstraint, JoinOperator, ObjectName, OrderByExpr, SelectItem, SetExpr,
+    Statement, Value, Values,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -663,6 +664,8 @@ impl QueryRouter {
             SetExpr::Select(sel) => sel.clone(),
             _ => return Err(user_error("only simple SELECT supported".to_string())),
         };
+
+        validate_select_expressions(&select, &query)?;
 
         // Resolve table from FROM clause
         if select.from.is_empty() {
@@ -1995,12 +1998,218 @@ fn resolve_projection(
 /// that require evaluation rather than simple column lookup.
 fn has_expression_projection(items: &[SelectItem]) -> bool {
     items.iter().any(|item| match item {
-        SelectItem::UnnamedExpr(Expr::BinaryOp { .. })
-        | SelectItem::UnnamedExpr(Expr::Nested(..)) => true,
-        SelectItem::ExprWithAlias { expr: Expr::BinaryOp { .. }, .. }
-        | SelectItem::ExprWithAlias { expr: Expr::Nested(..), .. } => true,
+        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+            projection_expr_needs_eval(expr)
+        }
         _ => false,
     })
+}
+
+fn projection_expr_needs_eval(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => false,
+        Expr::Function(f) => !is_aggregate_function_name(&f.name.to_string()),
+        _ => true,
+    }
+}
+
+fn is_aggregate_function_name(name: &str) -> bool {
+    matches!(name.to_uppercase().as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
+}
+
+fn validate_select_expressions(
+    select: &sqlparser::ast::Select,
+    query: &sqlparser::ast::Query,
+) -> PgWireResult<()> {
+    if let Some(selection) = select.selection.as_ref() {
+        validate_supported_expr(selection)?;
+    }
+
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                validate_supported_expr(expr)?;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(order_by) = query.order_by.as_ref() {
+        for expr in &order_by.exprs {
+            validate_supported_expr(&expr.expr)?;
+        }
+    }
+
+    if let sqlparser::ast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
+        for expr in exprs {
+            validate_supported_expr(expr)?;
+        }
+    }
+
+    for join in &select.from {
+        for joined in &join.joins {
+            if let JoinOperator::Inner(JoinConstraint::On(expr))
+            | JoinOperator::LeftOuter(JoinConstraint::On(expr)) = &joined.join_operator
+            {
+                validate_supported_expr(expr)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_supported_expr(expr: &Expr) -> PgWireResult<()> {
+    match expr {
+        Expr::BinaryOp { left, right, .. } => {
+            validate_supported_expr(left)?;
+            validate_supported_expr(right)?;
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => validate_supported_expr(expr)?,
+        Expr::Between { expr, low, high, .. } => {
+            validate_supported_expr(expr)?;
+            validate_supported_expr(low)?;
+            validate_supported_expr(high)?;
+        }
+        Expr::InList { expr, list, .. } => {
+            validate_supported_expr(expr)?;
+            for item in list {
+                validate_supported_expr(item)?;
+            }
+        }
+        Expr::Like { expr, pattern, .. } => {
+            validate_supported_expr(expr)?;
+            validate_supported_expr(pattern)?;
+        }
+        Expr::Function(f) => validate_supported_function(f)?,
+        Expr::Cast { expr, data_type, .. } => {
+            validate_supported_expr(expr)?;
+            if !TypedValue::supports_cast_type(data_type) {
+                return Err(user_error(format!("CAST to {} is not supported", data_type)));
+            }
+        }
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            validate_supported_expr(expr)?;
+            if let Some(from) = substring_from.as_deref() {
+                validate_supported_expr(from)?;
+            }
+            if let Some(for_expr) = substring_for.as_deref() {
+                validate_supported_expr(for_expr)?;
+            }
+        }
+        Expr::Trim { expr, trim_what, trim_characters, .. } => {
+            validate_supported_expr(expr)?;
+            if let Some(trim_what) = trim_what.as_deref() {
+                validate_supported_expr(trim_what)?;
+            }
+            if let Some(chars) = trim_characters.as_deref() {
+                for char_expr in chars {
+                    validate_supported_expr(char_expr)?;
+                }
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
+            if let Some(operand) = operand.as_deref() {
+                validate_supported_expr(operand)?;
+            }
+            for condition in conditions {
+                validate_supported_expr(condition)?;
+            }
+            for result in results {
+                validate_supported_expr(result)?;
+            }
+            if let Some(else_result) = else_result.as_deref() {
+                validate_supported_expr(else_result)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_supported_function(function: &Function) -> PgWireResult<()> {
+    let name = function.name.to_string().to_uppercase();
+    let arg_exprs = function_exprs(function)?;
+
+    for expr in &arg_exprs {
+        validate_supported_expr(expr)?;
+    }
+
+    match name.as_str() {
+        "COUNT" => {}
+        "SUM" | "AVG" | "MIN" | "MAX" => {
+            if arg_exprs.len() != 1 {
+                return Err(user_error(format!("{} requires exactly one argument", name)));
+            }
+        }
+        "COALESCE" => {
+            if arg_exprs.is_empty() {
+                return Err(user_error("COALESCE requires at least one argument".to_string()));
+            }
+        }
+        "NULLIF" => {
+            if arg_exprs.len() != 2 {
+                return Err(user_error("NULLIF requires exactly two arguments".to_string()));
+            }
+        }
+        "LOWER" | "UPPER" | "LENGTH" => {
+            if arg_exprs.len() != 1 {
+                return Err(user_error(format!("{} requires exactly one argument", name)));
+            }
+        }
+        "CONCAT" => {
+            if arg_exprs.is_empty() {
+                return Err(user_error("CONCAT requires at least one argument".to_string()));
+            }
+        }
+        "NOW" | "CURRENT_DATE" | "CURRENT_TIME" | "CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP" => {
+            if !arg_exprs.is_empty() {
+                return Err(user_error(format!("{} does not accept arguments", name)));
+            }
+        }
+        other if !is_aggregate_function_name(other) => {
+            return Err(user_error(format!("function '{}' is not supported", other)));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn function_exprs(function: &Function) -> PgWireResult<Vec<&Expr>> {
+    match &function.args {
+        FunctionArguments::None => Ok(Vec::new()),
+        FunctionArguments::List(list) => {
+            let mut exprs = Vec::with_capacity(list.args.len());
+            for arg in &list.args {
+                match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => exprs.push(expr),
+                    FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {}
+                    _ => {
+                        return Err(user_error(format!(
+                            "function '{}' uses unsupported argument form",
+                            function.name
+                        )))
+                    }
+                }
+            }
+            Ok(exprs)
+        }
+        FunctionArguments::Subquery(_) => Err(user_error(format!(
+            "function '{}' does not support subquery arguments",
+            function.name
+        ))),
+    }
 }
 
 /// Resolve projection items to (display_name, Expr) pairs for expression evaluation.
@@ -2037,14 +2246,12 @@ fn extract_aggregates(items: &[SelectItem]) -> Vec<&sqlparser::ast::Function> {
     for item in items {
         match item {
             SelectItem::UnnamedExpr(Expr::Function(f)) => {
-                let name = f.name.to_string().to_uppercase();
-                if matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX") {
+                if is_aggregate_function_name(&f.name.to_string()) {
                     aggs.push(f);
                 }
             }
             SelectItem::ExprWithAlias { expr: Expr::Function(f), .. } => {
-                let name = f.name.to_string().to_uppercase();
-                if matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX") {
+                if is_aggregate_function_name(&f.name.to_string()) {
                     aggs.push(f);
                 }
             }
@@ -2943,6 +3150,27 @@ fn collect_expr_columns(expr: &Expr, out: &mut HashSet<String>) {
                 }
             }
         }
+        Expr::Cast { expr, .. } => collect_expr_columns(expr, out),
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            collect_expr_columns(expr, out);
+            if let Some(from) = substring_from.as_deref() {
+                collect_expr_columns(from, out);
+            }
+            if let Some(for_expr) = substring_for.as_deref() {
+                collect_expr_columns(for_expr, out);
+            }
+        }
+        Expr::Trim { expr, trim_what, trim_characters, .. } => {
+            collect_expr_columns(expr, out);
+            if let Some(trim_what) = trim_what.as_deref() {
+                collect_expr_columns(trim_what, out);
+            }
+            if let Some(chars) = trim_characters.as_deref() {
+                for char_expr in chars {
+                    collect_expr_columns(char_expr, out);
+                }
+            }
+        }
         Expr::Case { operand, conditions, results, else_result, .. } => {
             if let Some(op) = operand {
                 collect_expr_columns(op, out);
@@ -2997,6 +3225,27 @@ fn collect_expr_refs(expr: &Expr, out: &mut HashSet<String>) {
                     if let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg {
                         collect_expr_refs(e, out);
                     }
+                }
+            }
+        }
+        Expr::Cast { expr, .. } => collect_expr_refs(expr, out),
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            collect_expr_refs(expr, out);
+            if let Some(from) = substring_from.as_deref() {
+                collect_expr_refs(from, out);
+            }
+            if let Some(for_expr) = substring_for.as_deref() {
+                collect_expr_refs(for_expr, out);
+            }
+        }
+        Expr::Trim { expr, trim_what, trim_characters, .. } => {
+            collect_expr_refs(expr, out);
+            if let Some(trim_what) = trim_what.as_deref() {
+                collect_expr_refs(trim_what, out);
+            }
+            if let Some(chars) = trim_characters.as_deref() {
+                for char_expr in chars {
+                    collect_expr_refs(char_expr, out);
                 }
             }
         }
