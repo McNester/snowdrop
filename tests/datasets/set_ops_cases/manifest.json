@@ -1,0 +1,9 @@
+{
+  "name": "set_ops_cases",
+  "database": "set_ops_cases",
+  "description": "Boundary fixture for UNION/CTE/derived-table query forms.",
+  "purpose": "Keep unsupported compound query behavior explicit until the wider Phase 3 surface lands.",
+  "tables": ["left_values", "right_values"],
+  "suites": ["golden", "sqllogictest"],
+  "postgres_enabled": false
+}

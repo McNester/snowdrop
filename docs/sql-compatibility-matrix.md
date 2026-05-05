@@ -33,6 +33,10 @@ The current fixed-dataset foundation now covers these semantic zones:
 | `write_path_smoke` | insert, update, delete round-trips |
 | `perf_fixed` | stable non-synthetic micro-benchmark fixture |
 | `scalar_functions` | scalar functions, casts, and basic date/time helper coverage |
+| `having_cases` | grouped filtering, aggregate aliases, and grouped-order expression coverage |
+| `insert_select_cases` | `INSERT ... SELECT` over the currently supported select subset |
+| `subquery_cases` | explicit readable failure coverage for still-unsupported subqueries |
+| `set_ops_cases` | explicit readable failure coverage for still-unsupported `WITH` and compound queries |
 
 These datasets are exercised through a mix of `golden`, `differential`, `sqllogictest`, `tap`, and `postgres_style` suites depending on the feature area.
 
@@ -45,13 +49,13 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Index DDL | `CREATE INDEX`, `DROP INDEX` | Partial | Present, but practical support is aimed at the current RocksDB secondary-index path. |
 | Alter DDL | `ALTER TABLE` | Partial | Only `ADD COLUMN` is supported in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:383). |
 | Insert | `INSERT ... VALUES` | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:504). |
-| Insert | `INSERT ... SELECT` | Not Supported | Non-`VALUES` insert sources are rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:525). |
+| Insert | `INSERT ... SELECT` | Partial | Implemented for the current simple/join select subset in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:561) and materialized through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:1839); wider query sources are still rejected. |
 | Update | `UPDATE ... SET ... WHERE ...` | Partial | Works, but write-path `WHERE` is limited to simple equality via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
 | Delete | `DELETE ... WHERE ...` | Partial | Same simple `WHERE` restriction as `UPDATE`. |
 | Select | Basic `SELECT ... FROM ...` | Supported | Core path is in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:659). |
 | Select | `SELECT` without `FROM` | Not Supported | Rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:668). |
-| Compound queries | `UNION`, `INTERSECT`, `EXCEPT` | Not Supported | Only `SetExpr::Select` is accepted in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:662). |
-| CTEs | `WITH ...` | Not Supported | No dedicated support path in the router. |
+| Compound queries | `UNION`, `INTERSECT`, `EXCEPT` | Not Supported | The router rejects them explicitly with a readable boundary error in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:759) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
+| CTEs | `WITH ...` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
 | Views | `CREATE VIEW`, querying views | Not Supported | No view support path is implemented. |
 
 ## Query Features
@@ -64,12 +68,14 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Filtering | `BETWEEN`, `IN (...)`, `LIKE` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:23), [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:31), and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:39). |
 | Filtering | `ILIKE`, regex, advanced pattern matching | Not Supported | `LIKE` is intentionally simplified in [typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs:116). |
 | Ordering | `ORDER BY column` | Supported | Core row sort logic is in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2228). |
-| Ordering | `ORDER BY expression` | Partial | `sort_rows()` only handles identifiers and compound identifiers in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2234). |
+| Ordering | `ORDER BY expression` | Partial | Materialized row sorting now evaluates general expressions through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3189) and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:88), but wider query-surface forms and columnar paths are still restricted. |
 | Limiting | `LIMIT`, `OFFSET` | Supported | Numeric extraction is implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
 | Aggregation | `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | Supported | Aggregate extraction and execution are in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2022) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2131). |
 | Aggregation | `GROUP BY column` | Supported | Plain identifier and qualified identifier grouping are supported in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2045). |
 | Aggregation | `GROUP BY expression` | Partial | Complex expressions are not first-class in `extract_group_by_cols()` and related paths. |
-| Aggregation | `HAVING` | Not Supported | No explicit handling is present in the current router. |
+| Aggregation | `HAVING` | Partial | Implemented for the current grouped/aggregate subset via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2230) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3376), but subqueries and wider grouped forms remain rejected. |
+| Subqueries | expression/predicate subqueries | Not Supported | Explicit unsupported-boundary validation exists in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2719) and is covered by `subquery_cases`. |
+| Derived tables | subqueries in `FROM` / `JOIN` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
 
 ## JOIN Support
 
@@ -136,6 +142,6 @@ The biggest functional gaps before migration work are:
 
 - broader scalar function coverage beyond the new Phase 2 baseline
 - richer schema fidelity
-- wider SQL surface (`HAVING`, subqueries, CTEs, compound queries)
+- the remaining Phase 3 SQL surface (`subqueries`, derived tables, CTEs, compound queries)
 - better write-path semantics
 - better type semantics and catalog compatibility

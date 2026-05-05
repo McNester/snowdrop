@@ -19,7 +19,11 @@ impl<'a> WriteEngine<'a> {
         neo4j: &'a Neo4jConnection,
         wal: &'a mut WalFile,
     ) -> Self {
-        Self { storage, neo4j, wal }
+        Self {
+            storage,
+            neo4j,
+            wal,
+        }
     }
 
     /// INSERT INTO table VALUES (...)
@@ -31,10 +35,19 @@ impl<'a> WriteEngine<'a> {
         column_names: &[String],
         values: &[Vec<u8>],
     ) -> Result<u64> {
-        let db = self.neo4j.get_database(db_name).await?
+        let db = self
+            .neo4j
+            .get_database(db_name)
+            .await?
             .context(format!("database '{}' does not exist", db_name))?;
-        let table = self.neo4j.get_table(db_name, table_name).await?
-            .context(format!("table '{}' does not exist in database '{}'", table_name, db_name))?;
+        let table = self
+            .neo4j
+            .get_table(db_name, table_name)
+            .await?
+            .context(format!(
+                "table '{}' does not exist in database '{}'",
+                table_name, db_name
+            ))?;
         let schema_cols = self.neo4j.describe_table(db_name, table_name).await?;
 
         // Resolve which columns are being inserted
@@ -44,12 +57,15 @@ impl<'a> WriteEngine<'a> {
         validate_not_null(&schema_cols, &resolved)?;
 
         // Check PK uniqueness
-        let pk_col = schema_cols.iter().find(|c| c.is_pk)
+        let pk_col = schema_cols
+            .iter()
+            .find(|c| c.is_pk)
             .context("table has no primary key")?;
 
         if let Some((_, pk_value)) = resolved.iter().find(|(col, _)| col.id == pk_col.id) {
             let pk_str = String::from_utf8_lossy(pk_value);
-            self.check_pk_unique(db.id, table.id, &schema_cols, &pk_str).await?;
+            self.check_pk_unique(db.id, table.id, &schema_cols, &pk_str)
+                .await?;
         }
 
         // Generate row_id
@@ -79,11 +95,14 @@ impl<'a> WriteEngine<'a> {
         if let Some((_, pk_value)) = resolved.iter().find(|(col, _)| col.id == pk_col.id) {
             let pk_str = String::from_utf8_lossy(pk_value);
             let pk_key = format!("pk:{}:{}:{}", db.id, table.id, pk_str);
-            self.storage.mset(&[(pk_key, row_id.as_bytes().to_vec())]).await?;
+            self.storage
+                .mset(&[(pk_key, row_id.as_bytes().to_vec())])
+                .await?;
         }
 
         // Step 3: WAL status -> Neo4jCommitted
-        self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
+        self.wal
+            .update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
         // Step 4: Storage write (row + index entries in one batch)
         let row_key = build_row_key(db.id, table.id, row_id_raw)?;
@@ -94,7 +113,11 @@ impl<'a> WriteEngine<'a> {
         let indexed_cols = get_indexed_cols(&schema_cols);
         if !indexed_cols.is_empty() {
             pairs.extend(build_index_entries_for_row(
-                db.id, table.id, row_id_raw, &wal_columns, &indexed_cols,
+                db.id,
+                table.id,
+                row_id_raw,
+                &wal_columns,
+                &indexed_cols,
             ));
         }
 
@@ -117,14 +140,22 @@ impl<'a> WriteEngine<'a> {
         where_col: &str,
         where_val: &str,
     ) -> Result<u64> {
-        let db = self.neo4j.get_database(db_name).await?
+        let db = self
+            .neo4j
+            .get_database(db_name)
+            .await?
             .context(format!("database '{}' does not exist", db_name))?;
-        let table = self.neo4j.get_table(db_name, table_name).await?
+        let table = self
+            .neo4j
+            .get_table(db_name, table_name)
+            .await?
             .context(format!("table '{}' does not exist", table_name))?;
         let schema_cols = self.neo4j.describe_table(db_name, table_name).await?;
 
         // Find matching row_ids via WHERE clause
-        let row_ids = self.find_rows_by_predicate(db.id, table.id, &schema_cols, where_col, where_val).await?;
+        let row_ids = self
+            .find_rows_by_predicate(db.id, table.id, &schema_cols, where_col, where_val)
+            .await?;
 
         if row_ids.is_empty() {
             return Ok(0);
@@ -136,7 +167,9 @@ impl<'a> WriteEngine<'a> {
             // Resolve SET columns
             let mut wal_columns: Vec<(u32, Vec<u8>)> = Vec::new();
             for (col_name, val) in set_pairs {
-                let col = schema_cols.iter().find(|c| c.name == *col_name)
+                let col = schema_cols
+                    .iter()
+                    .find(|c| c.name == *col_name)
                     .context(format!("column '{}' not found", col_name))?;
                 wal_columns.push((col.id, val.clone()));
             }
@@ -151,7 +184,8 @@ impl<'a> WriteEngine<'a> {
             // WAL append
             let (_entry_id, file_offset) = self.wal.append(payload)?;
 
-            self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
+            self.wal
+                .update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
             // Read-modify-write: merge updated columns into existing row
             let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
@@ -166,7 +200,11 @@ impl<'a> WriteEngine<'a> {
             let indexed_cols = get_indexed_cols(&schema_cols);
             if !indexed_cols.is_empty() {
                 let old_keys = build_index_keys_for_row(
-                    db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                    db.id,
+                    table.id,
+                    *row_id_raw,
+                    &existing,
+                    &indexed_cols,
                 );
                 if !old_keys.is_empty() {
                     self.storage.del(&old_keys).await?;
@@ -186,7 +224,11 @@ impl<'a> WriteEngine<'a> {
             // Write new index entries
             if !indexed_cols.is_empty() {
                 pairs.extend(build_index_entries_for_row(
-                    db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                    db.id,
+                    table.id,
+                    *row_id_raw,
+                    &existing,
+                    &indexed_cols,
                 ));
             }
 
@@ -200,7 +242,9 @@ impl<'a> WriteEngine<'a> {
                     self.storage.del(&[old_pk_key]).await?;
                     let new_pk_str = String::from_utf8_lossy(new_pk_val);
                     let new_pk_key = format!("pk:{}:{}:{}", db.id, table.id, new_pk_str);
-                    self.storage.mset(&[(new_pk_key, row_id_str.as_bytes().to_vec())]).await?;
+                    self.storage
+                        .mset(&[(new_pk_key, row_id_str.as_bytes().to_vec())])
+                        .await?;
                 }
             }
 
@@ -222,13 +266,21 @@ impl<'a> WriteEngine<'a> {
         where_col: &str,
         where_val: &str,
     ) -> Result<u64> {
-        let db = self.neo4j.get_database(db_name).await?
+        let db = self
+            .neo4j
+            .get_database(db_name)
+            .await?
             .context(format!("database '{}' does not exist", db_name))?;
-        let table = self.neo4j.get_table(db_name, table_name).await?
+        let table = self
+            .neo4j
+            .get_table(db_name, table_name)
+            .await?
             .context(format!("table '{}' does not exist", table_name))?;
         let schema_cols = self.neo4j.describe_table(db_name, table_name).await?;
 
-        let row_ids = self.find_rows_by_predicate(db.id, table.id, &schema_cols, where_col, where_val).await?;
+        let row_ids = self
+            .find_rows_by_predicate(db.id, table.id, &schema_cols, where_col, where_val)
+            .await?;
 
         if row_ids.is_empty() {
             return Ok(0);
@@ -248,14 +300,17 @@ impl<'a> WriteEngine<'a> {
             let (_entry_id, file_offset) = self.wal.append(payload)?;
 
             // Delete RowMeta if exists
-            self.neo4j.graph()
-                .run(neo4rs::query(
-                    "MATCH (m:RowMeta {row_id: $row_id}) DELETE m"
-                ).param("row_id", row_id_str.as_str()))
+            self.neo4j
+                .graph()
+                .run(
+                    neo4rs::query("MATCH (m:RowMeta {row_id: $row_id}) DELETE m")
+                        .param("row_id", row_id_str.as_str()),
+                )
                 .await
                 .ok();
 
-            self.wal.update_status(file_offset, WalStatus::Neo4jCommitted)?;
+            self.wal
+                .update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
             // Read row to get column values for index cleanup
             let row_key = build_row_key(db.id, table.id, *row_id_raw)?;
@@ -264,7 +319,11 @@ impl<'a> WriteEngine<'a> {
                 if let Some(data) = self.storage.get(&row_key).await? {
                     let existing = deserialize_columns(&data);
                     let old_keys = build_index_keys_for_row(
-                        db.id, table.id, *row_id_raw, &existing, &indexed_cols,
+                        db.id,
+                        table.id,
+                        *row_id_raw,
+                        &existing,
+                        &indexed_cols,
                     );
                     if !old_keys.is_empty() {
                         self.storage.del(&old_keys).await?;
@@ -300,15 +359,17 @@ impl<'a> WriteEngine<'a> {
         where_col: &str,
         where_val: &str,
     ) -> Result<Vec<(String, u64)>> {
-        let col = schema_cols.iter().find(|c| c.name == where_col)
+        let col = schema_cols
+            .iter()
+            .find(|c| c.name == where_col)
             .context(format!("column '{}' not found in WHERE clause", where_col))?;
 
         if col.is_pk {
             // PK lookup via pk: key
             let pk_key = format!("pk:{}:{}:{}", db_id, table_id, where_val);
             if let Some(row_id_bytes) = self.storage.get(&pk_key).await? {
-                let row_id_str = String::from_utf8(row_id_bytes)
-                    .context("invalid row_id encoding")?;
+                let row_id_str =
+                    String::from_utf8(row_id_bytes).context("invalid row_id encoding")?;
                 let row_id_raw = keys::decode_base62(&row_id_str)?;
                 return Ok(vec![(row_id_str, row_id_raw)]);
             }
@@ -329,7 +390,9 @@ impl<'a> WriteEngine<'a> {
                 view.find_col(col.id).map(|b| b.to_vec())
             } else {
                 let cols = deserialize_columns(row_data);
-                cols.into_iter().find(|(id, _)| *id == col.id).map(|(_, v)| v)
+                cols.into_iter()
+                    .find(|(id, _)| *id == col.id)
+                    .map(|(_, v)| v)
             };
             if let Some(val_bytes) = val_bytes {
                 let val_str = String::from_utf8_lossy(&val_bytes);
@@ -412,7 +475,9 @@ fn validate_not_null(schema_cols: &[ColumnInfo], resolved: &[(ColumnInfo, Vec<u8
     // Check that all NOT NULL columns have a value provided
     for col in schema_cols {
         if !col.nullable && !col.is_pk {
-            let has_value = resolved.iter().any(|(c, v)| c.id == col.id && !v.is_empty());
+            let has_value = resolved
+                .iter()
+                .any(|(c, v)| c.id == col.id && !v.is_empty());
             if !has_value {
                 bail!("column '{}' cannot be NULL", col.name);
             }
@@ -451,7 +516,12 @@ pub async fn replay_wal_entries(
 
     for entry in entries {
         match &entry.payload {
-            WalPayload::V1(WalPayloadV1::Insert { db_id, table_id, row_id, columns }) => {
+            WalPayload::V1(WalPayloadV1::Insert {
+                db_id,
+                table_id,
+                row_id,
+                columns,
+            }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
                 let row_value = serialize_columns(columns);
@@ -477,7 +547,12 @@ pub async fn replay_wal_entries(
                 storage.mset(&pairs).await?;
                 info!(entry_id = entry.header.entry_id, "replayed INSERT");
             }
-            WalPayload::V1(WalPayloadV1::Update { db_id, table_id, row_id, columns }) => {
+            WalPayload::V1(WalPayloadV1::Update {
+                db_id,
+                table_id,
+                row_id,
+                columns,
+            }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
 
@@ -518,7 +593,12 @@ pub async fn replay_wal_entries(
                 storage.mset(&pairs).await?;
                 info!(entry_id = entry.header.entry_id, "replayed UPDATE");
             }
-            WalPayload::V1(WalPayloadV1::Delete { db_id, table_id, row_id, .. }) => {
+            WalPayload::V1(WalPayloadV1::Delete {
+                db_id,
+                table_id,
+                row_id,
+                ..
+            }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
 
@@ -558,12 +638,17 @@ async fn lookup_indexed_cols(
 
     // Find the database and table names from IDs to call get_indexed_columns
     // For replay, we need to look up via Neo4j by IDs
-    let mut result = neo4j.graph()
-        .execute(neo4rs::query(
-            "MATCH (db:Database)-[:HAS_TABLE]->(t:Table {id: $table_id}) \
+    let mut result = neo4j
+        .graph()
+        .execute(
+            neo4rs::query(
+                "MATCH (db:Database)-[:HAS_TABLE]->(t:Table {id: $table_id}) \
              WHERE db.id = $db_id \
-             RETURN db.name AS db_name, t.name AS table_name"
-        ).param("db_id", db_id as i64).param("table_id", table_id as i64))
+             RETURN db.name AS db_name, t.name AS table_name",
+            )
+            .param("db_id", db_id as i64)
+            .param("table_id", table_id as i64),
+        )
         .await?;
 
     let indexed = if let Some(row) = result.next().await? {
@@ -687,9 +772,7 @@ mod tests {
     #[test]
     fn validate_not_null_fails_missing_required() {
         let cols = test_columns();
-        let resolved = vec![
-            (cols[0].clone(), b"1".to_vec()),
-        ];
+        let resolved = vec![(cols[0].clone(), b"1".to_vec())];
 
         let err = validate_not_null(&cols, &resolved).unwrap_err();
         assert!(err.to_string().contains("name"));
@@ -726,5 +809,4 @@ mod tests {
     fn deserialize_empty_returns_empty() {
         assert!(deserialize_columns(&[]).is_empty());
     }
-
 }

@@ -4,11 +4,8 @@
 /// On first scan of a table, columns are extracted into contiguous typed arrays.
 /// Predicates are evaluated column-at-a-time using auto-vectorizable loops that
 /// produce u64 bitmasks. Only matching rows are materialized into Row objects.
-
 use crate::row_format::RowView;
-use crate::storage::StorageBackend;
 use crate::typed_value::{TypedValue, EMPTY_TEXT_SENTINEL};
-use anyhow::Result;
 use schema::ColumnInfo;
 use std::collections::HashMap;
 
@@ -30,13 +27,14 @@ pub enum TypedColumn {
 #[derive(Debug, Clone)]
 pub struct NullBitmap {
     words: Vec<u64>,
-    len: usize,
 }
 
 impl NullBitmap {
     pub fn new(len: usize) -> Self {
         let num_words = (len + 63) / 64;
-        Self { words: vec![0u64; num_words], len }
+        Self {
+            words: vec![0u64; num_words],
+        }
     }
 
     #[inline]
@@ -128,10 +126,7 @@ fn civil_from_days(days: i32) -> (i32, u32, u32) {
 
 impl TableColumns {
     /// Build columnar arrays from a RocksDB prefix scan result.
-    pub fn build(
-        all_kv: &[(String, Vec<u8>)],
-        schema_cols: &[ColumnInfo],
-    ) -> Self {
+    pub fn build(all_kv: &[(String, Vec<u8>)], schema_cols: &[ColumnInfo]) -> Self {
         let capacity = all_kv.len();
         let mut row_keys = Vec::with_capacity(capacity);
 
@@ -175,7 +170,11 @@ impl TableColumns {
             .map(|(id, builder)| (id, builder.finish()))
             .collect();
 
-        TableColumns { row_count: row_keys.len(), row_keys, columns }
+        TableColumns {
+            row_count: row_keys.len(),
+            row_keys,
+            columns,
+        }
     }
 
     /// Retrieve a typed value for a specific row and column (for building Row objects).
@@ -214,11 +213,31 @@ impl ColumnBuilder {
     fn new(kind: ColumnKind, capacity: usize) -> Self {
         Self {
             kind,
-            ints: if matches!(kind, ColumnKind::Int64) { Vec::with_capacity(capacity) } else { Vec::new() },
-            floats: if matches!(kind, ColumnKind::Float64) { Vec::with_capacity(capacity) } else { Vec::new() },
-            dates: if matches!(kind, ColumnKind::DateDays) { Vec::with_capacity(capacity) } else { Vec::new() },
-            texts: if matches!(kind, ColumnKind::Text) { Vec::with_capacity(capacity) } else { Vec::new() },
-            bools: if matches!(kind, ColumnKind::Boolean) { Vec::with_capacity(capacity) } else { Vec::new() },
+            ints: if matches!(kind, ColumnKind::Int64) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            floats: if matches!(kind, ColumnKind::Float64) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            dates: if matches!(kind, ColumnKind::DateDays) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            texts: if matches!(kind, ColumnKind::Text) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            bools: if matches!(kind, ColumnKind::Boolean) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
             nulls: NullBitmap::new(capacity),
             count: 0,
         }
@@ -297,7 +316,10 @@ impl Bitmap {
 
     pub fn all_false(len: usize) -> Self {
         let num_words = (len + 63) / 64;
-        Self { words: vec![0u64; num_words], len }
+        Self {
+            words: vec![0u64; num_words],
+            len,
+        }
     }
 
     #[inline]
@@ -441,9 +463,7 @@ pub fn filter_column(
     literal: &TypedValue,
 ) -> Bitmap {
     let bm = match (col, literal) {
-        (TypedColumn::Int64(vals), TypedValue::Int(threshold)) => {
-            filter_i64(vals, op, *threshold)
-        }
+        (TypedColumn::Int64(vals), TypedValue::Int(threshold)) => filter_i64(vals, op, *threshold),
         (TypedColumn::Int64(vals), TypedValue::Float(threshold)) => {
             // Promote to f64 comparison
             let f_vals: Vec<f64> = vals.iter().map(|&v| v as f64).collect();
@@ -462,9 +482,7 @@ pub fn filter_column(
                 Bitmap::all_false(vals.len())
             }
         }
-        (TypedColumn::Text(vals), TypedValue::Text(threshold)) => {
-            filter_text(vals, op, threshold)
-        }
+        (TypedColumn::Text(vals), TypedValue::Text(threshold)) => filter_text(vals, op, threshold),
         _ => {
             // Unsupported type combination — return empty (no matches)
             let len = match col {
@@ -517,7 +535,13 @@ mod tests {
 
     #[test]
     fn date_roundtrip() {
-        for date in ["1970-01-01", "2024-06-15", "1994-01-01", "2000-02-29", "1900-01-01"] {
+        for date in [
+            "1970-01-01",
+            "2024-06-15",
+            "1994-01-01",
+            "2000-02-29",
+            "1900-01-01",
+        ] {
             let days = date_to_days(date).unwrap();
             assert_eq!(days_to_date(days), date, "roundtrip failed for {}", date);
         }

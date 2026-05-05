@@ -22,8 +22,18 @@ This roadmap assumes the near-term priority is:
   - grouped ordering
   - join edge cases
   - write-path round-trips
+- Phase 2 now has an initial scalar-function baseline for:
+  - null helpers like `COALESCE` and `NULLIF`
+  - text helpers like `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, and `CONCAT`
+  - `CAST`
+  - basic date/time helpers like `CURRENT_DATE` and `NOW`
+- Phase 3 is now started, but only partially implemented:
+  - `HAVING` is supported for the current grouped/aggregate subset
+  - `INSERT ... SELECT` is supported for the current simple/join select subset
+  - broader `ORDER BY` expressions on materialized rows are supported
+  - subqueries, derived tables, CTEs, and compound queries are still intentionally rejected with explicit boundary tests
 
-The remaining work for Phase 1 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
+The remaining work for Phase 1 and Phase 3 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
 
 ## Guiding Principles
 
@@ -178,6 +188,20 @@ Implement in this order:
 5. `UNION ALL`, then `UNION`
 6. `INSERT ... SELECT`
 7. broader `ORDER BY` on expressions
+
+### Implementation Snapshot
+
+The repository currently has an initial Phase 3 slice:
+
+- implemented
+  - `HAVING`
+  - `INSERT ... SELECT` for the current simple/join select subset
+  - broader `ORDER BY` expressions on materialized rows
+- not yet implemented, but covered by explicit unsupported-boundary tests
+  - subqueries
+  - derived tables
+  - `WITH` / simple CTEs
+  - `UNION ALL`, `UNION`, and other compound queries
 
 ### Required Test Coverage
 

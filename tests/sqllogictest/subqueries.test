@@ -1,0 +1,7 @@
+# dataset: subquery_cases
+
+statement error
+SELECT name FROM customers WHERE id IN (SELECT customer_id FROM orders);
+
+statement error
+SELECT name, (SELECT COUNT(*) FROM orders) FROM customers ORDER BY id;

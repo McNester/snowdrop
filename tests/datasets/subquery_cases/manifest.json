@@ -1,0 +1,9 @@
+{
+  "name": "subquery_cases",
+  "database": "subquery_cases",
+  "description": "Boundary fixture for still-unsupported subquery forms.",
+  "purpose": "Assert deterministic readable failures for subqueries before they are implemented.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "sqllogictest"],
+  "postgres_enabled": false
+}

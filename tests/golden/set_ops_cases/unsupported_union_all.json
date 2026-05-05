@@ -1,0 +1,5 @@
+{
+  "name": "unsupported_union_all",
+  "sql": "SELECT value FROM left_values UNION ALL SELECT value FROM right_values;",
+  "expected_error": "compound queries like UNION are not supported yet"
+}

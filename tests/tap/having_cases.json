@@ -1,0 +1,18 @@
+{
+  "name": "having_cases",
+  "dataset": "having_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "having threshold",
+      "sql": "SELECT d.name, SUM(w.hours) AS total_hours FROM departments d INNER JOIN worklog w ON d.id = w.dept_id GROUP BY d.name HAVING SUM(w.hours) >= 5 ORDER BY total_hours DESC, d.name;",
+      "expected_rows": [["beta", "8"], ["alpha", "5"]]
+    },
+    {
+      "kind": "sql",
+      "name": "group order expression",
+      "sql": "SELECT d.name, SUM(w.hours) AS total_hours, COUNT(*) AS entry_count FROM departments d INNER JOIN worklog w ON d.id = w.dept_id GROUP BY d.name HAVING COUNT(*) >= 2 ORDER BY total_hours - entry_count DESC, d.name;",
+      "expected_rows": [["beta", "8", "2"], ["alpha", "5", "2"]]
+    }
+  ]
+}

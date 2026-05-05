@@ -1,0 +1,14 @@
+# dataset: insert_select_cases
+
+statement ok
+INSERT INTO archive_orders (id, customer, total, status)
+SELECT id, customer, total, UPPER(status)
+FROM live_orders
+WHERE total >= 50
+ORDER BY total / 10 DESC, id;
+
+query TTF
+SELECT customer, status, total FROM archive_orders ORDER BY total DESC, customer;
+----
+Cara	PENDING	120
+Alice	PAID	75

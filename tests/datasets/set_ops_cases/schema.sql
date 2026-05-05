@@ -1,0 +1,2 @@
+CREATE TABLE left_values (id BIGINT PRIMARY KEY, value VARCHAR(32));
+CREATE TABLE right_values (id BIGINT PRIMARY KEY, value VARCHAR(32));

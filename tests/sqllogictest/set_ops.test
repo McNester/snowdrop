@@ -1,0 +1,7 @@
+# dataset: set_ops_cases
+
+statement error
+SELECT value FROM left_values UNION ALL SELECT value FROM right_values;
+
+statement error
+WITH staged AS (SELECT value FROM left_values) SELECT value FROM staged;

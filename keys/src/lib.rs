@@ -48,10 +48,10 @@ pub fn decode_base62(s: &str) -> Result<u64, KeyError> {
 }
 
 // Width constants matching the key format spec
-pub const DB_ID_WIDTH: usize = 2;    // 3,844 databases
+pub const DB_ID_WIDTH: usize = 2; // 3,844 databases
 pub const TABLE_ID_WIDTH: usize = 3; // 238,328 tables
-pub const ROW_ID_WIDTH: usize = 11;  // ~3.5e19 rows
-pub const COL_ID_WIDTH: usize = 2;   // 3,844 columns per table
+pub const ROW_ID_WIDTH: usize = 11; // ~3.5e19 rows
+pub const COL_ID_WIDTH: usize = 2; // 3,844 columns per table
 
 /// Encodes a db_id (u32) to 2-char base62.
 pub fn encode_db_id(id: u32) -> Result<String, KeyError> {
@@ -117,11 +117,7 @@ pub fn table_scan_prefix(db_id: u32, table_id: u32) -> Result<String, KeyError> 
 }
 
 /// Scan pattern for a specific column across all rows: {db_id}:{table_id}:*:{col_id}
-pub fn column_scan_pattern(
-    db_id: u32,
-    table_id: u32,
-    col_id: u32,
-) -> Result<String, KeyError> {
+pub fn column_scan_pattern(db_id: u32, table_id: u32, col_id: u32) -> Result<String, KeyError> {
     Ok(format!(
         "{}:{}:*:{}",
         encode_db_id(db_id)?,
@@ -131,11 +127,7 @@ pub fn column_scan_pattern(
 }
 
 /// Scan pattern for all keys of a specific row: {db_id}:{table_id}:{row_id}:*
-pub fn row_scan_pattern(
-    db_id: u32,
-    table_id: u32,
-    row_id: u64,
-) -> Result<String, KeyError> {
+pub fn row_scan_pattern(db_id: u32, table_id: u32, row_id: u64) -> Result<String, KeyError> {
     Ok(format!(
         "{}:{}:{}:*",
         encode_db_id(db_id)?,

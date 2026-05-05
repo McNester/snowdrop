@@ -94,7 +94,10 @@ pub async fn serve_pgwire(
     info!(addr = addr.as_str(), "pgwire listener started");
 
     let router = Arc::new(query_router::QueryRouter::new(neo4j, storage, wal));
-    router.warm_schema_cache().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    router
+        .warm_schema_cache()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let handlers = Arc::new(SnowdropHandlers {
         startup: Arc::new(SnowdropStartupHandler),

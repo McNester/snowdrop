@@ -1,0 +1,8 @@
+INSERT INTO archive_orders
+SELECT id, customer, total, status
+FROM live_orders
+WHERE total < 50;
+
+SELECT id, customer, total, status
+FROM archive_orders
+ORDER BY id;

@@ -75,18 +75,18 @@ impl Neo4jConnection {
     async fn next_id(&self, counter_key: &str) -> Result<u32> {
         let mut result = self
             .graph()
-            .execute(query(
-                "MATCH (m:Meta {key: $key}) \
+            .execute(
+                query(
+                    "MATCH (m:Meta {key: $key}) \
                  SET m.value = m.value + 1 \
                  RETURN m.value AS id",
-            ).param("key", counter_key))
+                )
+                .param("key", counter_key),
+            )
             .await
             .context("failed to increment counter")?;
 
-        let row = result
-            .next()
-            .await?
-            .context("counter returned no result")?;
+        let row = result.next().await?.context("counter returned no result")?;
 
         let id: i64 = row.get("id").context("missing id field")?;
         Ok(id as u32)
@@ -148,10 +148,7 @@ impl Neo4jConnection {
             .await?;
 
         self.graph()
-            .run(
-                query("MATCH (db:Database {name: $name}) DETACH DELETE db")
-                    .param("name", name),
-            )
+            .run(query("MATCH (db:Database {name: $name}) DETACH DELETE db").param("name", name))
             .await?;
 
         info!(name, id = db.id, "database dropped");
@@ -229,7 +226,11 @@ impl Neo4jConnection {
         // Check table doesn't already exist
         let existing = self.get_table(db_name, table_name).await?;
         if existing.is_some() {
-            bail!("table '{}' already exists in database '{}'", table_name, db_name);
+            bail!(
+                "table '{}' already exists in database '{}'",
+                table_name,
+                db_name
+            );
         }
 
         let table_id = self.next_id("table_counter").await?;
@@ -273,7 +274,13 @@ impl Neo4jConnection {
                 .context("failed to create Column node")?;
         }
 
-        info!(db_name, table_name, table_id, cols = columns.len(), "table created");
+        info!(
+            db_name,
+            table_name,
+            table_id,
+            cols = columns.len(),
+            "table created"
+        );
         Ok(TableInfo {
             id: table_id,
             name: table_name.to_string(),
@@ -284,13 +291,10 @@ impl Neo4jConnection {
     // ── DROP TABLE ──
 
     pub async fn drop_table(&self, db_name: &str, table_name: &str) -> Result<()> {
-        let _table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+        let _table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         // Delete IndexEntry nodes first
         self.graph()
@@ -395,18 +399,11 @@ impl Neo4jConnection {
 
     // ── DESCRIBE TABLE ──
 
-    pub async fn describe_table(
-        &self,
-        db_name: &str,
-        table_name: &str,
-    ) -> Result<Vec<ColumnInfo>> {
-        let _table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+    pub async fn describe_table(&self, db_name: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
+        let _table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         let mut result = self
             .graph()
@@ -458,18 +455,19 @@ impl Neo4jConnection {
         col_type: &ColumnType,
         nullable: bool,
     ) -> Result<ColumnInfo> {
-        let table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+        let table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         // Check column doesn't already exist
         let cols = self.describe_table(db_name, table_name).await?;
         if cols.iter().any(|c| c.name == col_name) {
-            bail!("column '{}' already exists in table '{}'", col_name, table_name);
+            bail!(
+                "column '{}' already exists in table '{}'",
+                col_name,
+                table_name
+            );
         }
 
         let col_id = self.next_id("col_counter").await?;
@@ -507,7 +505,10 @@ impl Neo4jConnection {
 
     // ── INFORMATION_SCHEMA ──
 
-    pub async fn information_schema_tables(&self, db_name: &str) -> Result<Vec<(String, String, String)>> {
+    pub async fn information_schema_tables(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String)>> {
         // Returns (table_catalog, table_schema, table_name)
         let tables = self.show_tables(db_name).await?;
         Ok(tables
@@ -532,7 +533,11 @@ impl Neo4jConnection {
                     table.name.clone(),
                     col.name,
                     col.data_type,
-                    if col.nullable { "YES".to_string() } else { "NO".to_string() },
+                    if col.nullable {
+                        "YES".to_string()
+                    } else {
+                        "NO".to_string()
+                    },
                 ));
             }
         }
@@ -551,16 +556,28 @@ impl Neo4jConnection {
         column_name: &str,
     ) -> Result<ColumnInfo> {
         let cols = self.describe_table(db_name, table_name).await?;
-        let col = cols.iter().find(|c| c.name == column_name)
-            .context(format!("column '{}' not found in table '{}'", column_name, table_name))?;
+        let col = cols
+            .iter()
+            .find(|c| c.name == column_name)
+            .context(format!(
+                "column '{}' not found in table '{}'",
+                column_name, table_name
+            ))?;
 
         if col.indexed {
             bail!("column '{}' is already indexed", column_name);
         }
 
         // Check index name uniqueness across this table
-        if cols.iter().any(|c| c.index_name.as_deref() == Some(index_name)) {
-            bail!("index '{}' already exists on table '{}'", index_name, table_name);
+        if cols
+            .iter()
+            .any(|c| c.index_name.as_deref() == Some(index_name))
+        {
+            bail!(
+                "index '{}' already exists on table '{}'",
+                index_name,
+                table_name
+            );
         }
 
         self.graph()
@@ -578,7 +595,10 @@ impl Neo4jConnection {
             .await
             .context("failed to mark column as indexed")?;
 
-        info!(db_name, table_name, column_name, index_name, "index created");
+        info!(
+            db_name,
+            table_name, column_name, index_name, "index created"
+        );
         Ok(col.clone())
     }
 
@@ -593,9 +613,13 @@ impl Neo4jConnection {
         index_name: &str,
     ) -> Result<ColumnInfo> {
         let cols = self.describe_table(db_name, table_name).await?;
-        let col = cols.iter()
+        let col = cols
+            .iter()
             .find(|c| c.index_name.as_deref() == Some(index_name))
-            .context(format!("index '{}' not found on table '{}'", index_name, table_name))?
+            .context(format!(
+                "index '{}' not found on table '{}'",
+                index_name, table_name
+            ))?
             .clone();
 
         self.graph()
@@ -613,7 +637,13 @@ impl Neo4jConnection {
             .await
             .context("failed to remove index metadata")?;
 
-        info!(db_name, table_name, index_name, col_name = col.name, "index dropped");
+        info!(
+            db_name,
+            table_name,
+            index_name,
+            col_name = col.name,
+            "index dropped"
+        );
         Ok(col)
     }
 
@@ -626,7 +656,8 @@ impl Neo4jConnection {
         table_name: &str,
     ) -> Result<Vec<(String, String)>> {
         let cols = self.describe_table(db_name, table_name).await?;
-        Ok(cols.into_iter()
+        Ok(cols
+            .into_iter()
             .filter_map(|c| {
                 if c.indexed {
                     Some((c.index_name.unwrap_or_default(), c.name))

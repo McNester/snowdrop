@@ -76,7 +76,10 @@ fn encode_f64(v: f64) -> String {
 
 /// Decode an offset-encoded i64 back to its original value.
 pub fn decode_i64(encoded: &str) -> Option<i64> {
-    encoded.parse::<u64>().ok().map(|u| u.wrapping_sub(u64::MAX / 2 + 1) as i64)
+    encoded
+        .parse::<u64>()
+        .ok()
+        .map(|u| u.wrapping_sub(u64::MAX / 2 + 1) as i64)
 }
 
 // ── Index Scan Operations ──
@@ -94,8 +97,7 @@ pub async fn index_point_lookup(
 
     let mut row_ids = Vec::with_capacity(entries.len());
     for (key, _) in &entries {
-        let (_, _, _, _, row_id) = parse_index_key(key)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let (_, _, _, _, row_id) = parse_index_key(key).map_err(|e| anyhow::anyhow!("{e}"))?;
         row_ids.push(row_id);
     }
     Ok(row_ids)
@@ -118,19 +120,26 @@ pub async fn index_range_scan(
 
     let mut row_ids = Vec::new();
     for (key, _) in &entries {
-        let (_, _, _, val, row_id) = parse_index_key(key)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let (_, _, _, val, row_id) = parse_index_key(key).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let above_low = match low {
             None => true,
             Some(lo) => {
-                if low_inclusive { val.as_str() >= lo } else { val.as_str() > lo }
+                if low_inclusive {
+                    val.as_str() >= lo
+                } else {
+                    val.as_str() > lo
+                }
             }
         };
         let below_high = match high {
             None => true,
             Some(hi) => {
-                if high_inclusive { val.as_str() <= hi } else { val.as_str() < hi }
+                if high_inclusive {
+                    val.as_str() <= hi
+                } else {
+                    val.as_str() < hi
+                }
             }
         };
 
@@ -168,15 +177,16 @@ pub async fn backfill_index(
         if parts.len() != 3 {
             continue;
         }
-        let row_id = keys::decode_base62(parts[2])
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let row_id = keys::decode_base62(parts[2]).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         // Extract column value
         let col_bytes = if let Some(view) = RowView::new(row_data) {
             view.find_col(col_id).map(|b| b.to_vec())
         } else {
             let cols = deserialize_columns(row_data);
-            cols.into_iter().find(|(id, _)| *id == col_id).map(|(_, v)| v)
+            cols.into_iter()
+                .find(|(id, _)| *id == col_id)
+                .map(|(_, v)| v)
         };
 
         if let Some(raw) = col_bytes {
@@ -295,7 +305,12 @@ mod tests {
         let vals = [-1000.0, -1.0, -0.01, 0.0, 0.01, 1.0, 1000.0];
         let encoded: Vec<String> = vals.iter().map(|v| encode_f64(*v)).collect();
         for w in encoded.windows(2) {
-            assert!(w[0] < w[1], "{} should be < {} (for consecutive values)", w[0], w[1]);
+            assert!(
+                w[0] < w[1],
+                "{} should be < {} (for consecutive values)",
+                w[0],
+                w[1]
+            );
         }
     }
 
@@ -352,13 +367,16 @@ mod tests {
 
     #[test]
     fn build_entries_for_indexed_columns() {
-        let indexed = vec![
-            ColumnInfo {
-                id: 3, name: "age".into(), data_type: "INT".into(),
-                nullable: false, is_pk: false, table_id: 1,
-                indexed: true, index_name: Some("idx_age".into()),
-            },
-        ];
+        let indexed = vec![ColumnInfo {
+            id: 3,
+            name: "age".into(),
+            data_type: "INT".into(),
+            nullable: false,
+            is_pk: false,
+            table_id: 1,
+            indexed: true,
+            index_name: Some("idx_age".into()),
+        }];
         let columns = vec![(1u32, b"pk_val".to_vec()), (3, b"25".to_vec())];
 
         let entries = build_index_entries_for_row(1, 1, 100, &columns, &indexed);
@@ -369,13 +387,16 @@ mod tests {
 
     #[test]
     fn build_entries_skips_missing_columns() {
-        let indexed = vec![
-            ColumnInfo {
-                id: 5, name: "missing".into(), data_type: "INT".into(),
-                nullable: true, is_pk: false, table_id: 1,
-                indexed: true, index_name: Some("idx_missing".into()),
-            },
-        ];
+        let indexed = vec![ColumnInfo {
+            id: 5,
+            name: "missing".into(),
+            data_type: "INT".into(),
+            nullable: true,
+            is_pk: false,
+            table_id: 1,
+            indexed: true,
+            index_name: Some("idx_missing".into()),
+        }];
         let columns = vec![(1u32, b"pk_val".to_vec())];
 
         let entries = build_index_entries_for_row(1, 1, 100, &columns, &indexed);

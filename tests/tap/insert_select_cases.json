@@ -1,0 +1,18 @@
+{
+  "name": "insert_select_cases",
+  "dataset": "insert_select_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "insert select with expressions",
+      "sql": "INSERT INTO archive_orders (id, customer, total, status) SELECT id, customer, total, UPPER(status) FROM live_orders WHERE total >= 50 ORDER BY total / 10 DESC, id; SELECT id, customer, total, status FROM archive_orders ORDER BY total DESC, id;",
+      "expected_rows": [["3", "Cara", "120", "PENDING"], ["1", "Alice", "75", "PAID"]]
+    },
+    {
+      "kind": "sql",
+      "name": "insert select without column list",
+      "sql": "INSERT INTO archive_orders SELECT id, customer, total, status FROM live_orders WHERE total < 50; SELECT id, customer, total, status FROM archive_orders ORDER BY id;",
+      "expected_rows": [["2", "Bob", "20", "draft"]]
+    }
+  ]
+}

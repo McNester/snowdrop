@@ -212,7 +212,9 @@ pub fn tpch_markdown_section(results: &[QueryResult], scale: usize, with_indexes
         scale,
         scale * ORDERS * LINEITEMS_PER_ORDER
     ));
-    section.push_str("| Query | Snowdrop (warm) | SD Indexed (warm) | PostgreSQL 16 | vs PG (baseline) |\n");
+    section.push_str(
+        "| Query | Snowdrop (warm) | SD Indexed (warm) | PostgreSQL 16 | vs PG (baseline) |\n",
+    );
     section.push_str("|---|---|---|---|---|\n");
 
     for name in ["Q6", "Q1", "Q14", "Q3"] {
@@ -257,7 +259,8 @@ pub fn tpch_markdown_section(results: &[QueryResult], scale: usize, with_indexes
     section.push_str("- **Q6**: Revenue from discounted shipments (SUM + 5-predicate WHERE)\n");
     section.push_str("- **Q1**: Pricing summary (GROUP BY + 7 aggregates)\n");
     section.push_str("- **Q14**: Promotion effect (2-table JOIN + CASE WHEN)\n");
-    section.push_str("- **Q3**: Shipping priority (3-table JOIN + GROUP BY + ORDER BY + LIMIT)\n\n");
+    section
+        .push_str("- **Q3**: Shipping priority (3-table JOIN + GROUP BY + ORDER BY + LIMIT)\n\n");
 
     if with_indexes {
         section.push_str("### Index Configuration\n\n");
@@ -323,7 +326,8 @@ async fn run_full_benchmark(
         );
 
         println!("\n=== Indexed: {} ===\n", config.label);
-        let results = run_benchmark(&client, &queries, &config.label, scale, "indexed", runs).await?;
+        let results =
+            run_benchmark(&client, &queries, &config.label, scale, "indexed", runs).await?;
         all_results.extend(results);
     }
 
@@ -404,7 +408,7 @@ async fn run_benchmark(
     let mut results = Vec::new();
 
     for (name, sql) in queries {
-        println!("--- {} ---", name);
+        println!("--- {} ({}) ---", name, tpch_query_description(name));
         let mut query_runs = Vec::new();
 
         for run in 1..=num_runs {
@@ -459,11 +463,11 @@ async fn run_benchmark(
 pub fn print_summary_table(results: &[QueryResult], scale: usize) {
     println!("\n===== Summary (scale={}) =====", scale);
     println!(
-        "{:<25} {:>12} {:>12} {:>12} {:>10}",
+        "{:<44} {:>12} {:>12} {:>12} {:>10}",
         "Query", "Snowdrop", "SD Indexed", "PostgreSQL", "vs PG"
     );
     println!(
-        "{:-<25} {:-^12} {:-^12} {:-^12} {:-^10}",
+        "{:-<44} {:-^12} {:-^12} {:-^12} {:-^10}",
         "", "", "", "", ""
     );
 
@@ -500,9 +504,23 @@ pub fn print_summary_table(results: &[QueryResult], scale: usize) {
         };
 
         println!(
-            "{:<25} {:>12} {:>12} {:>12} {:>10}",
-            name, sd_str, sdi_str, pg_str, vs_pg
+            "{:<44} {:>12} {:>12} {:>12} {:>10}",
+            format!("{} - {}", name, tpch_query_description(name)),
+            sd_str,
+            sdi_str,
+            pg_str,
+            vs_pg
         );
+    }
+}
+
+pub fn tpch_query_description(name: &str) -> &'static str {
+    match name {
+        "Q6" => "Revenue from discounted shipments",
+        "Q1" => "Pricing summary",
+        "Q14" => "Promotion effect",
+        "Q3" => "Shipping priority",
+        _ => "Unknown query",
     }
 }
 

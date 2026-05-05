@@ -42,10 +42,7 @@ impl StorageBackend for RocksStorage {
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let val = self
-            .db
-            .get(key.as_bytes())
-            .context("RocksDB GET failed")?;
+        let val = self.db.get(key.as_bytes()).context("RocksDB GET failed")?;
         Ok(val)
     }
 
@@ -66,9 +63,7 @@ impl StorageBackend for RocksStorage {
         for (key, val) in pairs {
             batch.put(key.as_bytes(), val);
         }
-        self.db
-            .write(batch)
-            .context("RocksDB WriteBatch failed")?;
+        self.db.write(batch).context("RocksDB WriteBatch failed")?;
         Ok(())
     }
 
@@ -82,9 +77,7 @@ impl StorageBackend for RocksStorage {
             batch.delete(key.as_bytes());
             count += 1;
         }
-        self.db
-            .write(batch)
-            .context("RocksDB DEL batch failed")?;
+        self.db.write(batch).context("RocksDB DEL batch failed")?;
         Ok(count)
     }
 
@@ -97,8 +90,7 @@ impl StorageBackend for RocksStorage {
             if !key.starts_with(prefix_bytes) {
                 break;
             }
-            let key_str =
-                String::from_utf8(key.to_vec()).context("non-UTF8 key in RocksDB")?;
+            let key_str = String::from_utf8(key.to_vec()).context("non-UTF8 key in RocksDB")?;
             results.push((key_str, val.to_vec()));
         }
         Ok(results)
@@ -137,10 +129,7 @@ mod tests {
             ])
             .await
             .unwrap();
-        assert_eq!(
-            storage.get("key1").await.unwrap(),
-            Some(b"val1".to_vec())
-        );
+        assert_eq!(storage.get("key1").await.unwrap(), Some(b"val1".to_vec()));
         assert_eq!(storage.get("missing").await.unwrap(), None);
 
         // mget
@@ -157,7 +146,10 @@ mod tests {
         assert!(!storage.exists("missing").await.unwrap());
 
         // del
-        let deleted = storage.del(&["key1".into(), "missing".into()]).await.unwrap();
+        let deleted = storage
+            .del(&["key1".into(), "missing".into()])
+            .await
+            .unwrap();
         assert_eq!(deleted, 2); // counts attempted, not found
         assert_eq!(storage.get("key1").await.unwrap(), None);
 

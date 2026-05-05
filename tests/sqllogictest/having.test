@@ -1,0 +1,23 @@
+# dataset: having_cases
+
+query TT
+SELECT d.name, SUM(w.hours) AS total_hours
+FROM departments d
+INNER JOIN worklog w ON d.id = w.dept_id
+GROUP BY d.name
+HAVING SUM(w.hours) >= 5
+ORDER BY total_hours DESC, d.name;
+----
+beta	8
+alpha	5
+
+query TII
+SELECT d.name, SUM(w.hours) AS total_hours, COUNT(*) AS entry_count
+FROM departments d
+INNER JOIN worklog w ON d.id = w.dept_id
+GROUP BY d.name
+HAVING COUNT(*) >= 2
+ORDER BY total_hours - entry_count DESC, d.name;
+----
+beta	8	2
+alpha	5	2
