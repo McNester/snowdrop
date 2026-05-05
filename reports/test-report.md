@@ -1,6 +1,6 @@
 # Snowdrop Test Report
 
-Generated at: `2026-05-04T23:22:28.579376399+00:00`
+Generated at: `2026-05-05T10:56:09.898320703+00:00`
 
 ## Environment
 
@@ -173,10 +173,10 @@ Scale factor: 1 (~6000 lineitem rows)
 
 | Query | Snowdrop (warm) | SD Indexed (warm) | PostgreSQL 16 | vs PG (baseline) |
 |---|---|---|---|---|
-| Q6 | 0.8ms | 4.3ms | 35.6ms | 46.7x faster |
-| Q1 | 14.0ms | 17.5ms | 77.5ms | 5.5x faster |
-| Q14 | 8.6ms | 8.2ms | 35.7ms | 4.1x faster |
-| Q3 | 17.1ms | 16.1ms | 56.2ms | 3.3x faster |
+| Q6 | 0.7ms | 4.3ms | 46.0ms | 61.8x faster |
+| Q1 | 14.3ms | 17.6ms | 96.6ms | 6.8x faster |
+| Q14 | 8.4ms | 8.9ms | 37.0ms | 4.4x faster |
+| Q3 | 16.1ms | 16.6ms | 58.4ms | 3.6x faster |
 
 ### Query Descriptions
 
