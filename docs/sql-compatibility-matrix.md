@@ -49,13 +49,13 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Index DDL | `CREATE INDEX`, `DROP INDEX` | Partial | Present, but practical support is aimed at the current RocksDB secondary-index path. |
 | Alter DDL | `ALTER TABLE` | Partial | Only `ADD COLUMN` is supported in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:383). |
 | Insert | `INSERT ... VALUES` | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:504). |
-| Insert | `INSERT ... SELECT` | Partial | Implemented for the current simple/join select subset in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:561) and materialized through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:1839); wider query sources are still rejected. |
+| Insert | `INSERT ... SELECT` | Partial | Implemented for the current simple/join select subset in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:561) and materialized through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:1780); wider query sources are still rejected. |
 | Update | `UPDATE ... SET ... WHERE ...` | Partial | Works, but write-path `WHERE` is limited to simple equality via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
 | Delete | `DELETE ... WHERE ...` | Partial | Same simple `WHERE` restriction as `UPDATE`. |
 | Select | Basic `SELECT ... FROM ...` | Supported | Core path is in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:659). |
 | Select | `SELECT` without `FROM` | Not Supported | Rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:668). |
-| Compound queries | `UNION`, `INTERSECT`, `EXCEPT` | Not Supported | The router rejects them explicitly with a readable boundary error in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:759) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
-| CTEs | `WITH ...` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
+| Compound queries | `UNION`, `INTERSECT`, `EXCEPT` | Not Supported | The router rejects them explicitly with a readable boundary error in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:759) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2646). |
+| CTEs | `WITH ...` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2646). |
 | Views | `CREATE VIEW`, querying views | Not Supported | No view support path is implemented. |
 
 ## Query Features
@@ -68,14 +68,14 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Filtering | `BETWEEN`, `IN (...)`, `LIKE` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:23), [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:31), and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:39). |
 | Filtering | `ILIKE`, regex, advanced pattern matching | Not Supported | `LIKE` is intentionally simplified in [typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs:116). |
 | Ordering | `ORDER BY column` | Supported | Core row sort logic is in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2228). |
-| Ordering | `ORDER BY expression` | Partial | Materialized row sorting now evaluates general expressions through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3189) and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:88), but wider query-surface forms and columnar paths are still restricted. |
+| Ordering | `ORDER BY expression` | Partial | Materialized row sorting now evaluates general expressions through [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3130) and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:88), but wider query-surface forms and columnar paths are still restricted. |
 | Limiting | `LIMIT`, `OFFSET` | Supported | Numeric extraction is implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
 | Aggregation | `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | Supported | Aggregate extraction and execution are in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2022) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2131). |
 | Aggregation | `GROUP BY column` | Supported | Plain identifier and qualified identifier grouping are supported in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2045). |
 | Aggregation | `GROUP BY expression` | Partial | Complex expressions are not first-class in `extract_group_by_cols()` and related paths. |
-| Aggregation | `HAVING` | Partial | Implemented for the current grouped/aggregate subset via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2230) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3376), but subqueries and wider grouped forms remain rejected. |
-| Subqueries | expression/predicate subqueries | Not Supported | Explicit unsupported-boundary validation exists in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2719) and is covered by `subquery_cases`. |
-| Derived tables | subqueries in `FROM` / `JOIN` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2705). |
+| Aggregation | `HAVING` | Partial | Implemented for the current grouped/aggregate subset via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2230) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3317), but subqueries and wider grouped forms remain rejected. |
+| Subqueries | expression/predicate subqueries | Not Supported | Explicit unsupported-boundary validation exists in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2646) and is covered by `subquery_cases`. |
+| Derived tables | subqueries in `FROM` / `JOIN` | Not Supported | Explicitly rejected by `validate_query_surface_boundaries()` in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2646). |
 
 ## JOIN Support
 
