@@ -1,0 +1,6 @@
+1..5
+ok 1 - insert select with expressions
+ok 2 - insert select without column list
+ok 3 - insert select via cte
+ok 4 - insert grouped totals
+ok 5 - insert select mismatch

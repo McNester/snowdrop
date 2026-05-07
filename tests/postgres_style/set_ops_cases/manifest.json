@@ -1,0 +1,5 @@
+{
+  "name": "set_ops_cases",
+  "description": "PostgreSQL-style regression subset for UNION support and set-op boundaries.",
+  "dataset": "set_ops_cases"
+}

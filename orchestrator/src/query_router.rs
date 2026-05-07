@@ -5,7 +5,7 @@ use executor::{
     bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate,
     evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine,
 };
-use futures::stream;
+use futures::{future::BoxFuture, stream, FutureExt};
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
@@ -51,6 +51,78 @@ impl SchemaCache {
             .remove(&(db_name.to_string(), table_name.to_string()));
         self.columns
             .remove(&(db_name.to_string(), table_name.to_string()));
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RelationColumn {
+    lookup_name: String,
+    output_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct RelationResult {
+    rows: Vec<Row>,
+    columns: Vec<RelationColumn>,
+}
+
+impl RelationResult {
+    fn from_named_rows(rows: Vec<Row>, field_names: Vec<String>) -> Self {
+        let columns = field_names
+            .into_iter()
+            .map(|name| {
+                let lookup_name = name.to_lowercase();
+                RelationColumn {
+                    lookup_name,
+                    output_name: name,
+                }
+            })
+            .collect();
+        Self { rows, columns }
+    }
+
+    fn field_names(&self) -> Vec<String> {
+        self.columns
+            .iter()
+            .map(|col| col.output_name.clone())
+            .collect()
+    }
+
+    fn schema_cols(&self) -> Vec<ColumnInfo> {
+        self.columns
+            .iter()
+            .enumerate()
+            .map(|(idx, col)| ColumnInfo {
+                id: idx as u32 + 1,
+                name: col.lookup_name.clone(),
+                data_type: "TEXT".to_string(),
+                nullable: true,
+                is_pk: false,
+                table_id: 0,
+                indexed: false,
+                index_name: None,
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RelationContext {
+    ctes: HashMap<String, RelationResult>,
+    outer_rows: Vec<Row>,
+}
+
+impl RelationContext {
+    fn with_outer_row(&self, row: Row) -> Self {
+        let mut next = self.clone();
+        next.outer_rows.push(row);
+        next
+    }
+
+    fn with_ctes(&self, ctes: HashMap<String, RelationResult>) -> Self {
+        let mut next = self.clone();
+        next.ctes = ctes;
+        next
     }
 }
 
@@ -594,27 +666,48 @@ impl QueryRouter {
                         total_inserted += n;
                     }
                 }
-                SetExpr::Select(_) => {
-                    let (rows, field_names) = self.materialize_query_output(query.as_ref()).await?;
+                SetExpr::Select(_) | SetExpr::SetOperation { .. } | SetExpr::Query(_) => {
+                    let relation = self.execute_query_to_relation(query.as_ref()).await?;
+                    let source_columns: Vec<String> = relation
+                        .field_names()
+                        .into_iter()
+                        .map(|name| name.to_lowercase())
+                        .collect();
+                    if source_columns.len() != column_names.len() {
+                        return Err(user_error(format!(
+                            "INSERT ... SELECT source/target column count mismatch (target={}, source={})",
+                            column_names.len(),
+                            source_columns.len()
+                        )));
+                    }
+                    let target_columns =
+                        resolve_insert_target_columns(&target_schema, &column_names)?;
+                    let rows = relation.rows;
                     if rows.is_empty() {
                         return Ok(Response::Execution(Tag::new("INSERT").with_rows(0)));
                     }
 
-                    let source_columns: Vec<String> = field_names
-                        .into_iter()
-                        .map(|name| name.to_lowercase())
+                    let materialized_rows: Vec<Vec<TypedValue>> = rows
+                        .iter()
+                        .map(|row| {
+                            source_columns
+                                .iter()
+                                .map(|col| lookup_row_value(row, col))
+                                .collect()
+                        })
                         .collect();
 
-                    for row in &rows {
-                        let values: Vec<Vec<u8>> = source_columns
-                            .iter()
-                            .map(|col| typed_value_to_bytes(&lookup_row_value(row, col)))
-                            .collect();
+                    for values in &materialized_rows {
+                        validate_insert_select_row_compatibility(values, &target_columns)?;
+                    }
+
+                    for values in &materialized_rows {
+                        let bytes: Vec<Vec<u8>> = values.iter().map(typed_value_to_bytes).collect();
 
                         let mut wal = self.wal.write().await;
                         let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
                         let n = engine
-                            .insert(&db_name, &table_name, &column_names, &values)
+                            .insert(&db_name, &table_name, &column_names, &bytes)
                             .await
                             .map_err(to_err)?;
                         total_inserted += n;
@@ -659,7 +752,6 @@ impl QueryRouter {
             _ => return Err(user_error("UPDATE requires a table name".to_string())),
         };
         let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
-
         // Parse SET pairs
         let mut set_pairs: Vec<(String, Vec<u8>)> = Vec::new();
         for assign in assignments {
@@ -751,6 +843,11 @@ impl QueryRouter {
     // ── SELECT handler (M4) ──
 
     async fn handle_select<'a>(&self, query: sqlparser::ast::Query) -> PgWireResult<Response<'a>> {
+        if !query_can_use_optimized_relation_fast_path(&query) {
+            let relation = self.execute_query_to_relation(&query).await?;
+            return self.relation_to_response(&relation);
+        }
+
         let t_total = std::time::Instant::now();
         let select = match query.body.as_ref() {
             SetExpr::Select(sel) => sel.clone(),
@@ -764,12 +861,10 @@ impl QueryRouter {
         validate_select_expressions(&select, &query)?;
         validate_query_surface_boundaries(&select, &query)?;
 
-        // Resolve table from FROM clause
         if select.from.is_empty() {
             return Err(user_error("SELECT requires FROM clause".to_string()));
         }
 
-        // Detect JOIN queries
         if !select.from[0].joins.is_empty() {
             return self.handle_join_select(*select, query).await;
         }
@@ -795,25 +890,21 @@ impl QueryRouter {
             .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
         let schema_ms = t_schema.elapsed().as_secs_f64() * 1000.0;
 
-        // Detect aggregates vs. plain select
         let agg_exprs = extract_aggregates(&select.projection);
         let is_aggregate = !agg_exprs.is_empty();
         let has_expr_proj = has_expression_projection(&select.projection);
 
-        // Determine projected columns for non-aggregate queries
         let projected_cols = if is_aggregate || has_expr_proj {
-            schema_cols.clone() // need all columns for expression/aggregate evaluation
+            schema_cols.clone()
         } else {
             resolve_projection(&select.projection, &schema_cols)?
         };
 
-        // Fast path: COUNT(*) without WHERE can skip MGET entirely
         if is_aggregate && select.selection.is_none() && is_count_star_only(&select.projection) {
             let count = self.count_rows_fast(db.id, table.id).await?;
             return self.make_count_star_response(count);
         }
 
-        // Compute columns needed by this query (WHERE + SELECT + ORDER BY + GROUP BY)
         let needed_col_ids = compute_needed_col_ids(
             select.selection.as_ref(),
             &select.projection,
@@ -822,14 +913,10 @@ impl QueryRouter {
             &schema_cols,
         );
 
-        let agg_offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let agg_limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+        let (query_offset, query_limit) = query_offset_limit(&query);
+        let agg_offset = query_offset;
+        let agg_limit = query_limit;
 
-        // Try index scan first; fall back to columnar scan.
         let t_fetch = std::time::Instant::now();
         if let Some(pred) = select.selection.as_ref() {
             if let Some(rows) = self
@@ -867,12 +954,7 @@ impl QueryRouter {
                     sort_rows(&mut result_rows, &order_by.exprs, &schema_cols)?;
                 }
 
-                let paged: Vec<Row> =
-                    if let Some(lim) = query.limit.as_ref().and_then(|l| expr_to_usize(l)) {
-                        result_rows.into_iter().skip(agg_offset).take(lim).collect()
-                    } else {
-                        result_rows.into_iter().skip(agg_offset).collect()
-                    };
+                let paged = paginate_rows(result_rows, agg_offset, query_limit);
 
                 return if has_expr_proj {
                     let proj_exprs = resolve_projection_exprs(&select.projection, &schema_cols)?;
@@ -935,7 +1017,6 @@ impl QueryRouter {
             "SELECT perf breakdown"
         );
 
-        // Handle aggregates
         if is_aggregate {
             return self.handle_aggregate_result(
                 &select.projection,
@@ -949,27 +1030,13 @@ impl QueryRouter {
             );
         }
 
-        // Apply ORDER BY
         let mut result_rows = filtered;
         if let Some(ref order_by) = query.order_by {
             sort_rows(&mut result_rows, &order_by.exprs, &schema_cols)?;
         }
 
-        // Apply OFFSET and LIMIT
-        let offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+        let paged = paginate_rows(result_rows, query_offset, query_limit);
 
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            result_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            result_rows.into_iter().skip(offset).collect()
-        };
-
-        // Build pgwire response
         if has_expr_proj {
             let proj_exprs = resolve_projection_exprs(&select.projection, &schema_cols)?;
             self.expr_rows_to_response(&paged, &proj_exprs, &schema_cols)
@@ -1173,12 +1240,7 @@ impl QueryRouter {
 
         let agg_exprs = extract_aggregates(&select.projection);
         if !agg_exprs.is_empty() {
-            let agg_offset = query
-                .offset
-                .as_ref()
-                .and_then(|o| expr_to_usize(&o.value))
-                .unwrap_or(0);
-            let agg_limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+            let (agg_offset, agg_limit) = query_offset_limit(&query);
             return self.handle_aggregate_result(
                 &select.projection,
                 &joined_rows,
@@ -1196,17 +1258,8 @@ impl QueryRouter {
             sort_rows(&mut joined_rows, &order_by.exprs, &combined_schema)?;
         }
 
-        let offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            joined_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            joined_rows.into_iter().skip(offset).collect()
-        };
+        let (offset, limit) = query_offset_limit(&query);
+        let paged = paginate_rows(joined_rows, offset, limit);
 
         let fields = Arc::new(
             projected
@@ -1476,11 +1529,7 @@ impl QueryRouter {
             sort_rows(&mut agg_rows, &ob.exprs, schema_cols)?;
         }
 
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            agg_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            agg_rows.into_iter().skip(offset).collect()
-        };
+        let paged = paginate_rows(agg_rows, offset, limit);
         record_cardinality("aggregate_output_rows", paged.len());
 
         tracing::info!(
@@ -1777,7 +1826,124 @@ impl QueryRouter {
         Ok(Response::Query(query_response(fields, data_rows)))
     }
 
-    async fn materialize_query_output(
+    fn relation_to_response<'a>(&self, relation: &RelationResult) -> PgWireResult<Response<'a>> {
+        let t_encode = std::time::Instant::now();
+        let fields = Arc::new(
+            relation
+                .columns
+                .iter()
+                .map(|col| text_field(&col.output_name))
+                .collect::<Vec<_>>(),
+        );
+
+        let mut data_rows: Vec<DataRow> = Vec::new();
+        for row in &relation.rows {
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for col in &relation.columns {
+                let val = lookup_row_value(row, &col.lookup_name);
+                match val {
+                    TypedValue::Null => encoder.encode_field(&None::<&str>)?,
+                    tv => encoder.encode_field(&tv.to_string())?,
+                }
+            }
+            data_rows.push(encoder.finish()?);
+        }
+
+        record_stage_duration("pgwire_encode", t_encode.elapsed().as_secs_f64());
+        Ok(Response::Query(query_response(fields, data_rows)))
+    }
+
+    async fn execute_query_to_relation(
+        &self,
+        query: &sqlparser::ast::Query,
+    ) -> PgWireResult<RelationResult> {
+        self.execute_query_to_relation_boxed(query, &RelationContext::default())
+            .await
+    }
+
+    fn execute_query_to_relation_boxed<'a>(
+        &'a self,
+        query: &'a sqlparser::ast::Query,
+        ctx: &'a RelationContext,
+    ) -> BoxFuture<'a, PgWireResult<RelationResult>> {
+        async move {
+            let mut local_ctx = ctx.clone();
+            if let Some(with) = &query.with {
+                if with.recursive {
+                    return Err(user_error("recursive CTE is not supported yet".to_string()));
+                }
+
+                let mut ctes = ctx.ctes.clone();
+                for cte in &with.cte_tables {
+                    let cte_ctx = ctx.with_ctes(ctes.clone());
+                    let mut relation = self
+                        .execute_query_to_relation_boxed(cte.query.as_ref(), &cte_ctx)
+                        .await?;
+                    if !cte.alias.columns.is_empty() {
+                        relation = rename_relation_columns(
+                            relation,
+                            &cte.alias
+                                .columns
+                                .iter()
+                                .map(|ident| ident.name.value.clone())
+                                .collect::<Vec<_>>(),
+                        )?;
+                    }
+                    ctes.insert(cte.alias.name.value.to_lowercase(), relation);
+                }
+                local_ctx.ctes = ctes;
+            }
+
+            match query.body.as_ref() {
+                SetExpr::Select(select) => {
+                    validate_select_expressions(select.as_ref(), query)?;
+                    if ctx.ctes.is_empty()
+                        && ctx.outer_rows.is_empty()
+                        && query_can_use_optimized_relation_fast_path(query)
+                    {
+                        let (rows, field_names) =
+                            self.materialize_legacy_query_output(query).await?;
+                        return Ok(RelationResult::from_named_rows(rows, field_names));
+                    }
+                    self.execute_select_to_relation(select.as_ref(), query, &local_ctx)
+                        .await
+                }
+                SetExpr::Query(inner) => {
+                    let relation = self
+                        .execute_query_to_relation_boxed(inner.as_ref(), &local_ctx)
+                        .await?;
+                    self.apply_query_post_processing(relation, query, &local_ctx)
+                        .await
+                }
+                SetExpr::SetOperation {
+                    op,
+                    set_quantifier,
+                    left,
+                    right,
+                } => {
+                    let relation = self
+                        .execute_set_operation_to_relation(
+                            op,
+                            set_quantifier,
+                            left.as_ref(),
+                            right.as_ref(),
+                            &local_ctx,
+                        )
+                        .await?;
+                    self.apply_query_post_processing(relation, query, &local_ctx)
+                        .await
+                }
+                SetExpr::Values(_) => Err(user_error(
+                    "VALUES query sources are not supported as standalone relation results"
+                        .to_string(),
+                )),
+                _ => Err(user_error("unsupported query form in Phase 3".to_string())),
+            }
+        }
+        .boxed()
+    }
+
+    async fn materialize_legacy_query_output(
         &self,
         query: &sqlparser::ast::Query,
     ) -> PgWireResult<(Vec<Row>, Vec<String>)> {
@@ -1843,12 +2009,9 @@ impl QueryRouter {
             &schema_cols,
         );
 
-        let agg_offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let agg_limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+        let (query_offset, query_limit) = query_offset_limit(query);
+        let agg_offset = query_offset;
+        let agg_limit = query_limit;
 
         let filtered = if let Some(pred) = select.selection.as_ref() {
             self.fetch_columnar(db.id, table.id, &schema_cols, &needed_col_ids, Some(pred))
@@ -1876,17 +2039,7 @@ impl QueryRouter {
             sort_rows(&mut result_rows, &order_by.exprs, &schema_cols)?;
         }
 
-        let offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            result_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            result_rows.into_iter().skip(offset).collect()
-        };
+        let paged = paginate_rows(result_rows, query_offset, query_limit);
 
         if has_expr_proj {
             let proj_exprs = resolve_projection_exprs(&select.projection, &schema_cols)?;
@@ -2093,12 +2246,7 @@ impl QueryRouter {
 
         let agg_exprs = extract_aggregates(&select.projection);
         if !agg_exprs.is_empty() {
-            let agg_offset = query
-                .offset
-                .as_ref()
-                .and_then(|o| expr_to_usize(&o.value))
-                .unwrap_or(0);
-            let agg_limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
+            let (agg_offset, agg_limit) = query_offset_limit(query);
             return self.materialize_aggregate_result(
                 &select.projection,
                 &joined_rows,
@@ -2116,17 +2264,8 @@ impl QueryRouter {
             sort_rows(&mut joined_rows, &order_by.exprs, &combined_schema)?;
         }
 
-        let offset = query
-            .offset
-            .as_ref()
-            .and_then(|o| expr_to_usize(&o.value))
-            .unwrap_or(0);
-        let limit = query.limit.as_ref().and_then(|l| expr_to_usize(l));
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            joined_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            joined_rows.into_iter().skip(offset).collect()
-        };
+        let (offset, limit) = query_offset_limit(query);
+        let paged = paginate_rows(joined_rows, offset, limit);
 
         let mut output_rows = Vec::with_capacity(paged.len());
         let field_names: Vec<String> = projected.iter().map(|(name, _)| name.clone()).collect();
@@ -2218,13 +2357,999 @@ impl QueryRouter {
             sort_rows(&mut agg_rows, &ob.exprs, schema_cols)?;
         }
 
-        let paged: Vec<Row> = if let Some(lim) = limit {
-            agg_rows.into_iter().skip(offset).take(lim).collect()
-        } else {
-            agg_rows.into_iter().skip(offset).collect()
-        };
+        let paged = paginate_rows(agg_rows, offset, limit);
 
         Ok((paged, field_names))
+    }
+
+    async fn execute_select_to_relation(
+        &self,
+        select: &sqlparser::ast::Select,
+        query: &sqlparser::ast::Query,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        self.execute_select_body_to_relation(
+            select,
+            query.order_by.as_ref(),
+            query.limit.as_ref(),
+            query.offset.as_ref(),
+            ctx,
+        )
+        .await
+    }
+
+    async fn execute_select_body_to_relation(
+        &self,
+        select: &sqlparser::ast::Select,
+        order_by: Option<&sqlparser::ast::OrderBy>,
+        limit: Option<&Expr>,
+        offset: Option<&sqlparser::ast::Offset>,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        validate_select_body_expressions(select)?;
+
+        if select.from.is_empty() {
+            return Err(user_error("SELECT requires FROM clause".to_string()));
+        }
+
+        let current_db = self.current_db.read().await.clone();
+        let mut relation = self
+            .build_source_relation(&select.from[0].relation, &current_db, ctx)
+            .await?;
+
+        if !select.from[0].joins.is_empty() {
+            qualify_relation_for_join_wildcard(&mut relation);
+        }
+
+        for join in &select.from[0].joins {
+            let (is_left_join, on_expr) = match &join.join_operator {
+                JoinOperator::Inner(JoinConstraint::On(expr)) => (false, expr),
+                JoinOperator::LeftOuter(JoinConstraint::On(expr)) => (true, expr),
+                _ => {
+                    return Err(user_error(
+                        "only INNER JOIN ... ON and LEFT JOIN ... ON are supported".to_string(),
+                    ))
+                }
+            };
+
+            let mut right_relation = self
+                .build_source_relation(&join.relation, &current_db, ctx)
+                .await?;
+            qualify_relation_for_join_wildcard(&mut right_relation);
+            relation = self
+                .join_relations(relation, right_relation, on_expr, is_left_join)
+                .await?;
+        }
+
+        relation = self
+            .apply_where_to_relation(relation, select.selection.as_ref(), ctx)
+            .await?;
+
+        let agg_exprs = extract_aggregates(&select.projection);
+        let mut relation = if !agg_exprs.is_empty() {
+            self.execute_aggregate_relation(
+                relation,
+                &select.projection,
+                &select.group_by,
+                select.having.as_ref(),
+                ctx,
+            )
+            .await?
+        } else {
+            self.project_relation(relation, &select.projection, ctx)
+                .await?
+        };
+
+        if let Some(order_by) = order_by {
+            relation = self.relation_order(relation, &order_by.exprs, ctx).await?;
+        }
+
+        self.apply_relation_limit_offset(relation, limit, offset)
+    }
+
+    fn execute_setexpr_to_relation_boxed<'a>(
+        &'a self,
+        setexpr: &'a SetExpr,
+        ctx: &'a RelationContext,
+    ) -> BoxFuture<'a, PgWireResult<RelationResult>> {
+        async move {
+            match setexpr {
+                SetExpr::Select(select) => {
+                    self.execute_select_body_to_relation(select.as_ref(), None, None, None, ctx)
+                        .await
+                }
+                SetExpr::Query(query) => {
+                    self.execute_query_to_relation_boxed(query.as_ref(), ctx)
+                        .await
+                }
+                SetExpr::SetOperation {
+                    op,
+                    set_quantifier,
+                    left,
+                    right,
+                } => {
+                    self.execute_set_operation_to_relation(
+                        op,
+                        set_quantifier,
+                        left.as_ref(),
+                        right.as_ref(),
+                        ctx,
+                    )
+                    .await
+                }
+                SetExpr::Values(_) => Err(user_error(
+                    "VALUES relations are not supported in the current Phase 3 subset".to_string(),
+                )),
+                _ => Err(user_error("unsupported query form in Phase 3".to_string())),
+            }
+        }
+        .boxed()
+    }
+
+    async fn execute_set_operation_to_relation(
+        &self,
+        op: &sqlparser::ast::SetOperator,
+        set_quantifier: &sqlparser::ast::SetQuantifier,
+        left: &SetExpr,
+        right: &SetExpr,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        if matches!(
+            op,
+            sqlparser::ast::SetOperator::Intersect | sqlparser::ast::SetOperator::Except
+        ) {
+            return Err(user_error(format!("{op} is not supported yet")));
+        }
+
+        let left_relation = self.execute_setexpr_to_relation_boxed(left, ctx).await?;
+        let right_relation = self.execute_setexpr_to_relation_boxed(right, ctx).await?;
+
+        if left_relation.columns.len() != right_relation.columns.len() {
+            return Err(user_error(format!(
+                "{} requires matching column counts (left={}, right={})",
+                op,
+                left_relation.columns.len(),
+                right_relation.columns.len()
+            )));
+        }
+
+        validate_set_operation_column_compatibility(op, &left_relation, &right_relation)?;
+
+        let left_normalized = normalize_relation_for_set_op(left_relation);
+        let right_normalized = normalize_relation_for_set_op(right_relation);
+
+        let mut rows = left_normalized.rows.clone();
+        rows.extend(right_normalized.rows);
+
+        let relation = RelationResult {
+            rows,
+            columns: left_normalized.columns,
+        };
+
+        if is_union_all_quantifier(set_quantifier) {
+            Ok(relation)
+        } else {
+            Ok(deduplicate_relation_rows(relation))
+        }
+    }
+
+    async fn apply_query_post_processing(
+        &self,
+        mut relation: RelationResult,
+        query: &sqlparser::ast::Query,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        if let Some(order_by) = query.order_by.as_ref() {
+            relation = self.relation_order(relation, &order_by.exprs, ctx).await?;
+        }
+        self.apply_relation_limit_offset(relation, query.limit.as_ref(), query.offset.as_ref())
+    }
+
+    async fn build_source_relation(
+        &self,
+        factor: &sqlparser::ast::TableFactor,
+        current_db: &str,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        match factor {
+            sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+                let raw_name = object_name_to_string(name);
+                let cte_key = raw_name.to_lowercase();
+                let base_relation = if let Some(cte_relation) = ctx.ctes.get(&cte_key) {
+                    cte_relation.clone()
+                } else {
+                    self.build_physical_table_relation(name, current_db).await?
+                };
+                let source_label = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| object_name_last(name));
+                Ok(prefix_relation_as_source(base_relation, &source_label))
+            }
+            sqlparser::ast::TableFactor::Derived {
+                lateral,
+                subquery,
+                alias,
+            } => {
+                if *lateral {
+                    return Err(user_error("LATERAL is not supported yet".to_string()));
+                }
+                let alias = alias
+                    .as_ref()
+                    .ok_or_else(|| user_error("derived tables require an alias".to_string()))?;
+                let mut relation = self
+                    .execute_query_to_relation_boxed(subquery.as_ref(), ctx)
+                    .await?;
+                if !alias.columns.is_empty() {
+                    relation = rename_relation_columns(
+                        relation,
+                        &alias
+                            .columns
+                            .iter()
+                            .map(|ident| ident.name.value.clone())
+                            .collect::<Vec<_>>(),
+                    )?;
+                }
+                Ok(prefix_relation_as_source(relation, &alias.name.value))
+            }
+            _ => Err(user_error(
+                "unsupported FROM item in the current Phase 3 subset".to_string(),
+            )),
+        }
+    }
+
+    async fn build_physical_table_relation(
+        &self,
+        table_name_obj: &ObjectName,
+        current_db: &str,
+    ) -> PgWireResult<RelationResult> {
+        let (db_name, table_name) = self.resolve_table_name(table_name_obj, current_db);
+        let schema_cols = self.cached_describe_table(&db_name, &table_name).await?;
+        let db = self
+            .cached_get_database(&db_name)
+            .await?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let table = self
+            .cached_get_table(&db_name, &table_name)
+            .await?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+        let needed_col_ids: HashSet<u32> = schema_cols.iter().map(|col| col.id).collect();
+        let rows = self
+            .fetch_columnar(db.id, table.id, &schema_cols, &needed_col_ids, None)
+            .await?;
+        let columns = schema_cols
+            .iter()
+            .map(|col| RelationColumn {
+                lookup_name: col.name.to_lowercase(),
+                output_name: col.name.clone(),
+            })
+            .collect();
+        Ok(RelationResult { rows, columns })
+    }
+
+    async fn join_relations(
+        &self,
+        left: RelationResult,
+        right: RelationResult,
+        on_expr: &Expr,
+        is_left_join: bool,
+    ) -> PgWireResult<RelationResult> {
+        let join_conds = extract_join_conditions(on_expr)?;
+        let right_lookup_names: HashSet<String> = right
+            .columns
+            .iter()
+            .map(|col| col.lookup_name.clone())
+            .collect();
+
+        let oriented_conds: Vec<(String, String)> = join_conds
+            .iter()
+            .map(|(a, b)| {
+                let a_is_right = right_lookup_names.contains(&normalize_join_key(a));
+                if a_is_right {
+                    (normalize_join_key(b), normalize_join_key(a))
+                } else {
+                    (normalize_join_key(a), normalize_join_key(b))
+                }
+            })
+            .collect();
+
+        let right_join_keys: Vec<String> = oriented_conds
+            .iter()
+            .map(|(_, right)| right.clone())
+            .collect();
+        let left_join_keys: Vec<String> = oriented_conds
+            .iter()
+            .map(|(left, _)| left.clone())
+            .collect();
+
+        let mut right_hash: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
+        for row in &right.rows {
+            let key = right_join_keys
+                .iter()
+                .map(|lookup| lookup_row_value(row, lookup).to_string())
+                .collect::<Vec<_>>();
+            right_hash.entry(key).or_default().push(row);
+        }
+
+        let mut rows = Vec::new();
+        for left_row in &left.rows {
+            let left_key = left_join_keys
+                .iter()
+                .map(|lookup| lookup_row_value(left_row, lookup).to_string())
+                .collect::<Vec<_>>();
+
+            if let Some(matches) = right_hash.get(&left_key) {
+                for right_row in matches {
+                    let mut combined = left_row.clone();
+                    combined.extend((*right_row).clone());
+                    rows.push(combined);
+                }
+            } else if is_left_join {
+                let mut combined = left_row.clone();
+                for col in &right.columns {
+                    combined.insert(col.lookup_name.clone(), TypedValue::Null);
+                }
+                rows.push(combined);
+            }
+        }
+
+        let mut columns = left.columns;
+        columns.extend(right.columns);
+        for col in &mut columns {
+            col.output_name = col.lookup_name.clone();
+        }
+
+        Ok(RelationResult { rows, columns })
+    }
+
+    async fn apply_where_to_relation(
+        &self,
+        mut relation: RelationResult,
+        selection: Option<&Expr>,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let Some(selection) = selection else {
+            return Ok(relation);
+        };
+
+        let schema_cols = relation.schema_cols();
+        let mut filtered = Vec::with_capacity(relation.rows.len());
+        for row in relation.rows {
+            if self
+                .evaluate_predicate_for_relation(selection, &row, &schema_cols, ctx)
+                .await?
+            {
+                filtered.push(row);
+            }
+        }
+        relation.rows = filtered;
+        Ok(relation)
+    }
+
+    async fn execute_aggregate_relation(
+        &self,
+        relation: RelationResult,
+        projection: &[SelectItem],
+        group_by: &sqlparser::ast::GroupByExpr,
+        having: Option<&Expr>,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let schema_cols = relation.schema_cols();
+        let group_by_cols = extract_group_by_cols(group_by);
+        let field_names: Vec<String> = projection
+            .iter()
+            .map(|item| match item {
+                SelectItem::UnnamedExpr(Expr::Identifier(ident)) => ident.value.clone(),
+                SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                    parts.last().map(|p| p.value.clone()).unwrap_or_default()
+                }
+                SelectItem::UnnamedExpr(Expr::Function(f)) => f.to_string(),
+                SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                _ => "?column?".to_string(),
+            })
+            .collect();
+
+        let visible_columns: Vec<RelationColumn> = field_names
+            .iter()
+            .map(|name| RelationColumn {
+                lookup_name: name.to_lowercase(),
+                output_name: name.clone(),
+            })
+            .collect();
+
+        if group_by_cols.is_empty() {
+            let agg_values = compute_aggregates(projection, &relation.rows, &schema_cols)?;
+            let mut row = relation.rows.first().cloned().unwrap_or_default();
+            for (name, value) in &agg_values {
+                row.insert(name.to_lowercase(), value.clone());
+            }
+            if let Some(having_expr) = having {
+                if !self
+                    .evaluate_grouped_predicate_for_relation(
+                        having_expr,
+                        &relation.rows,
+                        &schema_cols,
+                        &row,
+                        ctx,
+                    )
+                    .await?
+                {
+                    return Ok(RelationResult {
+                        rows: Vec::new(),
+                        columns: visible_columns,
+                    });
+                }
+            }
+            return Ok(RelationResult {
+                rows: vec![row],
+                columns: visible_columns,
+            });
+        }
+
+        let mut buckets: HashMap<Vec<String>, Vec<Row>> = HashMap::new();
+        for row in relation.rows {
+            let key = group_by_cols
+                .iter()
+                .map(|col| {
+                    let value = lookup_row_value(&row, col);
+                    if value.is_null() {
+                        "NULL".to_string()
+                    } else {
+                        value.to_string()
+                    }
+                })
+                .collect::<Vec<_>>();
+            buckets.entry(key).or_default().push(row);
+        }
+
+        let mut rows = Vec::new();
+        for bucket_rows in buckets.into_values() {
+            let agg_values = compute_aggregates(projection, &bucket_rows, &schema_cols)?;
+            let mut row = bucket_rows.first().cloned().unwrap_or_default();
+            for (name, value) in &agg_values {
+                row.insert(name.to_lowercase(), value.clone());
+            }
+            if let Some(having_expr) = having {
+                if !self
+                    .evaluate_grouped_predicate_for_relation(
+                        having_expr,
+                        &bucket_rows,
+                        &schema_cols,
+                        &row,
+                        ctx,
+                    )
+                    .await?
+                {
+                    continue;
+                }
+            }
+            rows.push(row);
+        }
+
+        Ok(RelationResult {
+            rows,
+            columns: visible_columns,
+        })
+    }
+
+    async fn project_relation(
+        &self,
+        relation: RelationResult,
+        projection: &[SelectItem],
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let schema_cols = relation.schema_cols();
+        let single_source_wildcard = !relation
+            .columns
+            .iter()
+            .any(|col| col.output_name.contains('.'));
+        let visible_columns =
+            expand_projection_columns(projection, &relation, single_source_wildcard)?;
+        let projected_exprs = resolve_projection_exprs(projection, &schema_cols)?;
+
+        let mut rows = Vec::with_capacity(relation.rows.len());
+        for row in relation.rows {
+            let mut enriched = row.clone();
+            for (name, expr) in &projected_exprs {
+                let value = self
+                    .resolve_relation_value(expr, &row, &schema_cols, ctx)
+                    .await?;
+                enriched.insert(name.to_lowercase(), value);
+            }
+            rows.push(enriched);
+        }
+
+        Ok(RelationResult {
+            rows,
+            columns: visible_columns,
+        })
+    }
+
+    async fn relation_order(
+        &self,
+        mut relation: RelationResult,
+        order_by: &[OrderByExpr],
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        if order_by.is_empty() {
+            return Ok(relation);
+        }
+
+        let schema_cols = relation.schema_cols();
+        let mut keyed_rows = Vec::with_capacity(relation.rows.len());
+        for row in relation.rows {
+            let mut keys = Vec::with_capacity(order_by.len());
+            for order_expr in order_by {
+                keys.push(
+                    self.resolve_relation_value(&order_expr.expr, &row, &schema_cols, ctx)
+                        .await?,
+                );
+            }
+            keyed_rows.push((keys, row));
+        }
+
+        keyed_rows.sort_by(|(left_keys, _), (right_keys, _)| {
+            for (idx, order_expr) in order_by.iter().enumerate() {
+                let mut cmp = left_keys[idx].cmp_order(&right_keys[idx]);
+                if order_expr.asc == Some(false) {
+                    cmp = cmp.reverse();
+                }
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        relation.rows = keyed_rows.into_iter().map(|(_, row)| row).collect();
+        Ok(relation)
+    }
+
+    fn apply_relation_limit_offset(
+        &self,
+        relation: RelationResult,
+        limit: Option<&Expr>,
+        offset: Option<&sqlparser::ast::Offset>,
+    ) -> PgWireResult<RelationResult> {
+        let rows = paginate_rows(
+            relation.rows,
+            offset
+                .as_ref()
+                .and_then(|o| expr_to_usize(&o.value))
+                .unwrap_or(0),
+            limit.and_then(expr_to_usize),
+        );
+
+        Ok(RelationResult {
+            rows,
+            columns: relation.columns,
+        })
+    }
+
+    fn resolve_relation_value<'a>(
+        &'a self,
+        expr: &'a Expr,
+        row: &'a Row,
+        schema_cols: &'a [ColumnInfo],
+        ctx: &'a RelationContext,
+    ) -> BoxFuture<'a, PgWireResult<TypedValue>> {
+        async move {
+            let scoped_row = merge_scope_rows(&ctx.outer_rows, row);
+            if !contains_subquery_expr(expr) {
+                return Ok(resolve_value(expr, &scoped_row, schema_cols));
+            }
+
+            match expr {
+                Expr::Subquery(subquery) => {
+                    let child_ctx = ctx.with_outer_row(row.clone());
+                    self.scalar_subquery_to_value(subquery.as_ref(), &child_ctx)
+                        .await
+                }
+                Expr::Nested(inner) => {
+                    self.resolve_relation_value(inner, row, schema_cols, ctx)
+                        .await
+                }
+                Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Minus,
+                    expr,
+                } => {
+                    let value = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    Ok(match value {
+                        TypedValue::Int(i) => TypedValue::Int(-i),
+                        TypedValue::Float(f) => TypedValue::Float(-f),
+                        _ => TypedValue::Null,
+                    })
+                }
+                Expr::Cast {
+                    expr, data_type, ..
+                } => {
+                    let value = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    Ok(value
+                        .cast_to_data_type(data_type)
+                        .unwrap_or(TypedValue::Null))
+                }
+                Expr::BinaryOp { left, op, right }
+                    if matches!(
+                        op,
+                        sqlparser::ast::BinaryOperator::Plus
+                            | sqlparser::ast::BinaryOperator::Minus
+                            | sqlparser::ast::BinaryOperator::Multiply
+                            | sqlparser::ast::BinaryOperator::Divide
+                            | sqlparser::ast::BinaryOperator::Modulo
+                    ) =>
+                {
+                    let left_val = self
+                        .resolve_relation_value(left, row, schema_cols, ctx)
+                        .await?;
+                    let right_val = self
+                        .resolve_relation_value(right, row, schema_cols, ctx)
+                        .await?;
+                    Ok(apply_arithmetic_values(&left_val, op, &right_val))
+                }
+                Expr::Function(function) => Err(user_error(format!(
+                    "subqueries inside function '{}' are not supported yet",
+                    function.name
+                ))),
+                Expr::Substring { .. } | Expr::Trim { .. } | Expr::Case { .. } => Err(user_error(
+                    "subqueries inside complex scalar expressions are not supported yet"
+                        .to_string(),
+                )),
+                _ => Ok(resolve_value(expr, &scoped_row, schema_cols)),
+            }
+        }
+        .boxed()
+    }
+
+    async fn scalar_subquery_to_value(
+        &self,
+        query: &sqlparser::ast::Query,
+        ctx: &RelationContext,
+    ) -> PgWireResult<TypedValue> {
+        let relation = self.execute_query_to_relation_boxed(query, ctx).await?;
+        if relation.columns.len() != 1 {
+            return Err(user_error(
+                "scalar subquery must return exactly one column".to_string(),
+            ));
+        }
+        if relation.rows.len() > 1 {
+            return Err(user_error(
+                "scalar subquery returned more than one row".to_string(),
+            ));
+        }
+        Ok(relation
+            .rows
+            .first()
+            .map(|row| lookup_row_value(row, &relation.columns[0].lookup_name))
+            .unwrap_or(TypedValue::Null))
+    }
+
+    fn evaluate_predicate_for_relation<'a>(
+        &'a self,
+        expr: &'a Expr,
+        row: &'a Row,
+        schema_cols: &'a [ColumnInfo],
+        ctx: &'a RelationContext,
+    ) -> BoxFuture<'a, PgWireResult<bool>> {
+        async move {
+            let scoped_row = merge_scope_rows(&ctx.outer_rows, row);
+            if !contains_subquery_expr(expr) {
+                return Ok(evaluate_predicate(expr, &scoped_row, schema_cols));
+            }
+
+            match expr {
+                Expr::Exists { subquery, negated } => {
+                    let child_ctx = ctx.with_outer_row(row.clone());
+                    let exists = !self
+                        .execute_query_to_relation_boxed(subquery.as_ref(), &child_ctx)
+                        .await?
+                        .rows
+                        .is_empty();
+                    Ok(if *negated { !exists } else { exists })
+                }
+                Expr::InSubquery {
+                    expr,
+                    subquery,
+                    negated,
+                } => {
+                    let left_val = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    let child_ctx = ctx.with_outer_row(row.clone());
+                    let relation = self
+                        .execute_query_to_relation_boxed(subquery.as_ref(), &child_ctx)
+                        .await?;
+                    if relation.columns.len() != 1 {
+                        return Err(user_error(
+                            "IN subquery must return exactly one column".to_string(),
+                        ));
+                    }
+                    let found = relation.rows.iter().any(|sub_row| {
+                        left_val
+                            .sql_eq(&lookup_row_value(sub_row, &relation.columns[0].lookup_name))
+                    });
+                    Ok(if *negated { !found } else { found })
+                }
+                Expr::BinaryOp { left, op, right } => match op {
+                    sqlparser::ast::BinaryOperator::And => Ok(self
+                        .evaluate_predicate_for_relation(left, row, schema_cols, ctx)
+                        .await?
+                        && self
+                            .evaluate_predicate_for_relation(right, row, schema_cols, ctx)
+                            .await?),
+                    sqlparser::ast::BinaryOperator::Or => Ok(self
+                        .evaluate_predicate_for_relation(left, row, schema_cols, ctx)
+                        .await?
+                        || self
+                            .evaluate_predicate_for_relation(right, row, schema_cols, ctx)
+                            .await?),
+                    sqlparser::ast::BinaryOperator::Eq
+                    | sqlparser::ast::BinaryOperator::NotEq
+                    | sqlparser::ast::BinaryOperator::Lt
+                    | sqlparser::ast::BinaryOperator::LtEq
+                    | sqlparser::ast::BinaryOperator::Gt
+                    | sqlparser::ast::BinaryOperator::GtEq => {
+                        let left_val = self
+                            .resolve_relation_value(left, row, schema_cols, ctx)
+                            .await?;
+                        let right_val = self
+                            .resolve_relation_value(right, row, schema_cols, ctx)
+                            .await?;
+                        Ok(compare_typed_values(&left_val, op, &right_val))
+                    }
+                    _ => Ok(evaluate_predicate(expr, &scoped_row, schema_cols)),
+                },
+                Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Not,
+                    expr,
+                } => Ok(!self
+                    .evaluate_predicate_for_relation(expr, row, schema_cols, ctx)
+                    .await?),
+                Expr::IsNull(inner) => Ok(self
+                    .resolve_relation_value(inner, row, schema_cols, ctx)
+                    .await?
+                    .is_null()),
+                Expr::IsNotNull(inner) => Ok(!self
+                    .resolve_relation_value(inner, row, schema_cols, ctx)
+                    .await?
+                    .is_null()),
+                Expr::Between {
+                    expr,
+                    low,
+                    high,
+                    negated,
+                } => {
+                    let value = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    let low_val = self
+                        .resolve_relation_value(low, row, schema_cols, ctx)
+                        .await?;
+                    let high_val = self
+                        .resolve_relation_value(high, row, schema_cols, ctx)
+                        .await?;
+                    let in_range = (value.sql_eq(&low_val) || value.sql_gt(&low_val))
+                        && (value.sql_eq(&high_val) || value.sql_lt(&high_val));
+                    Ok(if *negated { !in_range } else { in_range })
+                }
+                Expr::Like {
+                    expr,
+                    pattern,
+                    negated,
+                    ..
+                } => {
+                    let value = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    let pattern = self
+                        .resolve_relation_value(pattern, row, schema_cols, ctx)
+                        .await?;
+                    let matches = if let TypedValue::Text(pattern_text) = pattern {
+                        value.sql_like(&pattern_text)
+                    } else {
+                        false
+                    };
+                    Ok(if *negated { !matches } else { matches })
+                }
+                Expr::InList {
+                    expr,
+                    list,
+                    negated,
+                } => {
+                    let value = self
+                        .resolve_relation_value(expr, row, schema_cols, ctx)
+                        .await?;
+                    let found = {
+                        let mut found = false;
+                        for item in list {
+                            let candidate = self
+                                .resolve_relation_value(item, row, schema_cols, ctx)
+                                .await?;
+                            if value.sql_eq(&candidate) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        found
+                    };
+                    Ok(if *negated { !found } else { found })
+                }
+                Expr::Nested(inner) => {
+                    self.evaluate_predicate_for_relation(inner, row, schema_cols, ctx)
+                        .await
+                }
+                _ => Ok(evaluate_predicate(expr, &scoped_row, schema_cols)),
+            }
+        }
+        .boxed()
+    }
+
+    fn evaluate_grouped_predicate_for_relation<'a>(
+        &'a self,
+        expr: &'a Expr,
+        rows: &'a [Row],
+        schema_cols: &'a [ColumnInfo],
+        grouped_row: &'a Row,
+        ctx: &'a RelationContext,
+    ) -> BoxFuture<'a, PgWireResult<bool>> {
+        async move {
+            if !contains_subquery_expr(expr) {
+                return evaluate_grouped_predicate(expr, rows, schema_cols);
+            }
+
+            match expr {
+                Expr::Exists { subquery, negated } => {
+                    let child_ctx = ctx.with_outer_row(grouped_row.clone());
+                    let exists = !self
+                        .execute_query_to_relation_boxed(subquery.as_ref(), &child_ctx)
+                        .await?
+                        .rows
+                        .is_empty();
+                    Ok(if *negated { !exists } else { exists })
+                }
+                Expr::InSubquery {
+                    expr,
+                    subquery,
+                    negated,
+                } => {
+                    let left_val = self
+                        .eval_grouped_value_for_relation(expr, rows, schema_cols, grouped_row, ctx)
+                        .await?;
+                    let child_ctx = ctx.with_outer_row(grouped_row.clone());
+                    let relation = self
+                        .execute_query_to_relation_boxed(subquery.as_ref(), &child_ctx)
+                        .await?;
+                    if relation.columns.len() != 1 {
+                        return Err(user_error(
+                            "IN subquery must return exactly one column".to_string(),
+                        ));
+                    }
+                    let found = relation.rows.iter().any(|sub_row| {
+                        left_val
+                            .sql_eq(&lookup_row_value(sub_row, &relation.columns[0].lookup_name))
+                    });
+                    Ok(if *negated { !found } else { found })
+                }
+                Expr::BinaryOp { left, op, right } => match op {
+                    sqlparser::ast::BinaryOperator::And => Ok(self
+                        .evaluate_grouped_predicate_for_relation(
+                            left,
+                            rows,
+                            schema_cols,
+                            grouped_row,
+                            ctx,
+                        )
+                        .await?
+                        && self
+                            .evaluate_grouped_predicate_for_relation(
+                                right,
+                                rows,
+                                schema_cols,
+                                grouped_row,
+                                ctx,
+                            )
+                            .await?),
+                    sqlparser::ast::BinaryOperator::Or => Ok(self
+                        .evaluate_grouped_predicate_for_relation(
+                            left,
+                            rows,
+                            schema_cols,
+                            grouped_row,
+                            ctx,
+                        )
+                        .await?
+                        || self
+                            .evaluate_grouped_predicate_for_relation(
+                                right,
+                                rows,
+                                schema_cols,
+                                grouped_row,
+                                ctx,
+                            )
+                            .await?),
+                    sqlparser::ast::BinaryOperator::Eq
+                    | sqlparser::ast::BinaryOperator::NotEq
+                    | sqlparser::ast::BinaryOperator::Lt
+                    | sqlparser::ast::BinaryOperator::LtEq
+                    | sqlparser::ast::BinaryOperator::Gt
+                    | sqlparser::ast::BinaryOperator::GtEq => {
+                        let left_val = self
+                            .eval_grouped_value_for_relation(
+                                left,
+                                rows,
+                                schema_cols,
+                                grouped_row,
+                                ctx,
+                            )
+                            .await?;
+                        let right_val = self
+                            .eval_grouped_value_for_relation(
+                                right,
+                                rows,
+                                schema_cols,
+                                grouped_row,
+                                ctx,
+                            )
+                            .await?;
+                        Ok(compare_typed_values(&left_val, op, &right_val))
+                    }
+                    _ => evaluate_grouped_predicate(expr, rows, schema_cols),
+                },
+                Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Not,
+                    expr,
+                } => Ok(!self
+                    .evaluate_grouped_predicate_for_relation(
+                        expr,
+                        rows,
+                        schema_cols,
+                        grouped_row,
+                        ctx,
+                    )
+                    .await?),
+                Expr::Nested(inner) => {
+                    self.evaluate_grouped_predicate_for_relation(
+                        inner,
+                        rows,
+                        schema_cols,
+                        grouped_row,
+                        ctx,
+                    )
+                    .await
+                }
+                _ => evaluate_grouped_predicate(expr, rows, schema_cols),
+            }
+        }
+        .boxed()
+    }
+
+    async fn eval_grouped_value_for_relation(
+        &self,
+        expr: &Expr,
+        rows: &[Row],
+        schema_cols: &[ColumnInfo],
+        grouped_row: &Row,
+        ctx: &RelationContext,
+    ) -> PgWireResult<TypedValue> {
+        match expr {
+            Expr::Function(function) if is_aggregate_function_name(&function.name.to_string()) => {
+                let func_name = function.name.to_string().to_uppercase();
+                let arg_expr = extract_function_arg_expr(function);
+                compute_single_aggregate_expr(&func_name, arg_expr.as_ref(), rows, schema_cols)
+            }
+            Expr::Subquery(subquery) => {
+                let child_ctx = ctx.with_outer_row(grouped_row.clone());
+                self.scalar_subquery_to_value(subquery.as_ref(), &child_ctx)
+                    .await
+            }
+            _ => {
+                self.resolve_relation_value(expr, grouped_row, schema_cols, ctx)
+                    .await
+            }
+        }
     }
 
     /// Handle aggregate queries (COUNT, SUM, AVG, MIN, MAX) with optional GROUP BY.
@@ -2573,6 +3698,83 @@ fn projection_expr_needs_eval(expr: &Expr) -> bool {
     }
 }
 
+fn resolve_insert_target_columns(
+    target_schema: &[ColumnInfo],
+    column_names: &[String],
+) -> PgWireResult<Vec<ColumnInfo>> {
+    column_names
+        .iter()
+        .map(|name| {
+            target_schema
+                .iter()
+                .find(|col| col.name.eq_ignore_ascii_case(name))
+                .cloned()
+                .ok_or_else(|| user_error(format!("column '{}' not found", name)))
+        })
+        .collect()
+}
+
+fn validate_insert_select_row_compatibility(
+    values: &[TypedValue],
+    target_columns: &[ColumnInfo],
+) -> PgWireResult<()> {
+    for (value, target_col) in values.iter().zip(target_columns) {
+        if !typed_value_matches_storage_type(value, &target_col.data_type) {
+            return Err(user_error(format!(
+                "INSERT ... SELECT value for target column '{}' is not compatible with type {}",
+                target_col.name, target_col.data_type
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn typed_value_matches_storage_type(value: &TypedValue, data_type: &str) -> bool {
+    if value.is_null() {
+        return true;
+    }
+
+    let dt_upper = data_type.to_uppercase();
+    if matches!(
+        value,
+        TypedValue::Text(text) if text == EMPTY_TEXT_SENTINEL
+    ) {
+        return dt_upper.contains("CHAR") || dt_upper == "TEXT";
+    }
+
+    match dt_upper.as_str() {
+        "TINYINT" | "SMALLINT" | "INT" | "INTEGER" | "BIGINT" => match value {
+            TypedValue::Int(_) => true,
+            TypedValue::Float(f) => f.is_finite() && f.fract() == 0.0,
+            TypedValue::Text(text) => text.parse::<i64>().is_ok(),
+            _ => false,
+        },
+        "FLOAT" | "DOUBLE" | "REAL" => match value {
+            TypedValue::Int(_) | TypedValue::Float(_) => true,
+            TypedValue::Text(text) => text.parse::<f64>().is_ok(),
+            _ => false,
+        },
+        "BOOLEAN" | "BOOL" => match value {
+            TypedValue::Boolean(_) => true,
+            TypedValue::Text(text) => matches!(
+                text.to_lowercase().as_str(),
+                "true" | "false" | "1" | "0" | "t" | "f"
+            ),
+            _ => false,
+        },
+        dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => match value {
+            TypedValue::Int(_) | TypedValue::Float(_) => true,
+            TypedValue::Text(text) => text.parse::<f64>().is_ok(),
+            _ => false,
+        },
+        dt if dt == "DATE" || dt == "DATETIME" || dt == "TIMESTAMP" => {
+            matches!(value, TypedValue::Text(_))
+        }
+        dt if dt.contains("CHAR") || dt == "TEXT" => true,
+        _ => true,
+    }
+}
+
 fn typed_value_to_bytes(value: &TypedValue) -> Vec<u8> {
     match value {
         TypedValue::Null => Vec::new(),
@@ -2601,6 +3803,18 @@ fn validate_select_expressions(
     select: &sqlparser::ast::Select,
     query: &sqlparser::ast::Query,
 ) -> PgWireResult<()> {
+    validate_select_body_expressions(select)?;
+
+    if let Some(order_by) = query.order_by.as_ref() {
+        for expr in &order_by.exprs {
+            validate_supported_expr(&expr.expr)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_select_body_expressions(select: &sqlparser::ast::Select) -> PgWireResult<()> {
     if let Some(selection) = select.selection.as_ref() {
         validate_supported_expr(selection)?;
     }
@@ -2615,12 +3829,6 @@ fn validate_select_expressions(
                 validate_supported_expr(expr)?;
             }
             _ => {}
-        }
-    }
-
-    if let Some(order_by) = query.order_by.as_ref() {
-        for expr in &order_by.exprs {
-            validate_supported_expr(&expr.expr)?;
         }
     }
 
@@ -2787,6 +3995,11 @@ fn validate_supported_expr(expr: &Expr) -> PgWireResult<()> {
 
 fn validate_supported_function(function: &Function) -> PgWireResult<()> {
     let name = function.name.to_string().to_uppercase();
+    if function.to_string().to_uppercase().contains(" OVER ") {
+        return Err(user_error(
+            "window functions are not supported yet".to_string(),
+        ));
+    }
     let arg_exprs = function_exprs(function)?;
 
     for expr in &arg_exprs {
@@ -3174,6 +4387,484 @@ fn lookup_row_value(row: &Row, col_name: &str) -> TypedValue {
         })
         .cloned()
         .unwrap_or(TypedValue::Null)
+}
+
+fn object_name_to_string(name: &ObjectName) -> String {
+    name.0
+        .iter()
+        .map(|part| part.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn object_name_last(name: &ObjectName) -> String {
+    name.0
+        .last()
+        .map(|part| part.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn normalize_join_key(name: &str) -> String {
+    name.to_lowercase()
+}
+
+fn rename_relation_columns(
+    mut relation: RelationResult,
+    names: &[String],
+) -> PgWireResult<RelationResult> {
+    if relation.columns.len() != names.len() {
+        return Err(user_error(format!(
+            "column alias count ({}) does not match relation column count ({})",
+            names.len(),
+            relation.columns.len()
+        )));
+    }
+    let original_columns = relation.columns.clone();
+    let mut rows = Vec::with_capacity(relation.rows.len());
+    for row in &relation.rows {
+        let mut renamed = Row::new();
+        for (column, name) in original_columns.iter().zip(names.iter()) {
+            renamed.insert(
+                name.to_lowercase(),
+                lookup_row_value(row, &column.lookup_name),
+            );
+        }
+        rows.push(renamed);
+    }
+    relation.columns = names
+        .iter()
+        .map(|name| RelationColumn {
+            lookup_name: name.to_lowercase(),
+            output_name: name.clone(),
+        })
+        .collect();
+    relation.rows = rows;
+    Ok(relation)
+}
+
+fn prefix_relation_as_source(relation: RelationResult, source_label: &str) -> RelationResult {
+    let prefix = source_label.to_lowercase();
+    let columns = relation
+        .columns
+        .iter()
+        .map(|column| RelationColumn {
+            lookup_name: format!("{}.{}", prefix, column.output_name.to_lowercase()),
+            output_name: column.output_name.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let rows = relation
+        .rows
+        .iter()
+        .map(|row| {
+            let mut output = Row::new();
+            for column in &relation.columns {
+                output.insert(
+                    format!("{}.{}", prefix, column.output_name.to_lowercase()),
+                    lookup_row_value(row, &column.lookup_name),
+                );
+            }
+            output
+        })
+        .collect();
+
+    RelationResult { rows, columns }
+}
+
+fn qualify_relation_for_join_wildcard(relation: &mut RelationResult) {
+    for column in &mut relation.columns {
+        column.output_name = column.lookup_name.clone();
+    }
+}
+
+fn normalize_relation_for_set_op(relation: RelationResult) -> RelationResult {
+    let field_names = relation.field_names();
+    let rows = relation
+        .rows
+        .iter()
+        .map(|row| {
+            let mut normalized = Row::new();
+            for name in &field_names {
+                normalized.insert(
+                    name.to_lowercase(),
+                    lookup_row_value(row, &name.to_lowercase()),
+                );
+            }
+            normalized
+        })
+        .collect::<Vec<_>>();
+    RelationResult::from_named_rows(rows, field_names)
+}
+
+fn deduplicate_relation_rows(relation: RelationResult) -> RelationResult {
+    let field_names = relation.field_names();
+    let mut seen = HashSet::new();
+    let rows = relation
+        .rows
+        .into_iter()
+        .filter(|row| {
+            let key = field_names
+                .iter()
+                .map(|name| format!("{:?}", lookup_row_value(row, &name.to_lowercase())))
+                .collect::<Vec<_>>()
+                .join("|");
+            seen.insert(key)
+        })
+        .collect();
+    RelationResult {
+        rows,
+        columns: relation.columns,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueClass {
+    Integer,
+    Float,
+    Text,
+    Boolean,
+}
+
+impl ValueClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Integer => "INT",
+            Self::Float => "FLOAT",
+            Self::Text => "TEXT",
+            Self::Boolean => "BOOLEAN",
+        }
+    }
+}
+
+fn typed_value_class(value: &TypedValue) -> Option<ValueClass> {
+    match value {
+        TypedValue::Null => None,
+        TypedValue::Int(_) => Some(ValueClass::Integer),
+        TypedValue::Float(_) => Some(ValueClass::Float),
+        TypedValue::Text(_) => Some(ValueClass::Text),
+        TypedValue::Boolean(_) => Some(ValueClass::Boolean),
+    }
+}
+
+fn classes_are_union_compatible(left: ValueClass, right: ValueClass) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (ValueClass::Integer, ValueClass::Float) | (ValueClass::Float, ValueClass::Integer)
+        )
+}
+
+fn infer_relation_column_class(
+    relation: &RelationResult,
+    column: &RelationColumn,
+) -> Option<ValueClass> {
+    relation
+        .rows
+        .iter()
+        .find_map(|row| typed_value_class(&lookup_row_value(row, &column.lookup_name)))
+}
+
+fn validate_set_operation_column_compatibility(
+    op: &sqlparser::ast::SetOperator,
+    left: &RelationResult,
+    right: &RelationResult,
+) -> PgWireResult<()> {
+    for (idx, (left_col, right_col)) in left.columns.iter().zip(&right.columns).enumerate() {
+        let left_class = infer_relation_column_class(left, left_col);
+        let right_class = infer_relation_column_class(right, right_col);
+        if let (Some(left_class), Some(right_class)) = (left_class, right_class) {
+            if !classes_are_union_compatible(left_class, right_class) {
+                return Err(user_error(format!(
+                    "{} requires compatible column types at position {} (left={}, right={})",
+                    op,
+                    idx + 1,
+                    left_class.label(),
+                    right_class.label()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_union_all_quantifier(set_quantifier: &sqlparser::ast::SetQuantifier) -> bool {
+    matches!(set_quantifier, sqlparser::ast::SetQuantifier::All)
+}
+
+fn merge_scope_rows(outer_rows: &[Row], current_row: &Row) -> Row {
+    let mut merged = Row::new();
+    for row in outer_rows {
+        merged.extend(row.clone());
+    }
+    merged.extend(current_row.clone());
+    merged
+}
+
+fn query_can_use_optimized_relation_fast_path(query: &sqlparser::ast::Query) -> bool {
+    if query.with.is_some() {
+        return false;
+    }
+
+    match query.body.as_ref() {
+        SetExpr::Select(select) => select_can_use_optimized_relation_fast_path(select, query),
+        SetExpr::Query(_) | SetExpr::SetOperation { .. } => false,
+        _ => false,
+    }
+}
+
+fn select_can_use_optimized_relation_fast_path(
+    select: &sqlparser::ast::Select,
+    query: &sqlparser::ast::Query,
+) -> bool {
+    if select.from.iter().any(|twj| {
+        !matches!(twj.relation, sqlparser::ast::TableFactor::Table { .. })
+            || twj
+                .joins
+                .iter()
+                .any(|join| !matches!(join.relation, sqlparser::ast::TableFactor::Table { .. }))
+    }) {
+        return false;
+    }
+
+    if let Some(selection) = select.selection.as_ref() {
+        if contains_subquery_expr(selection) {
+            return false;
+        }
+    }
+    if let Some(having) = select.having.as_ref() {
+        if contains_subquery_expr(having) {
+            return false;
+        }
+    }
+    if let Some(order_by) = query.order_by.as_ref() {
+        if order_by
+            .exprs
+            .iter()
+            .any(|expr| contains_subquery_expr(&expr.expr))
+        {
+            return false;
+        }
+    }
+    !select.projection.iter().any(|item| match item {
+        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+            contains_subquery_expr(expr)
+        }
+        _ => false,
+    })
+}
+
+fn contains_subquery_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery(_) | Expr::InSubquery { .. } | Expr::Exists { .. } => true,
+        Expr::BinaryOp { left, right, .. } => {
+            contains_subquery_expr(left) || contains_subquery_expr(right)
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => contains_subquery_expr(expr),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            contains_subquery_expr(expr)
+                || contains_subquery_expr(low)
+                || contains_subquery_expr(high)
+        }
+        Expr::InList { expr, list, .. } => {
+            contains_subquery_expr(expr) || list.iter().any(contains_subquery_expr)
+        }
+        Expr::Like { expr, pattern, .. } => {
+            contains_subquery_expr(expr) || contains_subquery_expr(pattern)
+        }
+        Expr::Function(function) => function_exprs(function)
+            .map(|exprs| exprs.into_iter().any(contains_subquery_expr))
+            .unwrap_or(false),
+        Expr::Cast { expr, .. } => contains_subquery_expr(expr),
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            contains_subquery_expr(expr)
+                || substring_from
+                    .as_deref()
+                    .map(contains_subquery_expr)
+                    .unwrap_or(false)
+                || substring_for
+                    .as_deref()
+                    .map(contains_subquery_expr)
+                    .unwrap_or(false)
+        }
+        Expr::Trim {
+            expr,
+            trim_what,
+            trim_characters,
+            ..
+        } => {
+            contains_subquery_expr(expr)
+                || trim_what
+                    .as_deref()
+                    .map(contains_subquery_expr)
+                    .unwrap_or(false)
+                || trim_characters
+                    .as_deref()
+                    .map(|chars| chars.iter().any(contains_subquery_expr))
+                    .unwrap_or(false)
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
+            operand
+                .as_deref()
+                .map(contains_subquery_expr)
+                .unwrap_or(false)
+                || conditions.iter().any(contains_subquery_expr)
+                || results.iter().any(contains_subquery_expr)
+                || else_result
+                    .as_deref()
+                    .map(contains_subquery_expr)
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn apply_arithmetic_values(
+    left: &TypedValue,
+    op: &sqlparser::ast::BinaryOperator,
+    right: &TypedValue,
+) -> TypedValue {
+    if left.is_null() || right.is_null() {
+        return TypedValue::Null;
+    }
+    let Some(left_num) = left.as_f64() else {
+        return TypedValue::Null;
+    };
+    let Some(right_num) = right.as_f64() else {
+        return TypedValue::Null;
+    };
+    let result = match op {
+        sqlparser::ast::BinaryOperator::Plus => left_num + right_num,
+        sqlparser::ast::BinaryOperator::Minus => left_num - right_num,
+        sqlparser::ast::BinaryOperator::Multiply => left_num * right_num,
+        sqlparser::ast::BinaryOperator::Divide => {
+            if right_num == 0.0 {
+                return TypedValue::Null;
+            }
+            left_num / right_num
+        }
+        sqlparser::ast::BinaryOperator::Modulo => {
+            if right_num == 0.0 {
+                return TypedValue::Null;
+            }
+            left_num % right_num
+        }
+        _ => return TypedValue::Null,
+    };
+    if matches!(left, TypedValue::Int(_))
+        && matches!(right, TypedValue::Int(_))
+        && result == (result as i64) as f64
+        && !matches!(op, sqlparser::ast::BinaryOperator::Divide)
+    {
+        TypedValue::Int(result as i64)
+    } else {
+        TypedValue::Float(result)
+    }
+}
+
+fn compare_typed_values(
+    left: &TypedValue,
+    op: &sqlparser::ast::BinaryOperator,
+    right: &TypedValue,
+) -> bool {
+    match op {
+        sqlparser::ast::BinaryOperator::Eq => left.sql_eq(right),
+        sqlparser::ast::BinaryOperator::NotEq => {
+            !left.sql_eq(right) && !left.is_null() && !right.is_null()
+        }
+        sqlparser::ast::BinaryOperator::Lt => left.sql_lt(right),
+        sqlparser::ast::BinaryOperator::LtEq => left.sql_lt(right) || left.sql_eq(right),
+        sqlparser::ast::BinaryOperator::Gt => left.sql_gt(right),
+        sqlparser::ast::BinaryOperator::GtEq => left.sql_gt(right) || left.sql_eq(right),
+        _ => false,
+    }
+}
+
+fn expand_projection_columns(
+    items: &[SelectItem],
+    relation: &RelationResult,
+    single_source_wildcard: bool,
+) -> PgWireResult<Vec<RelationColumn>> {
+    let mut columns = Vec::new();
+    for item in items {
+        match item {
+            SelectItem::Wildcard(_) => {
+                for column in &relation.columns {
+                    columns.push(RelationColumn {
+                        lookup_name: if single_source_wildcard {
+                            column.output_name.to_lowercase()
+                        } else {
+                            column.lookup_name.clone()
+                        },
+                        output_name: if single_source_wildcard {
+                            column.output_name.clone()
+                        } else {
+                            column.lookup_name.clone()
+                        },
+                    });
+                }
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => columns.push(RelationColumn {
+                lookup_name: ident.value.to_lowercase(),
+                output_name: ident.value.clone(),
+            }),
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                let lookup_name = parts
+                    .iter()
+                    .map(|part| part.value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let output_name = parts
+                    .last()
+                    .map(|part| part.value.clone())
+                    .unwrap_or_default();
+                columns.push(RelationColumn {
+                    lookup_name,
+                    output_name,
+                });
+            }
+            SelectItem::UnnamedExpr(expr) => columns.push(RelationColumn {
+                lookup_name: expr.to_string().to_lowercase(),
+                output_name: expr.to_string(),
+            }),
+            SelectItem::ExprWithAlias { alias, .. } => columns.push(RelationColumn {
+                lookup_name: alias.value.to_lowercase(),
+                output_name: alias.value.clone(),
+            }),
+            SelectItem::QualifiedWildcard(kind, _) => {
+                let prefix = object_name_to_string(kind).to_lowercase();
+                let matching = relation
+                    .columns
+                    .iter()
+                    .filter(|column| column.lookup_name.starts_with(&format!("{prefix}.")))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if matching.is_empty() {
+                    return Err(user_error(format!(
+                        "qualified wildcard '{}.*' did not match any columns",
+                        kind
+                    )));
+                }
+                columns.extend(matching);
+            }
+        }
+    }
+    Ok(columns)
 }
 
 fn materialize_named_projection(
@@ -3850,6 +5541,25 @@ fn typed_value_to_group_key(val: &TypedValue) -> String {
         "NULL".to_string()
     } else {
         val.to_string()
+    }
+}
+
+fn query_offset_limit(query: &sqlparser::ast::Query) -> (usize, Option<usize>) {
+    (
+        query
+            .offset
+            .as_ref()
+            .and_then(|o| expr_to_usize(&o.value))
+            .unwrap_or(0),
+        query.limit.as_ref().and_then(|l| expr_to_usize(l)),
+    )
+}
+
+fn paginate_rows<T>(rows: Vec<T>, offset: usize, limit: Option<usize>) -> Vec<T> {
+    if let Some(limit) = limit {
+        rows.into_iter().skip(offset).take(limit).collect()
+    } else {
+        rows.into_iter().skip(offset).collect()
     }
 }
 
@@ -4830,5 +6540,71 @@ mod tests {
             .map(|row| lookup_row_value(row, "name").to_string())
             .collect();
         assert_eq!(names, vec!["Acme", "Beta", "Cyan"]);
+    }
+
+    #[test]
+    fn rename_relation_columns_reads_original_lookup_keys_before_rewrite() {
+        let relation = RelationResult {
+            rows: vec![{
+                let mut row = Row::new();
+                row.insert("derived.customer_id".into(), TypedValue::Int(7));
+                row.insert("derived.total_spent".into(), TypedValue::Float(125.0));
+                row
+            }],
+            columns: vec![
+                RelationColumn {
+                    lookup_name: "derived.customer_id".into(),
+                    output_name: "customer_id".into(),
+                },
+                RelationColumn {
+                    lookup_name: "derived.total_spent".into(),
+                    output_name: "total_spent".into(),
+                },
+            ],
+        };
+
+        let renamed =
+            rename_relation_columns(relation, &["customer".to_string(), "amount".to_string()])
+                .unwrap();
+
+        assert_eq!(
+            lookup_row_value(&renamed.rows[0], "customer"),
+            TypedValue::Int(7)
+        );
+        assert_eq!(
+            lookup_row_value(&renamed.rows[0], "amount"),
+            TypedValue::Float(125.0)
+        );
+    }
+
+    #[test]
+    fn expand_projection_columns_keeps_compound_identifier_lookup_name() {
+        let relation = RelationResult {
+            rows: Vec::new(),
+            columns: vec![
+                RelationColumn {
+                    lookup_name: "c.name".into(),
+                    output_name: "name".into(),
+                },
+                RelationColumn {
+                    lookup_name: "o.id".into(),
+                    output_name: "id".into(),
+                },
+            ],
+        };
+
+        let columns = expand_projection_columns(
+            &[SelectItem::UnnamedExpr(Expr::CompoundIdentifier(vec![
+                sqlparser::ast::Ident::new("o"),
+                sqlparser::ast::Ident::new("id"),
+            ]))],
+            &relation,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].lookup_name, "o.id");
+        assert_eq!(columns[0].output_name, "id");
     }
 }

@@ -1,0 +1,34 @@
+# dataset: set_ops_cases
+
+query T
+SELECT value FROM left_values UNION ALL SELECT value FROM right_values ORDER BY value;
+----
+alpha
+beta
+beta
+gamma
+
+query T
+SELECT value FROM left_values UNION SELECT value FROM right_values ORDER BY value;
+----
+alpha
+beta
+gamma
+
+query T
+SELECT value FROM left_values UNION ALL SELECT value FROM right_values ORDER BY value DESC LIMIT 2;
+----
+gamma
+beta
+
+statement error
+SELECT id, value FROM left_values UNION SELECT value FROM right_values;
+
+statement error
+SELECT value FROM left_values INTERSECT SELECT value FROM right_values;
+
+statement error
+SELECT value FROM left_values EXCEPT SELECT value FROM right_values;
+
+statement error
+SELECT value FROM left_values UNION SELECT value FROM numeric_values;

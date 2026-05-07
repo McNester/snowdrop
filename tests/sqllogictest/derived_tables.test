@@ -1,0 +1,19 @@
+# dataset: derived_table_cases
+
+query IT
+SELECT dt.customer_id, dt.total_spent FROM (SELECT customer_id, SUM(total) AS total_spent FROM orders WHERE status = 'paid' GROUP BY customer_id) AS dt ORDER BY dt.total_spent DESC, dt.customer_id;
+----
+1	125
+3	40
+
+query TT
+SELECT c.name, dt.total_spent FROM customers c INNER JOIN (SELECT customer_id, SUM(total) AS total_spent FROM orders WHERE status = 'paid' GROUP BY customer_id) AS dt ON c.id = dt.customer_id ORDER BY dt.total_spent DESC, c.name;
+----
+Alpha	125
+Gamma	40
+
+statement error
+SELECT customer_id FROM (SELECT customer_id FROM orders);
+
+statement error
+SELECT c.name FROM customers c INNER JOIN LATERAL (SELECT o.total FROM orders o WHERE o.customer_id = c.id) AS recent ON TRUE;

@@ -1,0 +1,5 @@
+{
+  "name": "multi_cte_join",
+  "sql": "WITH paid_orders AS (SELECT customer_id, total FROM orders WHERE status = 'paid'), summarized AS (SELECT customer_id, SUM(total) AS total_spent FROM paid_orders GROUP BY customer_id) SELECT c.name, s.total_spent FROM customers c INNER JOIN summarized s ON c.id = s.customer_id ORDER BY s.total_spent DESC, c.name;",
+  "expected_rows": [["Alpha", "125"], ["Gamma", "40"]]
+}

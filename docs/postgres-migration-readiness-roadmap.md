@@ -27,11 +27,17 @@ This roadmap assumes the near-term priority is:
   - text helpers like `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, and `CONCAT`
   - `CAST`
   - basic date/time helpers like `CURRENT_DATE` and `NOW`
-- Phase 3 is now started, but only partially implemented:
-  - `HAVING` is supported for the current grouped/aggregate subset
-  - `INSERT ... SELECT` is supported for the current simple/join select subset
-  - broader `ORDER BY` expressions on materialized rows are supported
-  - subqueries, derived tables, CTEs, and compound queries are still intentionally rejected with explicit boundary tests
+- Phase 3 now has a broad relation-pipeline-driven subset:
+  - the top-level `SELECT` entrypoint now dispatches between the shared relation executor and the optimized simple-table fast path, depending on query shape
+  - `HAVING` runs on the shared grouped relation path
+  - non-correlated scalar, `IN`, and `EXISTS` subqueries are supported
+  - correlated `EXISTS`, correlated `IN`, and correlated scalar subqueries in `WHERE` / `HAVING` are supported in the current narrow subset
+  - derived tables are supported with explicit alias requirements
+  - non-recursive `WITH` / simple CTE chains are supported
+  - `UNION ALL` and `UNION` are supported
+  - `INSERT ... SELECT` now accepts the supported Phase 3 query-source forms and rejects count/type mismatch up front
+  - relation-level `ORDER BY` works over subqueries, derived tables, CTEs, and compound results
+  - recursive CTE, `INTERSECT`, `EXCEPT`, `LATERAL`, and window functions remain explicit boundaries
 
 The remaining work for Phase 1 and Phase 3 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
 
@@ -191,24 +197,39 @@ Implement in this order:
 
 ### Implementation Snapshot
 
-The repository currently has an initial Phase 3 slice:
+The repository now has a broad Phase 3 relation-pipeline slice:
 
-- implemented
-  - `HAVING`
-  - `INSERT ... SELECT` for the current simple/join select subset
-  - broader `ORDER BY` expressions on materialized rows
-- not yet implemented, but covered by explicit unsupported-boundary tests
-  - subqueries
-  - derived tables
-  - `WITH` / simple CTEs
-  - `UNION ALL`, `UNION`, and other compound queries
+- implemented in the current practical subset
+  - the top-level `SELECT` entrypoint now uses the shared relation executor for Phase 3 shapes while preserving the optimized simple-table path for performance-sensitive legacy shapes
+  - grouped `HAVING`
+  - non-correlated scalar / `IN` / `EXISTS` subqueries
+  - correlated `EXISTS`, correlated `IN`, and correlated scalar subqueries in `WHERE` / `HAVING`
+  - derived tables in `FROM` / `JOIN`
+  - non-recursive `WITH` / simple CTE chains
+  - `UNION ALL`
+  - `UNION`
+  - broader `INSERT ... SELECT` with explicit count/type mismatch validation
+  - broader relation-level `ORDER BY`
+- still explicitly unsupported
+  - recursive CTE
+  - `INTERSECT`
+  - `EXCEPT`
+  - `LATERAL`
+  - window functions
+- still intentionally partial
+  - grouped expressions beyond the current narrow identifier-based subset
+  - `INSERT ... SELECT` execution is still materialized, not streaming
+  - subqueries nested inside arbitrary scalar function arguments
 
 ### Required Test Coverage
 
-Datasets to add:
+Datasets to add or expand:
 
 - `having_cases`
 - `subquery_cases`
+- `correlated_subquery_cases`
+- `derived_table_cases`
+- `cte_cases`
 - `set_ops_cases`
 - `insert_select_cases`
 
@@ -218,18 +239,34 @@ Suites:
   - exact rows and expected errors
 - `differential`
   - parity for supported cases only
+- `sqllogictest`
+  - compact positive and negative coverage for each feature family
+- `tap`
+  - smoke workflows for `WITH`, derived-table queries, and `INSERT ... SELECT`
 - `postgres_style`
   - grouped by feature family
 
 Important rule:
 
 - each newly supported feature must also gain an "unsupported boundary" test
-- for example, if simple subqueries are supported, nested correlated subqueries should still be explicitly tested as unsupported until implemented
+- for example, even after `UNION` support lands, `INTERSECT` and `EXCEPT` should stay explicitly covered as unsupported until they are implemented
 
 ### Exit Criteria
 
 - Snowdrop supports a wider, explicitly documented query subset
+- the shared relation pipeline backs subqueries, derived tables, CTEs, set operations, and broader `INSERT ... SELECT`
 - failure modes for still-unsupported queries are deterministic and readable
+
+### Migration Risk Notes
+
+These Phase 3 boundaries do not carry the same migration risk:
+
+- `window functions`: high risk for migration readiness because they are common in production analytics, reporting, deduplication, and ranking queries
+- recursive CTE: medium, workload-dependent risk because they matter a lot for hierarchy and traversal use cases but do not appear in every application
+- `LATERAL`: medium-high risk for SQL-heavy applications, especially ones that lean on per-row derived sources
+- `INTERSECT` / `EXCEPT`: medium-low risk because they are often rewritable, even though native support is still preferable
+
+This means Phase 3 should still be considered a practical migration subset, not a claim of full PostgreSQL query compatibility. The next phases should prioritize the highest-risk remaining gaps before chasing lower-frequency syntax.
 
 ## Phase 4: Schema Fidelity for Migration
 

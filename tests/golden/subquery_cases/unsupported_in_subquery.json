@@ -1,5 +1,0 @@
-{
-  "name": "unsupported_in_subquery",
-  "sql": "SELECT name FROM customers WHERE id IN (SELECT customer_id FROM orders);",
-  "expected_error": "subqueries in SELECT filters are not supported yet"
-}

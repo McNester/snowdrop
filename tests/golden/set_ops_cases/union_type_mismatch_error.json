@@ -1,0 +1,5 @@
+{
+  "name": "union_type_mismatch_error",
+  "sql": "SELECT value FROM left_values UNION SELECT value FROM numeric_values;",
+  "expected_error": "UNION requires compatible column types"
+}

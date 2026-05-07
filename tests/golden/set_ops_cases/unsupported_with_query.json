@@ -1,5 +1,0 @@
-{
-  "name": "unsupported_with_query",
-  "sql": "WITH staged AS (SELECT value FROM left_values) SELECT value FROM staged;",
-  "expected_error": "WITH / CTE queries are not supported yet"
-}

@@ -1,0 +1,5 @@
+{
+  "name": "union_all_order_limit",
+  "sql": "SELECT value FROM left_values UNION ALL SELECT value FROM right_values ORDER BY value DESC LIMIT 2;",
+  "expected_rows": [["gamma"], ["beta"]]
+}

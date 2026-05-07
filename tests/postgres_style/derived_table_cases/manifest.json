@@ -1,0 +1,5 @@
+{
+  "name": "derived_table_cases",
+  "description": "PostgreSQL-style regression subset for derived tables.",
+  "dataset": "derived_table_cases"
+}

@@ -73,7 +73,7 @@ cargo run -p sndsql -- --port 15432 -d snowdrop
 Canonical testing workflow:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build orchestrator
 $env:PGPASSWORD = "<your-postgres-password>"
 cargo run -p snowdrop-testkit -- list-datasets
 cargo run -p snowdrop-testkit -- run-all --with-tpch
@@ -123,6 +123,8 @@ docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:
 
 - `docker-compose.yml` no longer forces `linux/arm64`, so it can run natively on `AMD64` hosts when matching images exist.
 - PostgreSQL-backed differential suites and benchmarks read the password from `PGPASSWORD` first and fall back to `POSTGRES_PASSWORD`.
+- After query-engine or SQL-surface changes, rebuild the `orchestrator` service before running `snowdrop-testkit`; otherwise the harness may talk to an older Snowdrop binary.
+- `snowdrop-testkit run` and `run-all` now perform a small Phase 3 runtime preflight and will stop early with a rebuild hint if Snowdrop is stale. Set `SNOWDROP_SKIP_RUNTIME_PROBE=1` only if you intentionally want to bypass that guard.
 - The benchmark suite already accepts non-default ports via `--port` and `--pg-port`.
 - Use `--seed` for reproducible data generation across Snowdrop and PostgreSQL.
 - Use `--host` and `--pg-host` when the benchmark client runs inside Docker instead of on the host.

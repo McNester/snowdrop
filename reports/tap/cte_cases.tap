@@ -1,0 +1,4 @@
+1..3
+ok 1 - single cte totals
+ok 2 - multi cte join
+ok 3 - recursive cte unsupported

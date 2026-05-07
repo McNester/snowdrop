@@ -1,0 +1,24 @@
+{
+  "name": "cte_cases",
+  "dataset": "cte_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "single cte totals",
+      "sql": "WITH paid_orders AS (SELECT customer_id, total FROM orders WHERE status = 'paid') SELECT customer_id, SUM(total) AS total_spent FROM paid_orders GROUP BY customer_id ORDER BY total_spent DESC, customer_id;",
+      "expected_rows": [["1", "125"], ["3", "40"]]
+    },
+    {
+      "kind": "sql",
+      "name": "multi cte join",
+      "sql": "WITH paid_orders AS (SELECT customer_id, total FROM orders WHERE status = 'paid'), summarized AS (SELECT customer_id, SUM(total) AS total_spent FROM paid_orders GROUP BY customer_id) SELECT c.name, s.total_spent FROM customers c INNER JOIN summarized s ON c.id = s.customer_id ORDER BY s.total_spent DESC, c.name;",
+      "expected_rows": [["Alpha", "125"], ["Gamma", "40"]]
+    },
+    {
+      "kind": "sql",
+      "name": "recursive cte unsupported",
+      "sql": "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 3) SELECT n FROM nums;",
+      "expected_error": "recursive CTE is not supported yet"
+    }
+  ]
+}

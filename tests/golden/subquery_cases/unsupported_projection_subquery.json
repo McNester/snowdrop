@@ -1,5 +1,0 @@
-{
-  "name": "unsupported_projection_subquery",
-  "sql": "SELECT name, (SELECT COUNT(*) FROM orders) FROM customers ORDER BY id;",
-  "expected_error": "subqueries in projection expressions are not supported yet"
-}

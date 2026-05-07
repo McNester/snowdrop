@@ -197,6 +197,13 @@ pub async fn run_benchmark_suite(options: &BenchmarkOptions) -> Result<Vec<Query
     Ok(all_results)
 }
 
+fn format_db_error(err: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = err.as_db_error() {
+        return format!("{}: {}", db_err.severity(), db_err.message());
+    }
+    err.to_string()
+}
+
 pub fn write_json_output(results: &[QueryResult], output_path: &str) -> Result<()> {
     let json = serde_json::to_string_pretty(results)?;
     std::fs::write(output_path, json)?;
@@ -308,18 +315,32 @@ async fn run_full_benchmark(
     if with_indexes && is_snowdrop {
         println!("\n--- Creating indexes ---");
         let idx_start = Instant::now();
-        client
+        if let Err(err) = client
             .simple_query("CREATE INDEX idx_shipdate ON tpch.lineitem(l_shipdate);")
-            .await?;
+            .await
+        {
+            eprintln!("  Failed to create idx_shipdate: {}", format_db_error(&err));
+            eprintln!(
+                "  Continuing with baseline-only Snowdrop results; indexed phase is unavailable."
+            );
+            return Ok(all_results);
+        }
         println!(
             "  idx_shipdate created in {:.1}ms",
             idx_start.elapsed().as_secs_f64() * 1000.0
         );
 
         let idx_start = Instant::now();
-        client
+        if let Err(err) = client
             .simple_query("CREATE INDEX idx_partkey ON tpch.lineitem(l_partkey);")
-            .await?;
+            .await
+        {
+            eprintln!("  Failed to create idx_partkey: {}", format_db_error(&err));
+            eprintln!(
+                "  Continuing with baseline-only Snowdrop results; indexed phase is unavailable."
+            );
+            return Ok(all_results);
+        }
         println!(
             "  idx_partkey created in {:.1}ms",
             idx_start.elapsed().as_secs_f64() * 1000.0

@@ -12,6 +12,8 @@ use tpch_bench::{tpch_markdown_section, BenchmarkOptions, QueryResult};
 const RAW_RESULTS_PATH: &str = "reports/raw/snowdrop-testkit-results.json";
 const REPORT_PATH: &str = "reports/test-report.md";
 const LEGACY_RAW_RESULTS_PATH: &str = "target/snowdrop-testkit/results.json";
+const PHASE3_RUNTIME_PROBE_DB: &str = "__snowdrop_phase3_probe";
+const SKIP_RUNTIME_PROBE_ENV: &str = "SNOWDROP_SKIP_RUNTIME_PROBE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeConfig {
@@ -207,6 +209,7 @@ async fn async_main() -> Result<()> {
             println!("Loaded dataset {}", manifest.name);
         }
         Command::Run { dataset, suite } => {
+            ensure_phase3_runtime(&runtime).await?;
             let datasets = load_dataset_manifests(&repo_root)?;
             let run = run_named_suite(&repo_root, &runtime, &suite, dataset.as_deref(), &datasets)
                 .await?;
@@ -222,6 +225,7 @@ async fn async_main() -> Result<()> {
             print_console_summary(&results);
         }
         Command::RunAll { with_tpch } => {
+            ensure_phase3_runtime(&runtime).await?;
             let datasets = load_dataset_manifests(&repo_root)?;
             let mut suite_runs = Vec::new();
             for suite in [
@@ -279,6 +283,90 @@ async fn async_main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn ensure_phase3_runtime(runtime: &RuntimeConfig) -> Result<()> {
+    if std::env::var_os(SKIP_RUNTIME_PROBE_ENV).is_some() {
+        return Ok(());
+    }
+
+    let admin = open_snowdrop_admin(runtime)
+        .await
+        .context("could not connect to Snowdrop for the Phase 3 runtime preflight")?;
+    let _ = admin
+        .simple_query(&format!("DROP DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await;
+    admin
+        .simple_query(&format!("CREATE DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await
+        .with_context(|| {
+            format!(
+                "could not create Phase 3 runtime probe database '{}'",
+                PHASE3_RUNTIME_PROBE_DB
+            )
+        })?;
+
+    let probe_result = async {
+        let client = open_snowdrop_dataset(runtime, PHASE3_RUNTIME_PROBE_DB).await?;
+        client
+            .simple_query("CREATE TABLE probe (id BIGINT PRIMARY KEY, grp VARCHAR(16), val BIGINT);")
+            .await?;
+        client
+            .simple_query(
+                "INSERT INTO probe (id, grp, val) VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30);",
+            )
+            .await?;
+
+        for (family, sql) in phase3_runtime_probes() {
+            match execute_query(&client, sql).await {
+                Ok(_) => {}
+                Err(err) if looks_like_stale_phase3_runtime(&err) => {
+                    return Err(anyhow!(
+                        "Snowdrop runtime preflight detected an outdated Phase 3 server while probing {}: {}. Rebuild and restart the orchestrator, then rerun the harness. Suggested command: `docker compose up -d --build orchestrator`. If you intentionally want to skip this guard, set {}=1.",
+                        family,
+                        err,
+                        SKIP_RUNTIME_PROBE_ENV
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow!(
+                        "Snowdrop runtime preflight failed while probing {}: {}",
+                        family,
+                        err
+                    ));
+                }
+            }
+        }
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = admin
+        .simple_query(&format!("DROP DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await;
+    probe_result
+}
+
+fn phase3_runtime_probes() -> [(&'static str, &'static str); 4] {
+    [
+        (
+            "subqueries",
+            "SELECT id FROM probe WHERE id IN (SELECT id FROM probe WHERE val >= 20) ORDER BY id;",
+        ),
+        (
+            "derived tables",
+            "SELECT d.id FROM (SELECT id FROM probe WHERE val >= 20) AS d ORDER BY d.id;",
+        ),
+        (
+            "CTEs",
+            "WITH picked AS (SELECT id FROM probe WHERE val >= 20) SELECT id FROM picked ORDER BY id;",
+        ),
+        (
+            "compound queries",
+            "SELECT id FROM probe WHERE id = 1 UNION ALL SELECT id FROM probe WHERE id = 2 ORDER BY id;",
+        ),
+    ]
 }
 
 fn parse_command(args: &[String]) -> Result<Command> {
@@ -657,7 +745,7 @@ async fn run_tap_suite(
     datasets: &[DatasetManifest],
 ) -> Result<SuiteRun> {
     let root = tests_root(repo_root).join("tap");
-    let tap_out_root = repo_root.join("target/snowdrop-testkit/tap");
+    let tap_out_root = repo_root.join("reports/tap");
     fs::create_dir_all(&tap_out_root)?;
     let mut cases = Vec::new();
 
@@ -1105,6 +1193,21 @@ fn looks_unsupported(message: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+fn looks_like_stale_phase3_runtime(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    [
+        "with / cte queries are not supported yet",
+        "compound queries like union are not supported yet",
+        "subqueries in select filters are not supported yet",
+        "subqueries in projection expressions are not supported yet",
+        "subqueries in having are not supported yet",
+        "derived tables in from are not supported yet",
+        "derived tables in join clauses are not supported yet",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 fn pass(
     suite: &str,
     dataset: &str,
@@ -1263,6 +1366,37 @@ fn print_console_summary(results: &UnifiedResults) {
         );
     }
 
+    println!("\nFeature buckets:");
+    for (group, counts) in summarize_by_group(&results.suite_runs) {
+        println!(
+            "- {:<32} pass={} fail={} mismatch={} skip={}",
+            group,
+            counts.get("pass").copied().unwrap_or(0),
+            counts.get("fail").copied().unwrap_or(0),
+            counts.get("mismatch").copied().unwrap_or(0),
+            counts.get("skip").copied().unwrap_or(0),
+        );
+    }
+
+    let notable_cases = results
+        .suite_runs
+        .iter()
+        .flat_map(|run| run.cases.iter())
+        .filter(|case| case.status != "pass")
+        .collect::<Vec<_>>();
+    if !notable_cases.is_empty() {
+        println!("\nNon-pass cases:");
+        for case in notable_cases {
+            println!(
+                "- {} :: {} :: {} -> {}",
+                prettify_suite_name(&case.suite),
+                case.group,
+                case.case_name,
+                case.details
+            );
+        }
+    }
+
     if !results.tpch_results.is_empty() {
         println!("\nTPC-H benchmark (warm averages):");
         for (query, label) in [
@@ -1275,9 +1409,24 @@ fn print_console_summary(results: &UnifiedResults) {
             let sdi = tpch_bench::warm_avg(&results.tpch_results, query, "Snowdrop", "indexed");
             let pg =
                 tpch_bench::warm_avg(&results.tpch_results, query, "PostgreSQL 16", "baseline");
+            let sd_str = if sd > 0.0 {
+                format!("{sd:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
+            let sdi_str = if sdi > 0.0 {
+                format!("{sdi:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
+            let pg_str = if pg > 0.0 {
+                format!("{pg:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
             println!(
-                "- {} ({}) -> Snowdrop {:.1}ms | Indexed {:.1}ms | PostgreSQL {:.1}ms",
-                query, label, sd, sdi, pg
+                "- {} ({}) -> Snowdrop {} | Indexed {} | PostgreSQL {}",
+                query, label, sd_str, sdi_str, pg_str
             );
         }
     }
@@ -1357,6 +1506,39 @@ fn render_report(results: &UnifiedResults) -> String {
             counts.get("mismatch").copied().unwrap_or(0),
             counts.get("skip").copied().unwrap_or(0),
         ));
+    }
+    out.push('\n');
+
+    out.push_str("## Phase 3 Feature Summary\n\n");
+    out.push_str("| Status | Feature family |\n");
+    out.push_str("|---|---|\n");
+    for feature in [
+        "HAVING over the grouped aggregate subset",
+        "non-correlated subqueries in scalar, IN, and EXISTS forms",
+        "correlated EXISTS, IN, and scalar subqueries in WHERE / HAVING",
+        "derived tables in FROM and JOIN with required aliases",
+        "non-recursive WITH / CTE chains",
+        "UNION ALL and UNION",
+        "broader INSERT ... SELECT over relation-producing query sources",
+        "relation-level ORDER BY after subqueries, CTEs, derived tables, and UNION outputs",
+    ] {
+        out.push_str(&format!("| Supported | {} |\n", feature));
+    }
+    for feature in [
+        "GROUP BY expressions beyond plain identifiers / qualified identifiers",
+        "INSERT ... SELECT currently materializes source relations in memory before insert",
+        "subqueries nested inside complex scalar function arguments remain intentionally narrow",
+    ] {
+        out.push_str(&format!("| Partial | {} |\n", feature));
+    }
+    for feature in [
+        "recursive CTE",
+        "INTERSECT",
+        "EXCEPT",
+        "LATERAL",
+        "window functions",
+    ] {
+        out.push_str(&format!("| Explicitly unsupported | {} |\n", feature));
     }
     out.push('\n');
 
@@ -1486,6 +1668,17 @@ fn summarize_by_dataset(
                 run.suite.clone(),
             );
             let counts = map.entry(key).or_insert_with(BTreeMap::new);
+            *counts.entry(case.status.clone()).or_insert(0) += 1;
+        }
+    }
+    map
+}
+
+fn summarize_by_group(suite_runs: &[SuiteRun]) -> BTreeMap<String, BTreeMap<String, usize>> {
+    let mut map = BTreeMap::new();
+    for run in suite_runs {
+        for case in &run.cases {
+            let counts = map.entry(case.group.clone()).or_insert_with(BTreeMap::new);
             *counts.entry(case.status.clone()).or_insert(0) += 1;
         }
     }
@@ -1738,5 +1931,21 @@ mod tests {
         assert!(report.contains("## TPC-H Benchmark"));
         assert!(report.contains("Q6"));
         assert!(report.contains("Runs: `3`. Seed: `42`. Indexed phase: `enabled`."));
+    }
+
+    #[test]
+    fn stale_runtime_detector_recognizes_old_phase3_boundaries() {
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: WITH / CTE queries are not supported yet"
+        ));
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: subqueries in SELECT filters are not supported yet"
+        ));
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: compound queries like UNION are not supported yet"
+        ));
+        assert!(!looks_like_stale_phase3_runtime(
+            "ERROR: recursive CTE is not supported yet"
+        ));
     }
 }

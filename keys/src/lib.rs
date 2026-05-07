@@ -51,7 +51,7 @@ pub fn decode_base62(s: &str) -> Result<u64, KeyError> {
 pub const DB_ID_WIDTH: usize = 2; // 3,844 databases
 pub const TABLE_ID_WIDTH: usize = 3; // 238,328 tables
 pub const ROW_ID_WIDTH: usize = 11; // ~3.5e19 rows
-pub const COL_ID_WIDTH: usize = 2; // 3,844 columns per table
+pub const COL_ID_WIDTH: usize = 3; // 238,328 logical column IDs
 
 /// Encodes a db_id (u32) to 2-char base62.
 pub fn encode_db_id(id: u32) -> Result<String, KeyError> {
@@ -86,7 +86,7 @@ pub fn build_row_key(db_id: u32, table_id: u32, row_id: u64) -> Result<String, K
 }
 
 /// Constructs a full Kvrocks key: {db_id}:{table_id}:{row_id}:{col_id}
-/// Total length: 21 chars (2+1+3+1+11+1+2 = 21)
+/// Total length: 22 chars (2+1+3+1+11+1+3 = 22)
 pub fn build_key(db_id: u32, table_id: u32, row_id: u64, col_id: u32) -> Result<String, KeyError> {
     Ok(format!(
         "{}:{}:{}:{}",
@@ -240,17 +240,17 @@ mod tests {
     #[test]
     fn build_key_format() {
         let key = build_key(1, 15, 0, 3).unwrap();
-        assert_eq!(key, "01:00F:00000000000:03");
-        assert_eq!(key.len(), 21);
+        assert_eq!(key, "01:00F:00000000000:003");
+        assert_eq!(key.len(), 22);
     }
 
     #[test]
-    fn key_length_is_always_21() {
+    fn key_length_is_always_22() {
         let key = build_key(0, 0, 0, 0).unwrap();
-        assert_eq!(key.len(), 21);
+        assert_eq!(key.len(), 22);
 
         let key = build_key(3843, 238327, u64::MAX, 3843).unwrap();
-        assert_eq!(key.len(), 21);
+        assert_eq!(key.len(), 22);
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn column_scan_pattern_format() {
         let pat = column_scan_pattern(1, 15, 5).unwrap();
-        assert_eq!(pat, "01:00F:*:05");
+        assert_eq!(pat, "01:00F:*:005");
     }
 
     #[test]
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn build_index_key_format() {
         let key = build_index_key(1, 15, 3, "09223372036854775808", 42).unwrap();
-        assert!(key.starts_with("idx:01:00F:03:09223372036854775808:"));
+        assert!(key.starts_with("idx:01:00F:003:09223372036854775808:"));
     }
 
     #[test]
@@ -305,13 +305,24 @@ mod tests {
     #[test]
     fn index_prefix_format() {
         let p = index_prefix(1, 15, 3).unwrap();
-        assert_eq!(p, "idx:01:00F:03:");
+        assert_eq!(p, "idx:01:00F:003:");
     }
 
     #[test]
     fn index_point_prefix_format() {
         let p = index_point_prefix(1, 15, 3, "hello").unwrap();
-        assert_eq!(p, "idx:01:00F:03:hello:");
+        assert_eq!(p, "idx:01:00F:003:hello:");
+    }
+
+    #[test]
+    fn large_column_ids_fit_index_key_encoding() {
+        let key = build_index_key(1, 15, 8248, "2024-01-15", 999).unwrap();
+        let (db, tbl, col, val, row) = parse_index_key(&key).unwrap();
+        assert_eq!(db, 1);
+        assert_eq!(tbl, 15);
+        assert_eq!(col, 8248);
+        assert_eq!(val, "2024-01-15");
+        assert_eq!(row, 999);
     }
 
     #[test]

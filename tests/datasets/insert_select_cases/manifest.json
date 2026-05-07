@@ -2,8 +2,8 @@
   "name": "insert_select_cases",
   "database": "insert_select_cases",
   "description": "Write-path fixture for INSERT ... SELECT with projections and ordering.",
-  "purpose": "Exercise INSERT ... SELECT over the current simple SELECT subset.",
-  "tables": ["live_orders", "archive_orders"],
+  "purpose": "Exercise INSERT ... SELECT over grouped, CTE-backed, and ordered relation sources.",
+  "tables": ["live_orders", "archive_orders", "customer_totals"],
   "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
   "postgres_enabled": true
 }

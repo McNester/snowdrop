@@ -76,7 +76,7 @@ reports/
 
 - Покрывает readiness и интеграционные smoke-проверки
 - Использует JSON-описания suite-ов в `tests/tap/`
-- Пишет TAP-подобные файлы в `target/snowdrop-testkit/tap/`
+- Пишет TAP-подобные файлы в `reports/tap/`
 
 ### PostgreSQL-style subset
 
@@ -89,7 +89,7 @@ reports/
 Канонический workflow:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build orchestrator
 $env:PGPASSWORD = "<ваш-пароль-postgres>"
 cargo run -p snowdrop-testkit -- list-datasets
 cargo run -p snowdrop-testkit -- run-all --with-tpch
@@ -111,6 +111,7 @@ cargo run -p snowdrop-testkit -- report
 
 - `golden`, `sqllogictest` и `tap` можно запускать без PostgreSQL credentials.
 - `differential`, `postgres-style` и `run-all --with-tpch` требуют, чтобы перед запуском был выставлен `PGPASSWORD` или `POSTGRES_PASSWORD`.
+- `run` и `run-all` теперь делают небольшой Phase 3 runtime preflight. Если harness пишет, что Snowdrop устарел, пересобери `orchestrator` и запусти тесты снова. Обходить эту защиту стоит только осознанно через `SNOWDROP_SKIP_RUNTIME_PROBE=1`.
 
 ## Генерируемые артефакты
 
@@ -122,6 +123,7 @@ cargo run -p snowdrop-testkit -- report
 
 - metadata окружения
 - inventory датасетов
+- короткую Phase 3 summary со статусами supported / partial / explicitly unsupported
 - summary по suite-ам и датасетам
 - таблицы кейсов для golden, differential, sqllogictest, TAP-style и PostgreSQL-style suite-ов
 - skipped или unsupported кейсы
