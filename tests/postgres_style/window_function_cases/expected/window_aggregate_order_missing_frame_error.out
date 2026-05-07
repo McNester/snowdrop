@@ -1,0 +1,1 @@
+ERROR: window aggregate ORDER BY requires an explicit ROWS frame

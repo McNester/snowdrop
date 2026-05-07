@@ -1,0 +1,5 @@
+{
+  "name": "full_partition_rows_frame",
+  "sql": "SELECT id, grp, COUNT(*) OVER (PARTITION BY grp ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS grp_count FROM scores ORDER BY id;",
+  "expected_rows": [["1", "A", "3"], ["2", "A", "3"], ["3", "A", "3"], ["4", "B", "2"], ["5", "B", "2"]]
+}

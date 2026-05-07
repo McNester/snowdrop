@@ -1,0 +1,3 @@
+SELECT id, grp, ROW_NUMBER() OVER (PARTITION BY grp ORDER BY score DESC, id) AS rn
+FROM scores
+ORDER BY id;

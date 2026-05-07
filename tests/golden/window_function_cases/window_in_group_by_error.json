@@ -1,0 +1,5 @@
+{
+  "name": "window_in_group_by_error",
+  "sql": "SELECT grp, COUNT(*) FROM scores GROUP BY ROW_NUMBER() OVER (ORDER BY id), grp;",
+  "expected_error": "window functions are not supported in GROUP BY"
+}

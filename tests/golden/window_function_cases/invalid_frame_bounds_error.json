@@ -1,0 +1,5 @@
+{
+  "name": "invalid_frame_bounds_error",
+  "sql": "SELECT id, SUM(score) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW) AS running_sum FROM scores;",
+  "expected_error": "window frame start cannot be after frame end"
+}

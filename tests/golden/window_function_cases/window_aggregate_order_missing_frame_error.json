@@ -1,0 +1,5 @@
+{
+  "name": "window_aggregate_order_missing_frame_error",
+  "sql": "SELECT id, SUM(score) OVER (PARTITION BY grp ORDER BY id) AS running_sum FROM scores;",
+  "expected_error": "window aggregate ORDER BY requires an explicit ROWS frame"
+}

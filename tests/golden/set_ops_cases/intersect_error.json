@@ -1,5 +1,5 @@
 {
   "name": "intersect_error",
-  "sql": "SELECT value FROM left_values INTERSECT SELECT value FROM right_values;",
-  "expected_error": "INTERSECT is not supported yet"
+  "sql": "SELECT value FROM left_values INTERSECT ALL SELECT value FROM right_values;",
+  "expected_error": "INTERSECT ALL is not supported yet"
 }

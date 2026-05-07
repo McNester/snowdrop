@@ -1,0 +1,5 @@
+{
+  "name": "window_function_cases",
+  "description": "PostgreSQL-style regression subset for the initial Phase 3.5 window function slice.",
+  "dataset": "window_function_cases"
+}

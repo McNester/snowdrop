@@ -1,1 +1,1 @@
-ERROR: recursive CTE is not supported yet
+ERROR: only one recursive CTE is supported at a time

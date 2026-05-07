@@ -1,0 +1,5 @@
+{
+  "name": "named_window_reference",
+  "sql": "SELECT id, ROW_NUMBER() OVER w AS rn FROM scores WINDOW w AS (ORDER BY id) ORDER BY id;",
+  "expected_rows": [["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"], ["5", "5"]]
+}

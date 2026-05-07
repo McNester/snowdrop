@@ -1,0 +1,3 @@
+SELECT grp, COUNT(*)
+FROM scores
+GROUP BY ROW_NUMBER() OVER (ORDER BY id), grp;

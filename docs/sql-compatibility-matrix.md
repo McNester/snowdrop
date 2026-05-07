@@ -39,6 +39,7 @@ The current fixed-dataset foundation now covers these semantic zones:
 | `correlated_subquery_cases` | correlated `EXISTS`, `IN`, scalar projection, and grouped `HAVING` coverage |
 | `derived_table_cases` | derived tables in `FROM` / `JOIN`, alias requirements, and `LATERAL` boundary coverage |
 | `cte_cases` | non-recursive CTE chains and recursive-CTE boundary coverage |
+| `recursive_cte_cases` | narrow recursive `WITH RECURSIVE` hierarchy traversal, recursion-cap overflow, and `UNION DISTINCT` boundary coverage |
 | `set_ops_cases` | `UNION ALL`, `UNION`, and explicit `INTERSECT` / `EXCEPT` boundary coverage |
 
 These datasets are exercised through a mix of `golden`, `differential`, `sqllogictest`, `tap`, and `postgres_style` suites depending on the feature area.
@@ -58,9 +59,9 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Select | Basic `SELECT ... FROM ...` | Supported | The top-level `SELECT` entrypoint now dispatches either to the shared relation execution API or to the optimized simple-table storage path in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs), depending on the query shape. |
 | Select | `SELECT` without `FROM` | Not Supported | Rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:668). |
 | Compound queries | `UNION ALL`, `UNION` | Supported | Compound relation execution now flows through the internal relation pipeline in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs), including relation-level `ORDER BY` and `LIMIT` over compound outputs, plus explicit column-count and type-compatibility mismatch errors. |
-| Compound queries | `INTERSECT`, `EXCEPT` | Not Supported | Explicit readable runtime errors are emitted from the relation pipeline when these operators appear. |
+| Compound queries | `INTERSECT`, `EXCEPT` | Partial | Phase 3.5 now supports distinct `INTERSECT` and `EXCEPT` through the relation-level compound-query pipeline. `INTERSECT ALL` and `EXCEPT ALL` remain explicitly unsupported. |
 | CTEs | non-recursive `WITH ...` | Supported | Non-recursive CTEs are loaded into relation context and can be referenced anywhere the current Phase 3 subset accepts a table-like source. |
-| CTEs | recursive `WITH RECURSIVE ...` | Not Supported | Explicitly rejected with a dedicated runtime error. |
+| CTEs | recursive `WITH RECURSIVE ...` | Partial | Phase 3.5 now includes a narrow recursive subset: one recursive CTE at a time, `seed UNION ALL recursive_term`, exactly one self-reference in the recursive term, exact column-count matching, and a deterministic iteration cap. Mutual recursion, multiple recursive CTEs, `UNION DISTINCT` recursion semantics, and data-modifying recursive CTEs remain unsupported. |
 | Views | `CREATE VIEW`, querying views | Not Supported | No view support path is implemented. |
 
 ## Query Features
@@ -82,7 +83,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Subqueries | non-correlated scalar / `IN` / `EXISTS` | Supported | Supported through relation-aware predicate and projection evaluation in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs). |
 | Subqueries | correlated `EXISTS`, correlated `IN`, correlated scalar subqueries in `WHERE` / `HAVING` | Partial | Supported in the current Phase 3 subset through outer-row scoping, but nested/lateral-like forms and subqueries inside arbitrary scalar functions remain intentionally out of scope. |
 | Derived tables | subqueries in `FROM` / `JOIN` with aliases | Supported | Derived tables are materialized as relation sources and can participate in the current join subset. |
-| Derived tables | `LATERAL` | Not Supported | Explicitly rejected with a dedicated runtime error. |
+| Derived tables | `LATERAL` | Partial | Phase 3.5 now supports narrow `INNER JOIN LATERAL (SELECT ...) alias ON ...` and `LEFT JOIN LATERAL (SELECT ...) alias ON ...` forms. `LATERAL VALUES`, right/full lateral joins, and broader lateral source shapes remain unsupported. |
 
 ## JOIN Support
 
@@ -101,7 +102,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 |---|---|---|---|
 | Scalar expressions | Arithmetic `+ - * / %` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:127). |
 | Scalar expressions | `CASE WHEN` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:183). |
-| Scalar expressions | window functions | Not Supported | No window-function execution layer exists in the current relation pipeline or expression engine, and `OVER (...)` forms are rejected up front with a dedicated runtime error. |
+| Scalar expressions | window functions | Partial | Phase 3.5 now includes a broader practical relation-level window slice: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, partition aggregate windows (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`), named `WINDOW` references, ordered aggregate windows with explicit `ROWS` frames, and grouped/window coexistence over post-aggregate relation results. `RANGE` / `GROUPS` frames, `FILTER (...) OVER (...)`, nested windows, named-window inheritance/override, and the wider PostgreSQL window surface remain explicitly unsupported. |
 | Scalar functions | `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, `CONCAT` | Supported | Implemented in the row and `RowView` expression evaluators in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) and covered by the `scalar_functions` dataset. |
 | Null helpers | `COALESCE`, `NULLIF` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) with fixed-dataset coverage in `tests/datasets/scalar_functions/`. |
 | Conversion | `CAST` and PostgreSQL-style casts | Partial | `CAST(...)` and `::` work for the current Phase 2 target set: text, integer, float, boolean, and string-backed date/time targets, with unsupported target types rejected up front in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs) and runtime conversion in [executor/src/typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs). |
@@ -151,16 +152,23 @@ The biggest functional gaps before migration work are now:
 - broader schema fidelity
 - richer write-path semantics beyond the current equality-based update/delete subset
 - deeper grouped/query semantics such as complex `GROUP BY` expressions
-- remaining out-of-scope query forms: recursive CTE, `INTERSECT`, `EXCEPT`, `LATERAL`, and window functions
+- remaining out-of-scope query forms: `INTERSECT ALL`, `EXCEPT ALL`, and the broader advanced variants beyond the current narrow window/LATERAL/recursive CTE slices
 - better type semantics and catalog compatibility
 
 ## Migration Risk Notes
 
-These unsupported query forms do not block every migration equally:
+These remaining boundaries do not block every migration equally:
 
-- `window functions`: high migration risk; common in reporting, ranking, deduplication, top-N-per-group, and running-total workloads
+- `window functions`: medium migration risk after the broader Phase 3.5 slice; the highest-frequency reporting, ranking, and running-total patterns are now covered, while exotic framing and advanced PostgreSQL-only variants remain deferred
 - recursive CTE: medium migration risk; important for hierarchy, graph-like traversal, and tree-walk workloads, but absent from many CRUD-oriented applications
 - `LATERAL`: medium-high migration risk for SQL-heavy applications that rely on row-wise derived subqueries or function-like table expansion
 - `INTERSECT` / `EXCEPT`: medium-low migration risk; important for some analytical query sets, but often rewritable through `JOIN`, `NOT EXISTS`, or `UNION`-based patterns
 
-In practical terms, Snowdrop's current Phase 3 subset is strong enough for a meaningful migration-oriented SQL baseline, but it is not yet sufficient for arbitrary PostgreSQL SQL with zero rewrite expectations.
+`Phase 3.5` now has its full planned slice set in place:
+
+1. practical window-function surface
+2. narrow `LATERAL`
+3. narrow recursive CTE
+4. distinct `INTERSECT` / `EXCEPT`
+
+In practical terms, Snowdrop's current Phase 3 + Phase 3.5 subset is strong enough for a meaningful migration-oriented SQL baseline, but it is not yet sufficient for arbitrary PostgreSQL SQL with zero rewrite expectations. The remaining gaps are now narrower advanced variants and the broader schema-fidelity backlog rather than top-level missing query families.

@@ -1,0 +1,2 @@
+SELECT id, SUM(score) OVER (ORDER BY id ROWS BETWEEN -1 PRECEDING AND CURRENT ROW) AS running_sum
+FROM scores;

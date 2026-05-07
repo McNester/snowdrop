@@ -1,0 +1,4 @@
+{
+  "name": "forward_rows_frame",
+  "sql": "SELECT id, SUM(score) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS forward_sum FROM scores ORDER BY id;"
+}

@@ -66,6 +66,8 @@ struct RelationResult {
     columns: Vec<RelationColumn>,
 }
 
+const RECURSIVE_CTE_MAX_ITERATIONS: usize = 128;
+
 impl RelationResult {
     fn from_named_rows(rows: Vec<Row>, field_names: Vec<String>) -> Self {
         let columns = field_names
@@ -89,21 +91,37 @@ impl RelationResult {
     }
 
     fn schema_cols(&self) -> Vec<ColumnInfo> {
-        self.columns
-            .iter()
-            .enumerate()
-            .map(|(idx, col)| ColumnInfo {
-                id: idx as u32 + 1,
-                name: col.lookup_name.clone(),
-                data_type: "TEXT".to_string(),
-                nullable: true,
-                is_pk: false,
-                table_id: 0,
-                indexed: false,
-                index_name: None,
-            })
-            .collect()
+        relation_columns_to_schema_cols(&self.columns)
     }
+}
+
+fn relation_columns_to_schema_cols(columns: &[RelationColumn]) -> Vec<ColumnInfo> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(idx, col)| ColumnInfo {
+            id: idx as u32 + 1,
+            name: col.lookup_name.clone(),
+            data_type: "TEXT".to_string(),
+            nullable: true,
+            is_pk: false,
+            table_id: 0,
+            indexed: false,
+            index_name: None,
+        })
+        .collect()
+}
+
+fn combine_relation_columns(
+    left: &[RelationColumn],
+    right: &[RelationColumn],
+) -> Vec<RelationColumn> {
+    let mut columns = left.to_vec();
+    columns.extend_from_slice(right);
+    for col in &mut columns {
+        col.output_name = col.lookup_name.clone();
+    }
+    columns
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1869,29 +1887,7 @@ impl QueryRouter {
         async move {
             let mut local_ctx = ctx.clone();
             if let Some(with) = &query.with {
-                if with.recursive {
-                    return Err(user_error("recursive CTE is not supported yet".to_string()));
-                }
-
-                let mut ctes = ctx.ctes.clone();
-                for cte in &with.cte_tables {
-                    let cte_ctx = ctx.with_ctes(ctes.clone());
-                    let mut relation = self
-                        .execute_query_to_relation_boxed(cte.query.as_ref(), &cte_ctx)
-                        .await?;
-                    if !cte.alias.columns.is_empty() {
-                        relation = rename_relation_columns(
-                            relation,
-                            &cte.alias
-                                .columns
-                                .iter()
-                                .map(|ident| ident.name.value.clone())
-                                .collect::<Vec<_>>(),
-                        )?;
-                    }
-                    ctes.insert(cte.alias.name.value.to_lowercase(), relation);
-                }
-                local_ctx.ctes = ctes;
+                local_ctx.ctes = self.materialize_with_ctes(with, ctx).await?;
             }
 
             match query.body.as_ref() {
@@ -1941,6 +1937,101 @@ impl QueryRouter {
             }
         }
         .boxed()
+    }
+
+    async fn materialize_with_ctes(
+        &self,
+        with: &sqlparser::ast::With,
+        ctx: &RelationContext,
+    ) -> PgWireResult<HashMap<String, RelationResult>> {
+        if with.recursive {
+            return self.materialize_recursive_with_ctes(with, ctx).await;
+        }
+
+        let mut ctes = ctx.ctes.clone();
+        for cte in &with.cte_tables {
+            let cte_ctx = ctx.with_ctes(ctes.clone());
+            let relation = self
+                .execute_query_to_relation_boxed(cte.query.as_ref(), &cte_ctx)
+                .await?;
+            ctes.insert(
+                cte.alias.name.value.to_lowercase(),
+                apply_cte_alias_columns(relation, &cte.alias)?,
+            );
+        }
+        Ok(ctes)
+    }
+
+    async fn materialize_recursive_with_ctes(
+        &self,
+        with: &sqlparser::ast::With,
+        ctx: &RelationContext,
+    ) -> PgWireResult<HashMap<String, RelationResult>> {
+        if with.cte_tables.len() != 1 {
+            return Err(user_error(
+                "only one recursive CTE is supported at a time".to_string(),
+            ));
+        }
+
+        let cte = &with.cte_tables[0];
+        let cte_name = cte.alias.name.value.to_lowercase();
+        let (seed_term, recursive_term) =
+            split_recursive_cte_terms(cte.query.as_ref(), &cte_name)?;
+
+        let base_ctx = ctx.with_ctes(ctx.ctes.clone());
+        let seed_relation = self
+            .execute_setexpr_to_relation_boxed(seed_term, &base_ctx)
+            .await?;
+        let mut accumulated = apply_cte_alias_columns(seed_relation, &cte.alias)?;
+        let mut working = accumulated.clone();
+        let target_names = accumulated
+            .columns
+            .iter()
+            .map(|column| column.output_name.clone())
+            .collect::<Vec<_>>();
+
+        let mut iterations = 0usize;
+        while !working.rows.is_empty() {
+            iterations += 1;
+            if iterations > RECURSIVE_CTE_MAX_ITERATIONS {
+                return Err(user_error(format!(
+                    "recursive CTE exceeded iteration limit ({RECURSIVE_CTE_MAX_ITERATIONS})"
+                )));
+            }
+
+            let mut recursive_ctes = ctx.ctes.clone();
+            recursive_ctes.insert(cte_name.clone(), working.clone());
+            let recursive_ctx = ctx.with_ctes(recursive_ctes);
+
+            let next_relation = self
+                .execute_setexpr_to_relation_boxed(recursive_term, &recursive_ctx)
+                .await?;
+            let mut next_relation = apply_cte_alias_columns(next_relation, &cte.alias)?;
+
+            if next_relation.columns.len() != accumulated.columns.len() {
+                return Err(user_error(format!(
+                    "recursive CTE requires matching column counts (seed={}, recursive={})",
+                    accumulated.columns.len(),
+                    next_relation.columns.len()
+                )));
+            }
+            validate_set_operation_column_compatibility(
+                &sqlparser::ast::SetOperator::Union,
+                &accumulated,
+                &next_relation,
+            )?;
+
+            next_relation = rename_relation_columns(next_relation, &target_names)?;
+            if next_relation.rows.is_empty() {
+                break;
+            }
+            accumulated.rows.extend(next_relation.rows.iter().cloned());
+            working = next_relation;
+        }
+
+        let mut ctes = ctx.ctes.clone();
+        ctes.insert(cte_name, accumulated);
+        Ok(ctes)
     }
 
     async fn materialize_legacy_query_output(
@@ -2412,21 +2503,77 @@ impl QueryRouter {
                 }
             };
 
-            let mut right_relation = self
-                .build_source_relation(&join.relation, &current_db, ctx)
-                .await?;
-            qualify_relation_for_join_wildcard(&mut right_relation);
-            relation = self
-                .join_relations(relation, right_relation, on_expr, is_left_join)
-                .await?;
+            relation = match &join.relation {
+                sqlparser::ast::TableFactor::Derived {
+                    lateral: true,
+                    subquery,
+                    alias,
+                } => {
+                    let alias = alias.as_ref().ok_or_else(|| {
+                        user_error("LATERAL derived tables require an alias".to_string())
+                    })?;
+                    self.join_lateral_relation(
+                        relation,
+                        subquery.as_ref(),
+                        alias,
+                        on_expr,
+                        is_left_join,
+                        ctx,
+                    )
+                    .await?
+                }
+                _ => {
+                    let mut right_relation = self
+                        .build_source_relation(&join.relation, &current_db, ctx)
+                        .await?;
+                    qualify_relation_for_join_wildcard(&mut right_relation);
+                    self.join_relations(relation, right_relation, on_expr, is_left_join)
+                        .await?
+                }
+            };
         }
 
         relation = self
             .apply_where_to_relation(relation, select.selection.as_ref(), ctx)
             .await?;
 
+        let has_window_functions = projection_has_window_functions(&select.projection);
         let agg_exprs = extract_aggregates(&select.projection);
-        let mut relation = if !agg_exprs.is_empty() {
+        let has_grouping = !group_by_exprs(&select.group_by).is_empty();
+
+        let mut relation = if has_window_functions && (!agg_exprs.is_empty() || has_grouping) {
+            let base_projection = extract_window_base_projection(&select.projection)?;
+            if base_projection.is_empty() {
+                return Err(user_error(
+                    "window queries over grouped relations must project grouped or aggregate base columns"
+                        .to_string(),
+                ));
+            }
+            let relation = self
+                .execute_aggregate_relation(
+                    relation,
+                    &base_projection,
+                    &select.group_by,
+                    select.having.as_ref(),
+                    ctx,
+                )
+                .await?;
+            self.project_relation_with_windows(
+                relation,
+                &select.projection,
+                &select.named_window,
+                ctx,
+            )
+            .await?
+        } else if has_window_functions {
+            self.project_relation_with_windows(
+                relation,
+                &select.projection,
+                &select.named_window,
+                ctx,
+            )
+            .await?
+        } else if !agg_exprs.is_empty() {
             self.execute_aggregate_relation(
                 relation,
                 &select.projection,
@@ -2494,13 +2641,6 @@ impl QueryRouter {
         right: &SetExpr,
         ctx: &RelationContext,
     ) -> PgWireResult<RelationResult> {
-        if matches!(
-            op,
-            sqlparser::ast::SetOperator::Intersect | sqlparser::ast::SetOperator::Except
-        ) {
-            return Err(user_error(format!("{op} is not supported yet")));
-        }
-
         let left_relation = self.execute_setexpr_to_relation_boxed(left, ctx).await?;
         let right_relation = self.execute_setexpr_to_relation_boxed(right, ctx).await?;
 
@@ -2518,18 +2658,36 @@ impl QueryRouter {
         let left_normalized = normalize_relation_for_set_op(left_relation);
         let right_normalized = normalize_relation_for_set_op(right_relation);
 
-        let mut rows = left_normalized.rows.clone();
-        rows.extend(right_normalized.rows);
+        match op {
+            sqlparser::ast::SetOperator::Union => {
+                let mut rows = left_normalized.rows.clone();
+                rows.extend(right_normalized.rows);
 
-        let relation = RelationResult {
-            rows,
-            columns: left_normalized.columns,
-        };
+                let relation = RelationResult {
+                    rows,
+                    columns: left_normalized.columns,
+                };
 
-        if is_union_all_quantifier(set_quantifier) {
-            Ok(relation)
-        } else {
-            Ok(deduplicate_relation_rows(relation))
+                if is_union_all_quantifier(set_quantifier) {
+                    Ok(relation)
+                } else {
+                    Ok(deduplicate_relation_rows(relation))
+                }
+            }
+            sqlparser::ast::SetOperator::Intersect => {
+                if is_union_all_quantifier(set_quantifier) {
+                    return Err(user_error(
+                        "INTERSECT ALL is not supported yet".to_string(),
+                    ));
+                }
+                Ok(intersect_relation_rows(left_normalized, right_normalized))
+            }
+            sqlparser::ast::SetOperator::Except => {
+                if is_union_all_quantifier(set_quantifier) {
+                    return Err(user_error("EXCEPT ALL is not supported yet".to_string()));
+                }
+                Ok(except_relation_rows(left_normalized, right_normalized))
+            }
         }
     }
 
@@ -2702,6 +2860,98 @@ impl QueryRouter {
         Ok(RelationResult { rows, columns })
     }
 
+    async fn join_lateral_relation(
+        &self,
+        left: RelationResult,
+        subquery: &sqlparser::ast::Query,
+        alias: &sqlparser::ast::TableAlias,
+        on_expr: &Expr,
+        is_left_join: bool,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        if matches!(subquery.body.as_ref(), SetExpr::Values(_)) {
+            return Err(user_error(
+                "LATERAL VALUES is not supported yet".to_string(),
+            ));
+        }
+
+        let left_columns = left.columns.clone();
+        let mut rows = Vec::new();
+        let mut right_columns: Option<Vec<RelationColumn>> = None;
+
+        for left_row in &left.rows {
+            let child_ctx = ctx.with_outer_row(left_row.clone());
+            let mut right_relation = self
+                .execute_query_to_relation_boxed(subquery, &child_ctx)
+                .await?;
+            if !alias.columns.is_empty() {
+                right_relation = rename_relation_columns(
+                    right_relation,
+                    &alias
+                        .columns
+                        .iter()
+                        .map(|ident| ident.name.value.clone())
+                        .collect::<Vec<_>>(),
+                )?;
+            }
+            let mut right_relation = prefix_relation_as_source(right_relation, &alias.name.value);
+            qualify_relation_for_join_wildcard(&mut right_relation);
+
+            let combined_columns =
+                combine_relation_columns(&left_columns, &right_relation.columns.clone());
+            let combined_schema = relation_columns_to_schema_cols(&combined_columns);
+            right_columns.get_or_insert_with(|| right_relation.columns.clone());
+
+            let mut matched = false;
+            for right_row in &right_relation.rows {
+                let mut combined = left_row.clone();
+                combined.extend(right_row.clone());
+                if self
+                    .evaluate_predicate_for_relation(on_expr, &combined, &combined_schema, ctx)
+                    .await?
+                {
+                    rows.push(combined);
+                    matched = true;
+                }
+            }
+
+            if is_left_join && !matched {
+                let mut combined = left_row.clone();
+                for col in &right_relation.columns {
+                    combined.insert(col.lookup_name.clone(), TypedValue::Null);
+                }
+                rows.push(combined);
+            }
+        }
+
+        let right_columns = if let Some(columns) = right_columns {
+            columns
+        } else {
+            let child_ctx = ctx.clone();
+            let mut inferred = self
+                .execute_query_to_relation_boxed(subquery, &child_ctx)
+                .await?;
+            if !alias.columns.is_empty() {
+                inferred = rename_relation_columns(
+                    inferred,
+                    &alias
+                        .columns
+                        .iter()
+                        .map(|ident| ident.name.value.clone())
+                        .collect::<Vec<_>>(),
+                )?;
+            }
+            let mut inferred = prefix_relation_as_source(inferred, &alias.name.value);
+            qualify_relation_for_join_wildcard(&mut inferred);
+            inferred.columns
+        };
+
+        Ok(RelationResult {
+            rows,
+            columns: combine_relation_columns(&left_columns, &right_columns),
+        })
+    }
+
     async fn apply_where_to_relation(
         &self,
         mut relation: RelationResult,
@@ -2763,6 +3013,7 @@ impl QueryRouter {
             for (name, value) in &agg_values {
                 row.insert(name.to_lowercase(), value.clone());
             }
+            mirror_aggregate_lookup_names(projection, &mut row);
             if let Some(having_expr) = having {
                 if !self
                     .evaluate_grouped_predicate_for_relation(
@@ -2809,6 +3060,7 @@ impl QueryRouter {
             for (name, value) in &agg_values {
                 row.insert(name.to_lowercase(), value.clone());
             }
+            mirror_aggregate_lookup_names(projection, &mut row);
             if let Some(having_expr) = having {
                 if !self
                     .evaluate_grouped_predicate_for_relation(
@@ -2855,6 +3107,68 @@ impl QueryRouter {
                     .resolve_relation_value(expr, &row, &schema_cols, ctx)
                     .await?;
                 enriched.insert(name.to_lowercase(), value);
+            }
+            rows.push(enriched);
+        }
+
+        Ok(RelationResult {
+            rows,
+            columns: visible_columns,
+        })
+    }
+
+    async fn project_relation_with_windows(
+        &self,
+        relation: RelationResult,
+        projection: &[SelectItem],
+        named_windows: &[sqlparser::ast::NamedWindowDefinition],
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let schema_cols = relation.schema_cols();
+        let single_source_wildcard = !relation
+            .columns
+            .iter()
+            .any(|col| col.output_name.contains('.'));
+        let visible_columns =
+            expand_projection_columns(projection, &relation, single_source_wildcard)?;
+        let projected_exprs = resolve_projection_exprs(projection, &schema_cols)?;
+
+        let mut window_values: HashMap<String, Vec<TypedValue>> = HashMap::new();
+        for (name, expr) in &projected_exprs {
+            if contains_window_function_expr(expr) {
+                let Expr::Function(function) = expr else {
+                    return Err(user_error(
+                        "nested window expressions are not supported yet".to_string(),
+                    ));
+                };
+                window_values.insert(
+                    name.to_lowercase(),
+                    compute_window_function_values(
+                        function,
+                        named_windows,
+                        &relation.rows,
+                        &schema_cols,
+                    )?,
+                );
+            }
+        }
+
+        let mut rows = Vec::with_capacity(relation.rows.len());
+        for (row_idx, row) in relation.rows.iter().enumerate() {
+            let mut enriched = row.clone();
+            for (name, expr) in &projected_exprs {
+                let lookup_name = name.to_lowercase();
+                let value = if let Some(values) = window_values.get(&lookup_name) {
+                    values[row_idx].clone()
+                } else if row.contains_key(&lookup_name) {
+                    lookup_row_value(row, &lookup_name)
+                } else if let Some(value) = lookup_materialized_aggregate_value(expr, row) {
+                    value
+                } else {
+                    self.resolve_relation_value(expr, row, &schema_cols, ctx)
+                        .await?
+                };
+                enriched.insert(lookup_name, value);
             }
             rows.push(enriched);
         }
@@ -3807,6 +4121,7 @@ fn validate_select_expressions(
 
     if let Some(order_by) = query.order_by.as_ref() {
         for expr in &order_by.exprs {
+            ensure_no_window_functions(&expr.expr, "ORDER BY")?;
             validate_supported_expr(&expr.expr)?;
         }
     }
@@ -3815,18 +4130,24 @@ fn validate_select_expressions(
 }
 
 fn validate_select_body_expressions(select: &sqlparser::ast::Select) -> PgWireResult<()> {
+    for named_window in &select.named_window {
+        validate_named_window_definition(named_window)?;
+    }
+
     if let Some(selection) = select.selection.as_ref() {
+        ensure_no_window_functions(selection, "WHERE")?;
         validate_supported_expr(selection)?;
     }
 
     if let Some(having) = select.having.as_ref() {
+        ensure_no_window_functions(having, "HAVING")?;
         validate_supported_expr(having)?;
     }
 
     for item in &select.projection {
         match item {
             SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                validate_supported_expr(expr)?;
+                validate_projection_expr(expr, &select.named_window)?;
             }
             _ => {}
         }
@@ -3834,6 +4155,7 @@ fn validate_select_body_expressions(select: &sqlparser::ast::Select) -> PgWireRe
 
     if let sqlparser::ast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
         for expr in exprs {
+            ensure_no_window_functions(expr, "GROUP BY")?;
             validate_supported_expr(expr)?;
         }
     }
@@ -3843,6 +4165,7 @@ fn validate_select_body_expressions(select: &sqlparser::ast::Select) -> PgWireRe
             if let JoinOperator::Inner(JoinConstraint::On(expr))
             | JoinOperator::LeftOuter(JoinConstraint::On(expr)) = &joined.join_operator
             {
+                ensure_no_window_functions(expr, "JOIN predicates")?;
                 validate_supported_expr(expr)?;
             }
         }
@@ -3994,12 +4317,11 @@ fn validate_supported_expr(expr: &Expr) -> PgWireResult<()> {
 }
 
 fn validate_supported_function(function: &Function) -> PgWireResult<()> {
-    let name = function.name.to_string().to_uppercase();
-    if function.to_string().to_uppercase().contains(" OVER ") {
-        return Err(user_error(
-            "window functions are not supported yet".to_string(),
-        ));
+    if function.over.is_some() {
+        return validate_supported_window_function(function, &[]);
     }
+
+    let name = function.name.to_string().to_uppercase();
     let arg_exprs = function_exprs(function)?;
 
     for expr in &arg_exprs {
@@ -4055,6 +4377,226 @@ fn validate_supported_function(function: &Function) -> PgWireResult<()> {
             return Err(user_error(format!("function '{}' is not supported", other)));
         }
         _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_projection_expr(
+    expr: &Expr,
+    named_windows: &[sqlparser::ast::NamedWindowDefinition],
+) -> PgWireResult<()> {
+    if contains_window_function_expr(expr) {
+        match expr {
+            Expr::Function(function) if function.over.is_some() => {
+                validate_supported_window_function(function, named_windows)
+            }
+            _ => Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            )),
+        }
+    } else {
+        validate_supported_expr(expr)
+    }
+}
+
+fn ensure_no_window_functions(expr: &Expr, context: &str) -> PgWireResult<()> {
+    if contains_window_function_expr(expr) {
+        Err(user_error(format!(
+            "window functions are not supported in {}",
+            context
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_supported_window_function(
+    function: &Function,
+    named_windows: &[sqlparser::ast::NamedWindowDefinition],
+) -> PgWireResult<()> {
+    let name = function.name.to_string().to_uppercase();
+    let arg_exprs = function_exprs(function)?;
+    for expr in &arg_exprs {
+        if contains_window_function_expr(expr) {
+            return Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            ));
+        }
+        validate_supported_expr(expr)?;
+    }
+
+    if !matches!(&function.parameters, FunctionArguments::None) {
+        return Err(user_error(format!(
+            "window function '{}' uses unsupported parameters",
+            function.name
+        )));
+    }
+    if function.filter.is_some() {
+        return Err(user_error(
+            "FILTER on window functions is not supported yet".to_string(),
+        ));
+    }
+    if function.null_treatment.is_some() {
+        return Err(user_error(format!(
+            "window function '{}' uses unsupported NULL treatment",
+            function.name
+        )));
+    }
+    if !function.within_group.is_empty() {
+        return Err(user_error(format!(
+            "window function '{}' uses unsupported WITHIN GROUP syntax",
+            function.name
+        )));
+    }
+
+    let window_spec = resolve_window_spec_for_validation(function, named_windows)?;
+    validate_window_spec(window_spec)?;
+
+    for expr in &window_spec.partition_by {
+        if contains_window_function_expr(expr) {
+            return Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            ));
+        }
+        validate_supported_expr(expr)?;
+    }
+    for order_expr in &window_spec.order_by {
+        if contains_window_function_expr(&order_expr.expr) {
+            return Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            ));
+        }
+        validate_supported_expr(&order_expr.expr)?;
+    }
+
+    match name.as_str() {
+        "ROW_NUMBER" | "RANK" | "DENSE_RANK" => {
+            if !arg_exprs.is_empty() {
+                return Err(user_error(format!("{} does not accept arguments", name)));
+            }
+            if window_spec.order_by.is_empty() {
+                return Err(user_error(format!(
+                    "{} requires ORDER BY in OVER (...)",
+                    name
+                )));
+            }
+        }
+        "LAG" | "LEAD" => {
+            if !(1..=3).contains(&arg_exprs.len()) {
+                return Err(user_error(format!(
+                    "{} requires one to three arguments",
+                    name
+                )));
+            }
+            if window_spec.order_by.is_empty() {
+                return Err(user_error(format!(
+                    "{} requires ORDER BY in OVER (...)",
+                    name
+                )));
+            }
+        }
+        "COUNT" => {
+            if !window_spec.order_by.is_empty() && window_spec.window_frame.is_none() {
+                return Err(user_error(
+                    "window aggregate ORDER BY requires an explicit ROWS frame".to_string(),
+                ));
+            }
+            if let FunctionArguments::List(list) = &function.args {
+                if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
+                    return Err(user_error(
+                        "DISTINCT and argument clauses in window aggregates are not supported yet"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        "SUM" | "AVG" | "MIN" | "MAX" => {
+            if arg_exprs.len() != 1 {
+                return Err(user_error(format!(
+                    "{} requires exactly one argument",
+                    name
+                )));
+            }
+            if !window_spec.order_by.is_empty() && window_spec.window_frame.is_none() {
+                return Err(user_error(
+                    "window aggregate ORDER BY requires an explicit ROWS frame".to_string(),
+                ));
+            }
+            if let FunctionArguments::List(list) = &function.args {
+                if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
+                    return Err(user_error(
+                        "DISTINCT and argument clauses in window aggregates are not supported yet"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        other => {
+            return Err(user_error(format!(
+                "window function '{}' is not supported yet",
+                other
+            )))
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_named_window_definition(
+    named_window: &sqlparser::ast::NamedWindowDefinition,
+) -> PgWireResult<()> {
+    match &named_window.1 {
+        sqlparser::ast::NamedWindowExpr::WindowSpec(spec) => validate_window_spec(spec),
+        sqlparser::ast::NamedWindowExpr::NamedWindow(_) => Err(user_error(
+            "named WINDOW inheritance/override is not supported yet".to_string(),
+        )),
+    }
+}
+
+fn resolve_window_spec_for_validation<'a>(
+    function: &'a Function,
+    named_windows: &'a [sqlparser::ast::NamedWindowDefinition],
+) -> PgWireResult<&'a sqlparser::ast::WindowSpec> {
+    match function.over.as_ref() {
+        Some(sqlparser::ast::WindowType::WindowSpec(spec)) => Ok(spec),
+        Some(sqlparser::ast::WindowType::NamedWindow(name)) => named_windows
+            .iter()
+            .find(|window| window.0.value.eq_ignore_ascii_case(&name.value))
+            .and_then(|window| match &window.1 {
+                sqlparser::ast::NamedWindowExpr::WindowSpec(spec) => Some(spec),
+                sqlparser::ast::NamedWindowExpr::NamedWindow(_) => None,
+            })
+            .ok_or_else(|| user_error(format!("unknown named WINDOW '{}'", name.value))),
+        None => Err(user_error("window functions are not supported yet".to_string())),
+    }
+}
+
+fn validate_window_spec(window_spec: &sqlparser::ast::WindowSpec) -> PgWireResult<()> {
+    if window_spec.window_name.is_some() {
+        return Err(user_error(
+            "named WINDOW inheritance/override is not supported yet".to_string(),
+        ));
+    }
+    if let Some(frame) = &window_spec.window_frame {
+        validate_supported_window_frame(frame)?;
+    }
+
+    for expr in &window_spec.partition_by {
+        if contains_window_function_expr(expr) {
+            return Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            ));
+        }
+        validate_supported_expr(expr)?;
+    }
+    for order_expr in &window_spec.order_by {
+        if contains_window_function_expr(&order_expr.expr) {
+            return Err(user_error(
+                "nested window expressions are not supported yet".to_string(),
+            ));
+        }
+        validate_supported_expr(&order_expr.expr)?;
     }
 
     Ok(())
@@ -4120,7 +4662,7 @@ fn extract_aggregates(items: &[SelectItem]) -> Vec<&sqlparser::ast::Function> {
     for item in items {
         match item {
             SelectItem::UnnamedExpr(Expr::Function(f)) => {
-                if is_aggregate_function_name(&f.name.to_string()) {
+                if is_aggregate_function_name(&f.name.to_string()) && f.over.is_none() {
                     aggs.push(f);
                 }
             }
@@ -4128,7 +4670,7 @@ fn extract_aggregates(items: &[SelectItem]) -> Vec<&sqlparser::ast::Function> {
                 expr: Expr::Function(f),
                 ..
             } => {
-                if is_aggregate_function_name(&f.name.to_string()) {
+                if is_aggregate_function_name(&f.name.to_string()) && f.over.is_none() {
                     aggs.push(f);
                 }
             }
@@ -4138,24 +4680,74 @@ fn extract_aggregates(items: &[SelectItem]) -> Vec<&sqlparser::ast::Function> {
     aggs
 }
 
+fn extract_window_base_projection(items: &[SelectItem]) -> PgWireResult<Vec<SelectItem>> {
+    let mut base = Vec::new();
+    for item in items {
+        match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }
+                if contains_window_function_expr(expr) => {}
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+                return Err(user_error(
+                    "wildcard projection is not supported in grouped window queries yet"
+                        .to_string(),
+                ));
+            }
+            _ => base.push(item.clone()),
+        }
+    }
+    Ok(base)
+}
+
 /// Extract GROUP BY column names.
 fn extract_group_by_cols(group_by: &sqlparser::ast::GroupByExpr) -> Vec<String> {
+    group_by_exprs(group_by)
+        .into_iter()
+        .filter_map(|e| match e {
+            Expr::Identifier(ident) => Some(ident.value.to_lowercase()),
+            Expr::CompoundIdentifier(parts) => Some(
+                parts
+                    .iter()
+                    .map(|p| p.value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn group_by_exprs(group_by: &sqlparser::ast::GroupByExpr) -> Vec<Expr> {
     match group_by {
-        sqlparser::ast::GroupByExpr::Expressions(exprs, _) => exprs
-            .iter()
-            .filter_map(|e| match e {
-                Expr::Identifier(ident) => Some(ident.value.to_lowercase()),
-                Expr::CompoundIdentifier(parts) => Some(
-                    parts
-                        .iter()
-                        .map(|p| p.value.to_lowercase())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                ),
-                _ => None,
-            })
-            .collect(),
+        sqlparser::ast::GroupByExpr::Expressions(exprs, _) => exprs.clone(),
         _ => Vec::new(),
+    }
+}
+
+fn lookup_materialized_aggregate_value(expr: &Expr, row: &Row) -> Option<TypedValue> {
+    match expr {
+        Expr::Function(function)
+            if function.over.is_none() && is_aggregate_function_name(&function.name.to_string()) =>
+        {
+            Some(lookup_row_value(row, &expr.to_string().to_lowercase()))
+        }
+        _ => None,
+    }
+}
+
+fn mirror_aggregate_lookup_names(projection: &[SelectItem], row: &mut Row) {
+    for item in projection {
+        if let SelectItem::ExprWithAlias {
+            expr: Expr::Function(function),
+            alias,
+        } = item
+        {
+            if function.over.is_none() && is_aggregate_function_name(&function.name.to_string()) {
+                let alias_key = alias.value.to_lowercase();
+                if row.contains_key(&alias_key) {
+                    row.insert(function.to_string().to_lowercase(), lookup_row_value(row, &alias_key));
+                }
+            }
+        }
     }
 }
 
@@ -4233,7 +4825,11 @@ fn extract_function_arg_expr(f: &sqlparser::ast::Function) -> Option<Expr> {
 
 /// Evaluate a row's value for an aggregate argument expression.
 fn eval_agg_arg(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedValue {
-    resolve_value(expr, row, schema_cols)
+    if let Some(value) = lookup_materialized_aggregate_value(expr, row) {
+        value
+    } else {
+        resolve_value(expr, row, schema_cols)
+    }
 }
 
 /// Compute a single aggregate function over rows using expression evaluation.
@@ -4397,6 +4993,121 @@ fn object_name_to_string(name: &ObjectName) -> String {
         .join(".")
 }
 
+fn apply_cte_alias_columns(
+    relation: RelationResult,
+    alias: &sqlparser::ast::TableAlias,
+) -> PgWireResult<RelationResult> {
+    if alias.columns.is_empty() {
+        Ok(relation)
+    } else {
+        rename_relation_columns(
+            relation,
+            &alias
+                .columns
+                .iter()
+                .map(|ident| ident.name.value.clone())
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+fn split_recursive_cte_terms<'a>(
+    query: &'a sqlparser::ast::Query,
+    cte_name: &str,
+) -> PgWireResult<(&'a SetExpr, &'a SetExpr)> {
+    let SetExpr::SetOperation {
+        op,
+        set_quantifier,
+        left,
+        right,
+    } = query.body.as_ref()
+    else {
+        return Err(user_error(
+            "recursive CTE must use the form seed UNION ALL recursive_term".to_string(),
+        ));
+    };
+
+    if !matches!(op, sqlparser::ast::SetOperator::Union) || !is_union_all_quantifier(set_quantifier)
+    {
+        return Err(user_error(
+            "recursive CTE currently supports only UNION ALL".to_string(),
+        ));
+    }
+
+    if count_cte_references_in_setexpr(left.as_ref(), cte_name) != 0 {
+        return Err(user_error(
+            "recursive CTE self-reference is only allowed in the recursive term".to_string(),
+        ));
+    }
+
+    let recursive_refs = count_cte_references_in_setexpr(right.as_ref(), cte_name);
+    if recursive_refs == 0 {
+        return Err(user_error(
+            "recursive CTE recursive term must reference itself exactly once".to_string(),
+        ));
+    }
+    if recursive_refs > 1 {
+        return Err(user_error(
+            "recursive CTE recursive term may reference itself only once".to_string(),
+        ));
+    }
+
+    Ok((left.as_ref(), right.as_ref()))
+}
+
+fn count_cte_references_in_query(query: &sqlparser::ast::Query, cte_name: &str) -> usize {
+    count_cte_references_in_setexpr(query.body.as_ref(), cte_name)
+}
+
+fn count_cte_references_in_setexpr(setexpr: &SetExpr, cte_name: &str) -> usize {
+    match setexpr {
+        SetExpr::Select(select) => count_cte_references_in_select(select.as_ref(), cte_name),
+        SetExpr::Query(query) => count_cte_references_in_query(query.as_ref(), cte_name),
+        SetExpr::SetOperation { left, right, .. } => {
+            count_cte_references_in_setexpr(left.as_ref(), cte_name)
+                + count_cte_references_in_setexpr(right.as_ref(), cte_name)
+        }
+        _ => 0,
+    }
+}
+
+fn count_cte_references_in_select(select: &sqlparser::ast::Select, cte_name: &str) -> usize {
+    select
+        .from
+        .iter()
+        .map(|table_with_joins| count_cte_references_in_table_with_joins(table_with_joins, cte_name))
+        .sum()
+}
+
+fn count_cte_references_in_table_with_joins(
+    table_with_joins: &sqlparser::ast::TableWithJoins,
+    cte_name: &str,
+) -> usize {
+    count_cte_references_in_table_factor(&table_with_joins.relation, cte_name)
+        + table_with_joins
+            .joins
+            .iter()
+            .map(|join| count_cte_references_in_table_factor(&join.relation, cte_name))
+            .sum::<usize>()
+}
+
+fn count_cte_references_in_table_factor(
+    factor: &sqlparser::ast::TableFactor,
+    cte_name: &str,
+) -> usize {
+    match factor {
+        sqlparser::ast::TableFactor::Table { name, .. } => {
+            let raw_name = object_name_to_string(name).to_lowercase();
+            let short_name = object_name_last(name).to_lowercase();
+            usize::from(raw_name == cte_name || short_name == cte_name)
+        }
+        sqlparser::ast::TableFactor::Derived { subquery, .. } => {
+            count_cte_references_in_query(subquery.as_ref(), cte_name)
+        }
+        _ => 0,
+    }
+}
+
 fn object_name_last(name: &ObjectName) -> String {
     name.0
         .last()
@@ -4502,19 +5213,60 @@ fn deduplicate_relation_rows(relation: RelationResult) -> RelationResult {
     let rows = relation
         .rows
         .into_iter()
-        .filter(|row| {
-            let key = field_names
-                .iter()
-                .map(|name| format!("{:?}", lookup_row_value(row, &name.to_lowercase())))
-                .collect::<Vec<_>>()
-                .join("|");
-            seen.insert(key)
-        })
+        .filter(|row| seen.insert(relation_row_key(row, &field_names)))
         .collect();
     RelationResult {
         rows,
         columns: relation.columns,
     }
+}
+
+fn intersect_relation_rows(left: RelationResult, right: RelationResult) -> RelationResult {
+    let left = deduplicate_relation_rows(left);
+    let right = deduplicate_relation_rows(right);
+    let field_names = left.field_names();
+    let right_keys = right
+        .rows
+        .iter()
+        .map(|row| relation_row_key(row, &field_names))
+        .collect::<HashSet<_>>();
+    let rows = left
+        .rows
+        .into_iter()
+        .filter(|row| right_keys.contains(&relation_row_key(row, &field_names)))
+        .collect();
+    RelationResult {
+        rows,
+        columns: left.columns,
+    }
+}
+
+fn except_relation_rows(left: RelationResult, right: RelationResult) -> RelationResult {
+    let left = deduplicate_relation_rows(left);
+    let right = deduplicate_relation_rows(right);
+    let field_names = left.field_names();
+    let right_keys = right
+        .rows
+        .iter()
+        .map(|row| relation_row_key(row, &field_names))
+        .collect::<HashSet<_>>();
+    let rows = left
+        .rows
+        .into_iter()
+        .filter(|row| !right_keys.contains(&relation_row_key(row, &field_names)))
+        .collect();
+    RelationResult {
+        rows,
+        columns: left.columns,
+    }
+}
+
+fn relation_row_key(row: &Row, field_names: &[String]) -> String {
+    field_names
+        .iter()
+        .map(|name| format!("{:?}", lookup_row_value(row, &name.to_lowercase())))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4637,17 +5389,24 @@ fn select_can_use_optimized_relation_fast_path(
         }
     }
     if let Some(order_by) = query.order_by.as_ref() {
-        if order_by
-            .exprs
-            .iter()
-            .any(|expr| contains_subquery_expr(&expr.expr))
-        {
+        if order_by.exprs.iter().any(|expr| {
+            contains_subquery_expr(&expr.expr) || contains_window_function_expr(&expr.expr)
+        }) {
             return false;
         }
     }
     !select.projection.iter().any(|item| match item {
         SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-            contains_subquery_expr(expr)
+            contains_subquery_expr(expr) || contains_window_function_expr(expr)
+        }
+        _ => false,
+    })
+}
+
+fn projection_has_window_functions(items: &[SelectItem]) -> bool {
+    items.iter().any(|item| match item {
+        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+            contains_window_function_expr(expr)
         }
         _ => false,
     })
@@ -4734,6 +5493,104 @@ fn contains_subquery_expr(expr: &Expr) -> bool {
     }
 }
 
+fn contains_window_function_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Function(function) => {
+            function.over.is_some()
+                || function
+                    .filter
+                    .as_deref()
+                    .map(contains_window_function_expr)
+                    .unwrap_or(false)
+                || function_exprs(function)
+                    .map(|exprs| exprs.into_iter().any(contains_window_function_expr))
+                    .unwrap_or(false)
+                || match function.over.as_ref() {
+                    Some(sqlparser::ast::WindowType::WindowSpec(spec)) => {
+                        spec.partition_by.iter().any(contains_window_function_expr)
+                            || spec
+                                .order_by
+                                .iter()
+                                .any(|order| contains_window_function_expr(&order.expr))
+                    }
+                    _ => false,
+                }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            contains_window_function_expr(left) || contains_window_function_expr(right)
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => contains_window_function_expr(expr),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            contains_window_function_expr(expr)
+                || contains_window_function_expr(low)
+                || contains_window_function_expr(high)
+        }
+        Expr::InList { expr, list, .. } => {
+            contains_window_function_expr(expr) || list.iter().any(contains_window_function_expr)
+        }
+        Expr::Like { expr, pattern, .. } => {
+            contains_window_function_expr(expr) || contains_window_function_expr(pattern)
+        }
+        Expr::Cast { expr, .. } => contains_window_function_expr(expr),
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            contains_window_function_expr(expr)
+                || substring_from
+                    .as_deref()
+                    .map(contains_window_function_expr)
+                    .unwrap_or(false)
+                || substring_for
+                    .as_deref()
+                    .map(contains_window_function_expr)
+                    .unwrap_or(false)
+        }
+        Expr::Trim {
+            expr,
+            trim_what,
+            trim_characters,
+            ..
+        } => {
+            contains_window_function_expr(expr)
+                || trim_what
+                    .as_deref()
+                    .map(contains_window_function_expr)
+                    .unwrap_or(false)
+                || trim_characters
+                    .as_deref()
+                    .map(|chars| chars.iter().any(contains_window_function_expr))
+                    .unwrap_or(false)
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
+            operand
+                .as_deref()
+                .map(contains_window_function_expr)
+                .unwrap_or(false)
+                || conditions.iter().any(contains_window_function_expr)
+                || results.iter().any(contains_window_function_expr)
+                || else_result
+                    .as_deref()
+                    .map(contains_window_function_expr)
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 fn apply_arithmetic_values(
     left: &TypedValue,
     op: &sqlparser::ast::BinaryOperator,
@@ -4775,6 +5632,373 @@ fn apply_arithmetic_values(
     } else {
         TypedValue::Float(result)
     }
+}
+
+fn compute_window_function_values(
+    function: &Function,
+    named_windows: &[sqlparser::ast::NamedWindowDefinition],
+    rows: &[Row],
+    schema_cols: &[ColumnInfo],
+) -> PgWireResult<Vec<TypedValue>> {
+    let window_spec = resolve_window_spec(function, named_windows)?;
+
+    let partitions = build_window_partitions(rows, schema_cols, &window_spec)?;
+    let mut values = vec![TypedValue::Null; rows.len()];
+    let name = function.name.to_string().to_uppercase();
+    let arg_expr = extract_function_arg_expr(function);
+    let arg_exprs = function_exprs(function)?;
+
+    match name.as_str() {
+        "ROW_NUMBER" => {
+            for partition in partitions {
+                for (position, row_idx) in partition.into_iter().enumerate() {
+                    values[row_idx] = TypedValue::Int(position as i64 + 1);
+                }
+            }
+        }
+        "RANK" | "DENSE_RANK" => {
+            for partition in partitions {
+                let mut current_rank = 1_i64;
+                let mut current_dense_rank = 1_i64;
+                let mut previous_idx: Option<usize> = None;
+                for (position, row_idx) in partition.iter().enumerate() {
+                    if let Some(prev_idx) = previous_idx {
+                        if !window_order_keys_equal(
+                            rows,
+                            prev_idx,
+                            *row_idx,
+                            &window_spec.order_by,
+                            schema_cols,
+                        ) {
+                            current_dense_rank += 1;
+                            current_rank = position as i64 + 1;
+                        }
+                    }
+                    values[*row_idx] = if name == "RANK" {
+                        TypedValue::Int(current_rank)
+                    } else {
+                        TypedValue::Int(current_dense_rank)
+                    };
+                    previous_idx = Some(*row_idx);
+                }
+            }
+        }
+        "LAG" | "LEAD" => {
+            for partition in partitions {
+                for (position, row_idx) in partition.iter().enumerate() {
+                    let current_row = &rows[*row_idx];
+                    let offset = if arg_exprs.len() >= 2 {
+                        resolve_window_expr_value(arg_exprs[1], current_row, schema_cols)
+                            .as_i64()
+                            .filter(|value| *value > 0)
+                            .ok_or_else(|| {
+                                user_error(format!("{} offset must be a positive integer", name))
+                            })? as usize
+                    } else {
+                        1
+                    };
+                    let fallback = if arg_exprs.len() >= 3 {
+                        resolve_window_expr_value(arg_exprs[2], current_row, schema_cols)
+                    } else {
+                        TypedValue::Null
+                    };
+                    let target = if name == "LAG" {
+                        position.checked_sub(offset)
+                    } else {
+                        let next = position + offset;
+                        if next < partition.len() {
+                            Some(next)
+                        } else {
+                            None
+                        }
+                    };
+                    values[*row_idx] = if let Some(target_pos) = target {
+                        let target_row = &rows[partition[target_pos]];
+                        resolve_window_expr_value(
+                            arg_expr.as_ref().ok_or_else(|| {
+                                user_error(format!("{} requires an argument", name))
+                            })?,
+                            target_row,
+                            schema_cols,
+                        )
+                    } else {
+                        fallback
+                    };
+                }
+            }
+        }
+        "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" => {
+            for partition in partitions {
+                if window_spec.order_by.is_empty() {
+                    let partition_rows = partition
+                        .iter()
+                        .map(|idx| rows[*idx].clone())
+                        .collect::<Vec<_>>();
+                    let value = compute_single_aggregate_expr(
+                        &name,
+                        arg_expr.as_ref(),
+                        &partition_rows,
+                        schema_cols,
+                    )?;
+                    for row_idx in partition {
+                        values[row_idx] = value.clone();
+                    }
+                    continue;
+                }
+
+                let frame = window_spec.window_frame.as_ref().ok_or_else(|| {
+                    user_error(
+                        "window aggregate ORDER BY requires an explicit ROWS frame".to_string(),
+                    )
+                })?;
+                for (position, row_idx) in partition.iter().enumerate() {
+                    let frame_rows = frame_rows_for_position(
+                        rows,
+                        &partition,
+                        position,
+                        frame,
+                        schema_cols,
+                    )?;
+                    values[*row_idx] = compute_single_aggregate_expr(
+                        &name,
+                        arg_expr.as_ref(),
+                        &frame_rows,
+                        schema_cols,
+                    )?;
+                }
+            }
+        }
+        _ => {
+            return Err(user_error(format!(
+                "window function '{}' is not supported yet",
+                function.name
+            )))
+        }
+    }
+
+    Ok(values)
+}
+
+fn resolve_window_spec(
+    function: &Function,
+    named_windows: &[sqlparser::ast::NamedWindowDefinition],
+) -> PgWireResult<sqlparser::ast::WindowSpec> {
+    match function.over.as_ref() {
+        Some(sqlparser::ast::WindowType::WindowSpec(spec)) => {
+            validate_window_spec(spec)?;
+            Ok(spec.clone())
+        }
+        Some(sqlparser::ast::WindowType::NamedWindow(name)) => {
+            let named_window = named_windows
+                .iter()
+                .find(|window| window.0.value.eq_ignore_ascii_case(&name.value))
+                .ok_or_else(|| user_error(format!("unknown named WINDOW '{}'", name.value)))?;
+            validate_named_window_definition(named_window)?;
+            match &named_window.1 {
+                sqlparser::ast::NamedWindowExpr::WindowSpec(spec) => Ok(spec.clone()),
+                sqlparser::ast::NamedWindowExpr::NamedWindow(_) => Err(user_error(
+                    "named WINDOW inheritance/override is not supported yet".to_string(),
+                )),
+            }
+        }
+        None => Err(user_error("window functions are not supported yet".to_string())),
+    }
+}
+
+fn build_window_partitions(
+    rows: &[Row],
+    schema_cols: &[ColumnInfo],
+    window_spec: &sqlparser::ast::WindowSpec,
+) -> PgWireResult<Vec<Vec<usize>>> {
+    let mut partitions: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+    for (idx, row) in rows.iter().enumerate() {
+        let key = window_spec
+            .partition_by
+            .iter()
+            .map(|expr| typed_value_to_group_key(&resolve_window_expr_value(expr, row, schema_cols)))
+            .collect::<Vec<_>>();
+        partitions.entry(key).or_default().push(idx);
+    }
+
+    let mut partition_rows = partitions.into_values().collect::<Vec<_>>();
+    for partition in &mut partition_rows {
+        partition.sort_by(|left, right| {
+            compare_window_order_rows(rows, *left, *right, &window_spec.order_by, schema_cols)
+        });
+    }
+    partition_rows.sort_by_key(|partition| partition.first().copied().unwrap_or(usize::MAX));
+    Ok(partition_rows)
+}
+
+fn compare_window_order_rows(
+    rows: &[Row],
+    left_idx: usize,
+    right_idx: usize,
+    order_by: &[OrderByExpr],
+    schema_cols: &[ColumnInfo],
+) -> std::cmp::Ordering {
+    for order_expr in order_by {
+        let mut cmp = resolve_window_expr_value(&order_expr.expr, &rows[left_idx], schema_cols)
+            .cmp_order(
+            &resolve_window_expr_value(&order_expr.expr, &rows[right_idx], schema_cols),
+        );
+        if order_expr.asc == Some(false) {
+            cmp = cmp.reverse();
+        }
+        if cmp != std::cmp::Ordering::Equal {
+            return cmp;
+        }
+    }
+    left_idx.cmp(&right_idx)
+}
+
+fn validate_supported_window_frame(
+    frame: &sqlparser::ast::WindowFrame,
+) -> PgWireResult<()> {
+    if !matches!(frame.units, sqlparser::ast::WindowFrameUnits::Rows) {
+        let kind = match frame.units {
+            sqlparser::ast::WindowFrameUnits::Range => "RANGE",
+            sqlparser::ast::WindowFrameUnits::Groups => "GROUPS",
+            sqlparser::ast::WindowFrameUnits::Rows => unreachable!(),
+        };
+        return Err(user_error(format!(
+            "{} window frames are not supported yet",
+            kind
+        )));
+    }
+
+    validate_window_frame_bound(&frame.start_bound)?;
+    if let Some(end_bound) = &frame.end_bound {
+        validate_window_frame_bound(end_bound)?;
+    }
+    Ok(())
+}
+
+fn validate_window_frame_bound(
+    bound: &sqlparser::ast::WindowFrameBound,
+) -> PgWireResult<()> {
+    match bound {
+        sqlparser::ast::WindowFrameBound::CurrentRow
+        | sqlparser::ast::WindowFrameBound::Preceding(None)
+        | sqlparser::ast::WindowFrameBound::Following(None) => Ok(()),
+        sqlparser::ast::WindowFrameBound::Preceding(Some(expr))
+        | sqlparser::ast::WindowFrameBound::Following(Some(expr)) => {
+            let value = match expr.as_ref() {
+                Expr::Value(Value::Number(num, _)) => num.parse::<i64>().ok(),
+                _ => None,
+            }
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| {
+                user_error("window frame offsets must be non-negative integers".to_string())
+            })?;
+            if value < 0 {
+                return Err(user_error(
+                    "window frame offsets must be non-negative integers".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn frame_rows_for_position(
+    rows: &[Row],
+    partition: &[usize],
+    position: usize,
+    frame: &sqlparser::ast::WindowFrame,
+    _schema_cols: &[ColumnInfo],
+) -> PgWireResult<Vec<Row>> {
+    let partition_len = partition.len();
+    let (start, end) = window_frame_bounds(frame, position, partition_len)?;
+    Ok(partition[start..=end]
+        .iter()
+        .map(|idx| rows[*idx].clone())
+        .collect())
+}
+
+fn window_frame_bounds(
+    frame: &sqlparser::ast::WindowFrame,
+    position: usize,
+    partition_len: usize,
+) -> PgWireResult<(usize, usize)> {
+    let start = frame_bound_start_index(&frame.start_bound, position, partition_len)?;
+    let end = if let Some(end_bound) = &frame.end_bound {
+        frame_bound_end_index(end_bound, position, partition_len)?
+    } else {
+        frame_bound_end_index(
+            &sqlparser::ast::WindowFrameBound::CurrentRow,
+            position,
+            partition_len,
+        )?
+    };
+
+    if start > end {
+        return Err(user_error(
+            "window frame start cannot be after frame end".to_string(),
+        ));
+    }
+    Ok((start, end))
+}
+
+fn frame_bound_start_index(
+    bound: &sqlparser::ast::WindowFrameBound,
+    position: usize,
+    partition_len: usize,
+) -> PgWireResult<usize> {
+    Ok(match bound {
+        sqlparser::ast::WindowFrameBound::CurrentRow => position,
+        sqlparser::ast::WindowFrameBound::Preceding(None) => 0,
+        sqlparser::ast::WindowFrameBound::Preceding(Some(expr)) => {
+            position.saturating_sub(window_frame_offset(expr)?)
+        }
+        sqlparser::ast::WindowFrameBound::Following(None) => partition_len.saturating_sub(1),
+        sqlparser::ast::WindowFrameBound::Following(Some(expr)) => {
+            let offset = window_frame_offset(expr)?;
+            let target = position.saturating_add(offset);
+            target.min(partition_len.saturating_sub(1))
+        }
+    })
+}
+
+fn frame_bound_end_index(
+    bound: &sqlparser::ast::WindowFrameBound,
+    position: usize,
+    partition_len: usize,
+) -> PgWireResult<usize> {
+    frame_bound_start_index(bound, position, partition_len)
+}
+
+fn window_frame_offset(expr: &Expr) -> PgWireResult<usize> {
+    let value = match expr {
+        Expr::Value(Value::Number(num, _)) => num.parse::<i64>().ok(),
+        _ => None,
+    }
+    .filter(|value| *value >= 0)
+    .ok_or_else(|| user_error("window frame offsets must be non-negative integers".to_string()))?;
+
+    Ok(value as usize)
+}
+
+fn resolve_window_expr_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> TypedValue {
+    if let Some(value) = lookup_materialized_aggregate_value(expr, row) {
+        value
+    } else {
+        resolve_value(expr, row, schema_cols)
+    }
+}
+
+fn window_order_keys_equal(
+    rows: &[Row],
+    left_idx: usize,
+    right_idx: usize,
+    order_by: &[OrderByExpr],
+    schema_cols: &[ColumnInfo],
+) -> bool {
+    order_by.iter().all(|order_expr| {
+        resolve_window_expr_value(&order_expr.expr, &rows[left_idx], schema_cols).cmp_order(
+            &resolve_window_expr_value(&order_expr.expr, &rows[right_idx], schema_cols),
+        ) == std::cmp::Ordering::Equal
+    })
 }
 
 fn compare_typed_values(
@@ -6497,6 +7721,17 @@ mod tests {
         }
     }
 
+    fn parse_projection(sql: &str) -> Vec<SelectItem> {
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        match &stmts[0] {
+            Statement::Query(query) => match query.body.as_ref() {
+                SetExpr::Select(select) => select.projection.clone(),
+                _ => panic!("expected select"),
+            },
+            _ => panic!("expected query"),
+        }
+    }
+
     #[test]
     fn lookup_row_value_falls_back_from_qualified_to_display_name() {
         let mut row = Row::new();
@@ -6606,5 +7841,23 @@ mod tests {
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0].lookup_name, "o.id");
         assert_eq!(columns[0].output_name, "id");
+    }
+
+    #[test]
+    fn projection_has_window_functions_detects_over_clause() {
+        let projection = parse_projection(
+            "SELECT id, ROW_NUMBER() OVER (PARTITION BY grp ORDER BY score DESC) AS rn FROM scores",
+        );
+        assert!(projection_has_window_functions(&projection));
+    }
+
+    #[test]
+    fn extract_aggregates_ignores_window_aggregates() {
+        let projection = parse_projection(
+            "SELECT SUM(score) OVER (PARTITION BY grp) AS grp_sum, COUNT(*) FROM scores",
+        );
+        let aggregates = extract_aggregates(&projection);
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].name.to_string().to_uppercase(), "COUNT");
     }
 }

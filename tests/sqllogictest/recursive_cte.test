@@ -1,0 +1,24 @@
+# dataset: recursive_cte_cases
+
+query TI
+WITH RECURSIVE tree(id, name, depth) AS (SELECT id, name, 0 FROM categories WHERE parent_id IS NULL UNION ALL SELECT c.id, c.name, tree.depth + 1 FROM tree INNER JOIN categories c ON c.parent_id = tree.id) SELECT name, depth FROM tree ORDER BY depth, name;
+----
+Root	0
+Alpha	1
+Beta	1
+Alpha-1	2
+Alpha-2	2
+Beta-1	2
+
+query TI
+WITH RECURSIVE tree(id, name, depth) AS (SELECT id, name, 0 FROM categories WHERE id = 2 UNION ALL SELECT c.id, c.name, tree.depth + 1 FROM tree INNER JOIN categories c ON c.parent_id = tree.id) SELECT name, depth FROM tree ORDER BY depth, name;
+----
+Alpha	0
+Alpha-1	1
+Alpha-2	1
+
+statement error
+WITH RECURSIVE loop_ids(id) AS (SELECT id FROM categories WHERE id = 1 UNION ALL SELECT loop_ids.id FROM loop_ids) SELECT id FROM loop_ids;
+
+statement error
+WITH RECURSIVE tree(id, name, depth) AS (SELECT id, name, 0 FROM categories WHERE parent_id IS NULL UNION SELECT c.id, c.name, tree.depth + 1 FROM tree INNER JOIN categories c ON c.parent_id = tree.id) SELECT name, depth FROM tree ORDER BY depth, name;

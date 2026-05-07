@@ -1,3 +1,3 @@
 SELECT value FROM left_values
-INTERSECT
+INTERSECT ALL
 SELECT value FROM right_values;

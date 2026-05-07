@@ -1,0 +1,5 @@
+{
+  "name": "named_window_override_error",
+  "sql": "SELECT id, ROW_NUMBER() OVER (w ORDER BY score) AS rn FROM scores WINDOW w AS (PARTITION BY grp);",
+  "expected_error": "named WINDOW inheritance/override is not supported yet"
+}
