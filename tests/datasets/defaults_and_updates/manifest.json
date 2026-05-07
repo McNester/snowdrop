@@ -1,0 +1,9 @@
+{
+  "name": "defaults_and_updates",
+  "database": "defaults_and_updates",
+  "description": "Phase 4 fixture for DEFAULT values and ALTER COLUMN default lifecycle.",
+  "purpose": "Validate DEFAULT application on INSERT, explicit overrides, and ALTER COLUMN SET/DROP DEFAULT behavior.",
+  "tables": ["tasks"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

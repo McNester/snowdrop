@@ -1,0 +1,3 @@
+ALTER TABLE users DROP COLUMN nickname;
+INSERT INTO users (id, email) VALUES (3, 'cara@example.com');
+SELECT id, email FROM users WHERE id = 3;

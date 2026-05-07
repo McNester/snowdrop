@@ -1,0 +1,5 @@
+{
+  "name": "check_constraints",
+  "description": "PostgreSQL-style regression coverage for CHECK constraint enforcement.",
+  "dataset": "check_constraints"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "invalid_insert_error",
+  "sql": "INSERT INTO inventory (id, qty, price) VALUES (2, -1, 12);",
+  "expected_error": "CHECK constraint"
+}

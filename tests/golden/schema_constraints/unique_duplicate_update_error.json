@@ -1,0 +1,5 @@
+{
+  "name": "unique_duplicate_update_error",
+  "sql": "UPDATE users SET email = 'alpha@example.com' WHERE id = 2;",
+  "expected_error": "duplicate constraint value"
+}

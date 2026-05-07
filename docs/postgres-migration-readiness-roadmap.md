@@ -497,6 +497,28 @@ Implement in stages:
 5. `FOREIGN KEY` metadata, then enforcement
 6. `CHECK` constraints where practical
 
+Current status:
+
+- completed in the current narrow Phase 4 slice:
+  - `ALTER TABLE ADD COLUMN`
+  - `ALTER TABLE RENAME COLUMN`
+  - `ALTER TABLE DROP COLUMN`
+  - `ALTER COLUMN SET DEFAULT`
+  - `ALTER COLUMN DROP DEFAULT`
+  - `ALTER COLUMN SET NOT NULL`
+  - `ALTER COLUMN DROP NOT NULL`
+  - `DEFAULT` metadata + insert-time application for the current safe scalar subset
+  - user-facing single-column and multi-column `UNIQUE` enforcement
+  - composite primary-key DDL + write-path uniqueness enforcement
+  - immediate narrow `FOREIGN KEY` enforcement with `NO ACTION` / `RESTRICT`
+  - row-local practical `CHECK` constraints over the current safe scalar subset
+- remaining for later phases:
+  - broader PostgreSQL `ALTER TABLE` rewrite forms
+  - PostgreSQL-faithful existing-row semantics for `ADD COLUMN ... DEFAULT` backfill and `SET NOT NULL` validation on already-populated tables
+  - richer write semantics and broader mutation predicates
+  - FK cascading policies and deferred constraints
+  - broader schema introspection / catalog parity
+
 ### Required Test Coverage
 
 Datasets:
@@ -504,6 +526,8 @@ Datasets:
 - `schema_constraints`
 - `composite_keys`
 - `defaults_and_updates`
+- `foreign_key_cases`
+- `check_constraints`
 
 Cases to cover:
 
@@ -516,6 +540,10 @@ Test style:
 
 - `golden`
   - expected success/failure on DDL and DML
+- `differential`
+  - parity only for the supported narrow schema-fidelity subset
+- `sqllogictest`
+  - compact schema-fidelity regression coverage
 - `postgres_style`
   - schema regression pairs
 - `tap`
@@ -524,7 +552,10 @@ Test style:
 ### Exit Criteria
 
 - Snowdrop can load and preserve a more realistic subset of PostgreSQL schemas
+- core schema constraints are enforced, not just stored as metadata
 - schema limitations are explicit and reportable
+
+Phase 4 is now started with a real implemented narrow slice and fixed-dataset coverage. The remaining work for this phase is expansion and hardening rather than first-time schema-fidelity bring-up.
 
 ## Phase 5: Type Semantics and Catalog Compatibility
 

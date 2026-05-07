@@ -9,11 +9,15 @@ use futures::{future::BoxFuture, stream, FutureExt};
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
-use schema::{ColumnInfo, ColumnType, DatabaseInfo, Neo4jConnection, TableInfo};
+use schema::{
+    CheckConstraintInfo, ColumnDefinition, ColumnInfo, ColumnType, DatabaseInfo,
+    ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo, TableInfo,
+    UniqueConstraintInfo,
+};
 use sqlparser::ast::{
-    AlterTableOperation, ColumnOption, Expr, Function, FunctionArg, FunctionArgExpr,
-    FunctionArguments, JoinConstraint, JoinOperator, ObjectName, OrderByExpr, SelectItem, SetExpr,
-    Statement, Value, Values,
+    AlterColumnOperation, AlterTableOperation, ColumnOption, Expr, Function, FunctionArg,
+    FunctionArgExpr, FunctionArguments, JoinConstraint, JoinOperator, ObjectName, OrderByExpr,
+    SelectItem, SetExpr, Statement, TableConstraint, Value, Values,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -358,7 +362,7 @@ impl QueryRouter {
                     object_type
                 ))),
             },
-            Statement::CreateTable(ct) => self.handle_create_table(&ct.name, &ct.columns).await,
+            Statement::CreateTable(ct) => self.handle_create_table(&ct).await,
             Statement::AlterTable {
                 name, operations, ..
             } => {
@@ -431,38 +435,19 @@ impl QueryRouter {
 
     async fn handle_create_table<'a>(
         &self,
-        name: &ObjectName,
-        columns: &[sqlparser::ast::ColumnDef],
+        create: &sqlparser::ast::CreateTable,
     ) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let (db_name, table_name) = self.resolve_table_name(name, &current_db);
+        let (db_name, table_name) = self.resolve_table_name(&create.name, &current_db);
 
-        let mut col_defs = Vec::new();
-        for col in columns {
-            let col_type =
-                ColumnType::from_sql_type(&col.data_type).map_err(|e| user_error(e.to_string()))?;
-
-            let mut nullable = true;
-            let mut is_pk = false;
-
-            for opt in &col.options {
-                match &opt.option {
-                    ColumnOption::Unique { is_primary, .. } if *is_primary => {
-                        is_pk = true;
-                        nullable = false;
-                    }
-                    ColumnOption::NotNull => nullable = false,
-                    ColumnOption::Null => nullable = true,
-                    _ => {}
-                }
-            }
-
-            col_defs.push((col.name.value.clone(), col_type, nullable, is_pk));
-        }
+        let (col_defs, constraints) =
+            build_create_table_schema(&db_name, &table_name, create, |name| {
+                self.resolve_table_name(name, &current_db)
+            })?;
 
         let neo4j = self.neo4j.read().await;
         neo4j
-            .create_table(&db_name, &table_name, col_defs)
+            .create_table(&db_name, &table_name, col_defs, constraints)
             .await
             .map_err(to_err)?;
 
@@ -529,9 +514,118 @@ impl QueryRouter {
                     .await
                     .map_err(to_err)?;
 
+                if let Some(default_expr) = column_def.options.iter().find_map(|option| {
+                    if let ColumnOption::Default(expr) = &option.option {
+                        Some(expr)
+                    } else {
+                        None
+                    }
+                }) {
+                    validate_supported_default_expr(default_expr)?;
+                    neo4j
+                        .set_column_default(
+                            &db_name,
+                            &table_name,
+                            &column_def.name.value,
+                            Some(default_expr.to_string()),
+                        )
+                        .await
+                        .map_err(to_err)?;
+                }
+
+                for option in &column_def.options {
+                    match &option.option {
+                        ColumnOption::Null | ColumnOption::NotNull | ColumnOption::Default(_) => {}
+                        other => return Err(user_error(format!(
+                            "ADD COLUMN option {:?} is not supported in the current Phase 4 subset",
+                            other
+                        ))),
+                    }
+                }
+
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
 
+                Ok(Response::Execution(Tag::new("ALTER TABLE")))
+            }
+            AlterTableOperation::RenameColumn {
+                old_column_name,
+                new_column_name,
+            } => {
+                let neo4j = self.neo4j.read().await;
+                neo4j
+                    .rename_column(
+                        &db_name,
+                        &table_name,
+                        &old_column_name.value,
+                        &new_column_name.value,
+                    )
+                    .await
+                    .map_err(to_err)?;
+
+                let mut cache = self.schema_cache.write().await;
+                cache.invalidate_table(&db_name, &table_name);
+                Ok(Response::Execution(Tag::new("ALTER TABLE")))
+            }
+            AlterTableOperation::DropColumn { column_name, .. } => {
+                let neo4j = self.neo4j.read().await;
+                neo4j
+                    .drop_column(&db_name, &table_name, &column_name.value)
+                    .await
+                    .map_err(to_err)?;
+
+                let mut cache = self.schema_cache.write().await;
+                cache.invalidate_table(&db_name, &table_name);
+                Ok(Response::Execution(Tag::new("ALTER TABLE")))
+            }
+            AlterTableOperation::AlterColumn { column_name, op } => {
+                let neo4j = self.neo4j.read().await;
+                match op {
+                    AlterColumnOperation::SetDefault { value } => {
+                        validate_supported_default_expr(&value)?;
+                        neo4j
+                            .set_column_default(
+                                &db_name,
+                                &table_name,
+                                &column_name.value,
+                                Some(value.to_string()),
+                            )
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    AlterColumnOperation::DropDefault => {
+                        neo4j
+                            .set_column_default(&db_name, &table_name, &column_name.value, None)
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    AlterColumnOperation::SetNotNull => {
+                        neo4j
+                            .set_column_nullability(
+                                &db_name,
+                                &table_name,
+                                &column_name.value,
+                                false,
+                            )
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    AlterColumnOperation::DropNotNull => {
+                        neo4j
+                            .set_column_nullability(&db_name, &table_name, &column_name.value, true)
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    other => {
+                        return Err(user_error(format!(
+                            "ALTER COLUMN {:?} is not supported",
+                            other
+                        )))
+                    }
+                }
+
+                let mut cache = self.schema_cache.write().await;
+                cache.invalidate_table(&db_name, &table_name);
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
             other => Err(user_error(format!(
@@ -1975,8 +2069,7 @@ impl QueryRouter {
 
         let cte = &with.cte_tables[0];
         let cte_name = cte.alias.name.value.to_lowercase();
-        let (seed_term, recursive_term) =
-            split_recursive_cte_terms(cte.query.as_ref(), &cte_name)?;
+        let (seed_term, recursive_term) = split_recursive_cte_terms(cte.query.as_ref(), &cte_name)?;
 
         let base_ctx = ctx.with_ctes(ctx.ctes.clone());
         let seed_relation = self
@@ -2676,9 +2769,7 @@ impl QueryRouter {
             }
             sqlparser::ast::SetOperator::Intersect => {
                 if is_union_all_quantifier(set_quantifier) {
-                    return Err(user_error(
-                        "INTERSECT ALL is not supported yet".to_string(),
-                    ));
+                    return Err(user_error("INTERSECT ALL is not supported yet".to_string()));
                 }
                 Ok(intersect_relation_rows(left_normalized, right_normalized))
             }
@@ -3912,6 +4003,473 @@ fn value_to_bytes(val: &Value) -> PgWireResult<Vec<u8>> {
     }
 }
 
+fn build_create_table_schema<F>(
+    db_name: &str,
+    table_name: &str,
+    create: &sqlparser::ast::CreateTable,
+    resolve_table_name: F,
+) -> PgWireResult<(Vec<ColumnDefinition>, TableConstraintsInfo)>
+where
+    F: Fn(&ObjectName) -> (String, String),
+{
+    let column_names: HashSet<String> = create
+        .columns
+        .iter()
+        .map(|col| col.name.value.to_lowercase())
+        .collect();
+    let mut column_defs = Vec::new();
+    let mut constraints = TableConstraintsInfo::default();
+    let mut inline_pk_columns = Vec::new();
+    let mut named_pk_columns: Option<Vec<String>> = None;
+    let mut auto_constraint_counter = 0usize;
+
+    for col in &create.columns {
+        let col_type =
+            ColumnType::from_sql_type(&col.data_type).map_err(|e| user_error(e.to_string()))?;
+        let mut nullable = true;
+        let mut is_pk = false;
+        let col_name = col.name.value.clone();
+
+        for opt in &col.options {
+            match &opt.option {
+                ColumnOption::Unique { is_primary, .. } if *is_primary => {
+                    inline_pk_columns.push(col_name.clone());
+                    is_pk = true;
+                    nullable = false;
+                }
+                ColumnOption::Unique { is_primary, .. } if !is_primary => {
+                    constraints.unique_constraints.push(UniqueConstraintInfo {
+                        name: format!("uq_{}_{}_{}", table_name, col_name, auto_constraint_counter),
+                        columns: vec![col_name.clone()],
+                    });
+                    auto_constraint_counter += 1;
+                }
+                ColumnOption::NotNull => nullable = false,
+                ColumnOption::Null => nullable = true,
+                ColumnOption::Default(expr) => {
+                    validate_supported_default_expr(expr)?;
+                    constraints
+                        .defaults
+                        .insert(col_name.clone(), expr.to_string());
+                }
+                ColumnOption::Check(expr) => {
+                    validate_supported_check_expr(expr, &column_names)?;
+                    constraints.check_constraints.push(CheckConstraintInfo {
+                        name: format!("ck_{}_{}_{}", table_name, col_name, auto_constraint_counter),
+                        expr_sql: expr.to_string(),
+                    });
+                    auto_constraint_counter += 1;
+                }
+                ColumnOption::ForeignKey {
+                    foreign_table,
+                    referred_columns,
+                    on_delete,
+                    on_update,
+                    ..
+                } => {
+                    let (ref_db_name, ref_table_name) = resolve_table_name(foreign_table);
+                    validate_supported_foreign_key_actions(on_delete, on_update)?;
+                    constraints.foreign_keys.push(ForeignKeyConstraintInfo {
+                        name: format!("fk_{}_{}_{}", table_name, col_name, auto_constraint_counter),
+                        columns: vec![col_name.clone()],
+                        ref_db_name: Some(ref_db_name),
+                        ref_table_name,
+                        ref_columns: referred_columns
+                            .iter()
+                            .map(|ident| ident.value.clone())
+                            .collect(),
+                        on_delete: fk_action_to_string(on_delete),
+                        on_update: fk_action_to_string(on_update),
+                    });
+                    auto_constraint_counter += 1;
+                }
+                _ => {}
+            }
+        }
+
+        column_defs.push(ColumnDefinition {
+            name: col_name,
+            data_type: col_type.as_str(),
+            nullable,
+            is_pk,
+        });
+    }
+
+    for constraint in &create.constraints {
+        match constraint {
+            TableConstraint::PrimaryKey { columns, name, .. } => {
+                let cols: Vec<String> = columns.iter().map(|ident| ident.value.clone()).collect();
+                named_pk_columns = Some(cols.clone());
+                if constraints.primary_key_columns.is_empty() {
+                    constraints.primary_key_columns = cols;
+                } else {
+                    return Err(user_error(
+                        "multiple PRIMARY KEY definitions are not supported".to_string(),
+                    ));
+                }
+                if let Some(name) = name {
+                    auto_constraint_counter += name.value.len();
+                }
+            }
+            TableConstraint::Unique { columns, name, .. } => {
+                constraints.unique_constraints.push(UniqueConstraintInfo {
+                    name: name.as_ref().map(|n| n.value.clone()).unwrap_or_else(|| {
+                        format!("uq_{}_{}", table_name, auto_constraint_counter)
+                    }),
+                    columns: columns.iter().map(|ident| ident.value.clone()).collect(),
+                });
+                auto_constraint_counter += 1;
+            }
+            TableConstraint::ForeignKey {
+                columns,
+                foreign_table,
+                referred_columns,
+                on_delete,
+                on_update,
+                name,
+                ..
+            } => {
+                let (ref_db_name, ref_table_name) = resolve_table_name(foreign_table);
+                validate_supported_foreign_key_actions(on_delete, on_update)?;
+                constraints.foreign_keys.push(ForeignKeyConstraintInfo {
+                    name: name.as_ref().map(|n| n.value.clone()).unwrap_or_else(|| {
+                        format!("fk_{}_{}", table_name, auto_constraint_counter)
+                    }),
+                    columns: columns.iter().map(|ident| ident.value.clone()).collect(),
+                    ref_db_name: Some(ref_db_name),
+                    ref_table_name,
+                    ref_columns: referred_columns
+                        .iter()
+                        .map(|ident| ident.value.clone())
+                        .collect(),
+                    on_delete: fk_action_to_string(on_delete),
+                    on_update: fk_action_to_string(on_update),
+                });
+                auto_constraint_counter += 1;
+            }
+            TableConstraint::Check { expr, name, .. } => {
+                validate_supported_check_expr(expr, &column_names)?;
+                constraints.check_constraints.push(CheckConstraintInfo {
+                    name: name.as_ref().map(|n| n.value.clone()).unwrap_or_else(|| {
+                        format!("ck_{}_{}", table_name, auto_constraint_counter)
+                    }),
+                    expr_sql: expr.to_string(),
+                });
+                auto_constraint_counter += 1;
+            }
+            other => {
+                return Err(user_error(format!(
+                    "table constraint {:?} is not supported in the current Phase 4 subset",
+                    other
+                )))
+            }
+        }
+    }
+
+    if constraints.primary_key_columns.is_empty() {
+        constraints.primary_key_columns = inline_pk_columns.clone();
+    } else if !inline_pk_columns.is_empty() {
+        let explicit = named_pk_columns.unwrap_or_default();
+        if explicit != inline_pk_columns {
+            return Err(user_error(
+                "conflicting inline and table-level PRIMARY KEY definitions are not supported"
+                    .to_string(),
+            ));
+        }
+    }
+
+    if constraints.primary_key_columns.is_empty() {
+        return Err(user_error(
+            "table must have at least one PRIMARY KEY column".to_string(),
+        ));
+    }
+
+    for pk_col in &constraints.primary_key_columns {
+        let Some(col) = column_defs.iter_mut().find(|col| col.name == *pk_col) else {
+            return Err(user_error(format!(
+                "PRIMARY KEY column '{}' does not exist",
+                pk_col
+            )));
+        };
+        col.is_pk = true;
+        col.nullable = false;
+    }
+
+    for unique in &constraints.unique_constraints {
+        for col_name in &unique.columns {
+            if !column_defs.iter().any(|col| col.name == *col_name) {
+                return Err(user_error(format!(
+                    "UNIQUE constraint column '{}' does not exist",
+                    col_name
+                )));
+            }
+        }
+    }
+
+    for foreign_key in &constraints.foreign_keys {
+        if foreign_key.columns.len() != foreign_key.ref_columns.len() {
+            return Err(user_error(format!(
+                "FOREIGN KEY '{}' source/target column count mismatch",
+                foreign_key.name
+            )));
+        }
+        for col_name in &foreign_key.columns {
+            if !column_defs.iter().any(|col| col.name == *col_name) {
+                return Err(user_error(format!(
+                    "FOREIGN KEY column '{}' does not exist",
+                    col_name
+                )));
+            }
+        }
+        if foreign_key.ref_columns.is_empty() {
+            return Err(user_error(format!(
+                "FOREIGN KEY '{}' must reference explicit columns",
+                foreign_key.name
+            )));
+        }
+        if foreign_key
+            .ref_db_name
+            .as_deref()
+            .is_some_and(|ref_db| ref_db != db_name)
+        {
+            return Err(user_error(
+                "cross-database FOREIGN KEY references are not supported in the current Phase 4 subset"
+                    .to_string(),
+            ));
+        }
+    }
+
+    Ok((column_defs, constraints))
+}
+
+fn validate_supported_foreign_key_actions(
+    on_delete: &Option<sqlparser::ast::ReferentialAction>,
+    on_update: &Option<sqlparser::ast::ReferentialAction>,
+) -> PgWireResult<()> {
+    for (label, action) in [("ON DELETE", on_delete), ("ON UPDATE", on_update)] {
+        if let Some(action) = action {
+            if !matches!(
+                action,
+                sqlparser::ast::ReferentialAction::NoAction
+                    | sqlparser::ast::ReferentialAction::Restrict
+            ) {
+                return Err(user_error(format!(
+                    "{} {} is not supported in the current Phase 4 subset",
+                    label, action
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fk_action_to_string(action: &Option<sqlparser::ast::ReferentialAction>) -> String {
+    action
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "NO ACTION".to_string())
+}
+
+fn validate_supported_default_expr(expr: &Expr) -> PgWireResult<()> {
+    validate_phase4_expression(expr, &HashSet::new(), false)
+}
+
+fn validate_supported_check_expr(expr: &Expr, column_names: &HashSet<String>) -> PgWireResult<()> {
+    validate_phase4_expression(expr, column_names, true)
+}
+
+fn validate_phase4_expression(
+    expr: &Expr,
+    column_names: &HashSet<String>,
+    allow_identifiers: bool,
+) -> PgWireResult<()> {
+    match expr {
+        Expr::Identifier(ident) => {
+            if !allow_identifiers {
+                return Err(user_error(
+                    "DEFAULT expressions cannot reference columns".to_string(),
+                ));
+            }
+            if !column_names.contains(&ident.value.to_lowercase()) {
+                return Err(user_error(format!(
+                    "expression references unknown column '{}'",
+                    ident.value
+                )));
+            }
+            Ok(())
+        }
+        Expr::CompoundIdentifier(_) => Err(user_error(
+            "qualified identifiers are not supported in the current Phase 4 expression subset"
+                .to_string(),
+        )),
+        Expr::Value(_)
+        | Expr::TypedString { .. }
+        | Expr::IsNull(_)
+        | Expr::IsNotNull(_)
+        | Expr::Like { .. } => validate_child_expressions(expr, column_names, allow_identifiers),
+        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            validate_phase4_expression(left, column_names, allow_identifiers)?;
+            validate_phase4_expression(right, column_names, allow_identifiers)
+        }
+        Expr::Nested(inner) => validate_phase4_expression(inner, column_names, allow_identifiers),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)?;
+            validate_phase4_expression(low, column_names, allow_identifiers)?;
+            validate_phase4_expression(high, column_names, allow_identifiers)
+        }
+        Expr::InList { expr, list, .. } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)?;
+            for item in list {
+                validate_phase4_expression(item, column_names, allow_identifiers)?;
+            }
+            Ok(())
+        }
+        Expr::Function(f) => {
+            validate_supported_phase4_function(f)?;
+            match &f.args {
+                FunctionArguments::List(list) => {
+                    for arg in &list.args {
+                        match arg {
+                            FunctionArg::Named { arg, .. }
+                            | FunctionArg::ExprNamed { arg, .. }
+                            | FunctionArg::Unnamed(arg) => match arg {
+                                FunctionArgExpr::Expr(inner) => {
+                                    validate_phase4_expression(
+                                        inner,
+                                        column_names,
+                                        allow_identifiers,
+                                    )?;
+                                }
+                                FunctionArgExpr::Wildcard => {}
+                                FunctionArgExpr::QualifiedWildcard(_) => {
+                                    return Err(user_error(
+                                        "qualified wildcards are not supported in the current Phase 4 expression subset"
+                                            .to_string(),
+                                    ));
+                                }
+                            },
+                        }
+                    }
+                    Ok(())
+                }
+                _ => Err(user_error(
+                    "unsupported function argument list in the current Phase 4 expression subset"
+                        .to_string(),
+                )),
+            }
+        }
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)?;
+            if let Some(inner) = substring_from {
+                validate_phase4_expression(inner, column_names, allow_identifiers)?;
+            }
+            if let Some(inner) = substring_for {
+                validate_phase4_expression(inner, column_names, allow_identifiers)?;
+            }
+            Ok(())
+        }
+        Expr::Trim {
+            expr,
+            trim_what,
+            trim_characters,
+            ..
+        } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)?;
+            if let Some(inner) = trim_what {
+                validate_phase4_expression(inner, column_names, allow_identifiers)?;
+            }
+            if let Some(groups) = trim_characters {
+                for group in groups {
+                    validate_phase4_expression(group, column_names, allow_identifiers)?;
+                }
+            }
+            Ok(())
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
+            if let Some(inner) = operand {
+                validate_phase4_expression(inner, column_names, allow_identifiers)?;
+            }
+            for condition in conditions {
+                validate_phase4_expression(condition, column_names, allow_identifiers)?;
+            }
+            for result in results {
+                validate_phase4_expression(result, column_names, allow_identifiers)?;
+            }
+            if let Some(inner) = else_result {
+                validate_phase4_expression(inner, column_names, allow_identifiers)?;
+            }
+            Ok(())
+        }
+        Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => Err(user_error(
+            "subqueries are not supported in the current Phase 4 expression subset".to_string(),
+        )),
+        _ => Err(user_error(format!(
+            "expression '{}' is not supported in the current Phase 4 subset",
+            expr
+        ))),
+    }
+}
+
+fn validate_child_expressions(
+    expr: &Expr,
+    column_names: &HashSet<String>,
+    allow_identifiers: bool,
+) -> PgWireResult<()> {
+    match expr {
+        Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            validate_phase4_expression(inner, column_names, allow_identifiers)
+        }
+        Expr::Like { expr, pattern, .. } => {
+            validate_phase4_expression(expr, column_names, allow_identifiers)?;
+            validate_phase4_expression(pattern, column_names, allow_identifiers)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_supported_phase4_function(function: &Function) -> PgWireResult<()> {
+    let name = function.name.to_string().to_uppercase();
+    if is_aggregate_function_name(&name) {
+        return Err(user_error(
+            "aggregate functions are not supported in DEFAULT/CHECK expressions".to_string(),
+        ));
+    }
+    if matches!(
+        name.as_str(),
+        "LOWER"
+            | "UPPER"
+            | "LENGTH"
+            | "TRIM"
+            | "SUBSTRING"
+            | "CONCAT"
+            | "COALESCE"
+            | "NULLIF"
+            | "NOW"
+    ) {
+        return Ok(());
+    }
+    Err(user_error(format!(
+        "function '{}' is not supported in the current Phase 4 expression subset",
+        function.name
+    )))
+}
+
 /// Check if projection is exactly COUNT(*) with no other expressions.
 fn is_count_star_only(items: &[SelectItem]) -> bool {
     if items.len() != 1 {
@@ -4568,7 +5126,9 @@ fn resolve_window_spec_for_validation<'a>(
                 sqlparser::ast::NamedWindowExpr::NamedWindow(_) => None,
             })
             .ok_or_else(|| user_error(format!("unknown named WINDOW '{}'", name.value))),
-        None => Err(user_error("window functions are not supported yet".to_string())),
+        None => Err(user_error(
+            "window functions are not supported yet".to_string(),
+        )),
     }
 }
 
@@ -4726,7 +5286,8 @@ fn group_by_exprs(group_by: &sqlparser::ast::GroupByExpr) -> Vec<Expr> {
 fn lookup_materialized_aggregate_value(expr: &Expr, row: &Row) -> Option<TypedValue> {
     match expr {
         Expr::Function(function)
-            if function.over.is_none() && is_aggregate_function_name(&function.name.to_string()) =>
+            if function.over.is_none()
+                && is_aggregate_function_name(&function.name.to_string()) =>
         {
             Some(lookup_row_value(row, &expr.to_string().to_lowercase()))
         }
@@ -4744,7 +5305,10 @@ fn mirror_aggregate_lookup_names(projection: &[SelectItem], row: &mut Row) {
             if function.over.is_none() && is_aggregate_function_name(&function.name.to_string()) {
                 let alias_key = alias.value.to_lowercase();
                 if row.contains_key(&alias_key) {
-                    row.insert(function.to_string().to_lowercase(), lookup_row_value(row, &alias_key));
+                    row.insert(
+                        function.to_string().to_lowercase(),
+                        lookup_row_value(row, &alias_key),
+                    );
                 }
             }
         }
@@ -5075,7 +5639,9 @@ fn count_cte_references_in_select(select: &sqlparser::ast::Select, cte_name: &st
     select
         .from
         .iter()
-        .map(|table_with_joins| count_cte_references_in_table_with_joins(table_with_joins, cte_name))
+        .map(|table_with_joins| {
+            count_cte_references_in_table_with_joins(table_with_joins, cte_name)
+        })
         .sum()
 }
 
@@ -5752,13 +6318,8 @@ fn compute_window_function_values(
                     )
                 })?;
                 for (position, row_idx) in partition.iter().enumerate() {
-                    let frame_rows = frame_rows_for_position(
-                        rows,
-                        &partition,
-                        position,
-                        frame,
-                        schema_cols,
-                    )?;
+                    let frame_rows =
+                        frame_rows_for_position(rows, &partition, position, frame, schema_cols)?;
                     values[*row_idx] = compute_single_aggregate_expr(
                         &name,
                         arg_expr.as_ref(),
@@ -5801,7 +6362,9 @@ fn resolve_window_spec(
                 )),
             }
         }
-        None => Err(user_error("window functions are not supported yet".to_string())),
+        None => Err(user_error(
+            "window functions are not supported yet".to_string(),
+        )),
     }
 }
 
@@ -5815,7 +6378,9 @@ fn build_window_partitions(
         let key = window_spec
             .partition_by
             .iter()
-            .map(|expr| typed_value_to_group_key(&resolve_window_expr_value(expr, row, schema_cols)))
+            .map(|expr| {
+                typed_value_to_group_key(&resolve_window_expr_value(expr, row, schema_cols))
+            })
             .collect::<Vec<_>>();
         partitions.entry(key).or_default().push(idx);
     }
@@ -5838,10 +6403,10 @@ fn compare_window_order_rows(
     schema_cols: &[ColumnInfo],
 ) -> std::cmp::Ordering {
     for order_expr in order_by {
-        let mut cmp = resolve_window_expr_value(&order_expr.expr, &rows[left_idx], schema_cols)
-            .cmp_order(
-            &resolve_window_expr_value(&order_expr.expr, &rows[right_idx], schema_cols),
-        );
+        let mut cmp =
+            resolve_window_expr_value(&order_expr.expr, &rows[left_idx], schema_cols).cmp_order(
+                &resolve_window_expr_value(&order_expr.expr, &rows[right_idx], schema_cols),
+            );
         if order_expr.asc == Some(false) {
             cmp = cmp.reverse();
         }
@@ -5852,9 +6417,7 @@ fn compare_window_order_rows(
     left_idx.cmp(&right_idx)
 }
 
-fn validate_supported_window_frame(
-    frame: &sqlparser::ast::WindowFrame,
-) -> PgWireResult<()> {
+fn validate_supported_window_frame(frame: &sqlparser::ast::WindowFrame) -> PgWireResult<()> {
     if !matches!(frame.units, sqlparser::ast::WindowFrameUnits::Rows) {
         let kind = match frame.units {
             sqlparser::ast::WindowFrameUnits::Range => "RANGE",
@@ -5874,9 +6437,7 @@ fn validate_supported_window_frame(
     Ok(())
 }
 
-fn validate_window_frame_bound(
-    bound: &sqlparser::ast::WindowFrameBound,
-) -> PgWireResult<()> {
+fn validate_window_frame_bound(bound: &sqlparser::ast::WindowFrameBound) -> PgWireResult<()> {
     match bound {
         sqlparser::ast::WindowFrameBound::CurrentRow
         | sqlparser::ast::WindowFrameBound::Preceding(None)
