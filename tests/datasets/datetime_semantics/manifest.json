@@ -1,0 +1,9 @@
+{
+  "name": "datetime_semantics",
+  "database": "datetime_semantics",
+  "description": "Phase 5 fixture for practical DATE/TIMESTAMP/TIME semantics and EXTRACT coverage.",
+  "purpose": "Validate typed temporal comparisons, ordering, casts, and a narrow practical EXTRACT subset.",
+  "tables": ["events"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

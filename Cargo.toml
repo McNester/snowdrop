@@ -37,3 +37,4 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 serde_json = "1"
+rust_decimal = "1.42"

@@ -1,0 +1,5 @@
+{
+  "name": "exact_decimal_aggregates",
+  "sql": "SELECT SUM(amount), AVG(fee) FROM ledger WHERE category = 'retail';",
+  "expected_rows": [["0.30", "1.6875"]]
+}

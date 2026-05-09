@@ -1,0 +1,5 @@
+{
+  "name": "catalog_introspection",
+  "description": "PostgreSQL-style regression coverage for Phase 5 information_schema constraint introspection.",
+  "dataset": "catalog_introspection"
+}

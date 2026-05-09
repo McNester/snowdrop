@@ -100,21 +100,22 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
-| Scalar expressions | Arithmetic `+ - * / %` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:127). |
+| Scalar expressions | Arithmetic `+ - * / %` | Partial | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:127). Phase 5 has started tightening `DECIMAL` / `NUMERIC` arithmetic so exact-decimal paths no longer immediately degrade into loose float behavior, but the wider type-semantics and fast-path surface still needs follow-up hardening. |
 | Scalar expressions | `CASE WHEN` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:183). |
 | Scalar expressions | window functions | Partial | Phase 3.5 now includes a broader practical relation-level window slice: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, partition aggregate windows (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`), named `WINDOW` references, ordered aggregate windows with explicit `ROWS` frames, and grouped/window coexistence over post-aggregate relation results. `RANGE` / `GROUPS` frames, `FILTER (...) OVER (...)`, nested windows, named-window inheritance/override, and the wider PostgreSQL window surface remain explicitly unsupported. |
 | Scalar functions | `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTRING`, `CONCAT` | Supported | Implemented in the row and `RowView` expression evaluators in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) and covered by the `scalar_functions` dataset. |
 | Null helpers | `COALESCE`, `NULLIF` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs) with fixed-dataset coverage in `tests/datasets/scalar_functions/`. |
-| Conversion | `CAST` and PostgreSQL-style casts | Partial | `CAST(...)` and `::` work for the current Phase 2 target set: text, integer, float, boolean, and string-backed date/time targets, with unsupported target types rejected up front in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs) and runtime conversion in [executor/src/typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs). |
-| Date/time functions | `NOW()`, `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP` | Partial | Basic helpers now evaluate as text-returning scalar expressions in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs), but richer date/time operators like `EXTRACT`, truncation, and interval arithmetic are still absent. |
-| Date/time functions | `EXTRACT`, truncation helpers, interval-aware scalar logic | Not Supported | No dedicated scalar date/time operator layer exists beyond the basic Phase 2 helpers. |
+| Conversion | `CAST` and PostgreSQL-style casts | Partial | `CAST(...)` and `::` work for the current Phase 2 target set, and Phase 5 now preserves exact `DECIMAL` / `NUMERIC` values plus practical `DATE` / `TIMESTAMP` / `TIME` casts as typed runtime values instead of immediately collapsing them to float-only or text-only behavior. Unsupported target types are still rejected up front in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs) and runtime conversion still lives in [executor/src/typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs). |
+| Date/time functions | `NOW()`, `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP` | Partial | Phase 5 now evaluates the basic helpers as typed runtime `DATE` / `TIMESTAMP` / `TIME` values in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs), but truncation helpers and interval arithmetic are still absent. |
+| Date/time functions | `EXTRACT` | Partial | Phase 5 now supports a practical subset in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs): `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `DOW`, `ISODOW`, `DOY`, `QUARTER`, and ISO-style `WEEK`. Timezone-oriented fields, `WEEK(<weekday>)`, truncation helpers, and interval-aware scalar logic remain unsupported. |
+| Date/time functions | truncation helpers, interval-aware scalar logic | Not Supported | No dedicated scalar truncation or interval operator layer exists yet. |
 | Columnar fast path | Arithmetic-only scalar expressions | Partial | Fast columnar evaluation supports a restricted expression subset in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2570). |
 
 ## Schema and Type Support
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
-| Types | `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL`, `NUMERIC`, `CHAR`, `VARCHAR`, `TEXT`, `DATE`, `DATETIME`, `TIMESTAMP`, `BOOLEAN` | Supported | Declared in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:5). |
+| Types | `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL`, `NUMERIC`, `CHAR`, `VARCHAR`, `TEXT`, `DATE`, `DATETIME`, `TIMESTAMP`, `BOOLEAN` | Partial | Declared in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:5). Phase 5 now preserves exact `DECIMAL` / `NUMERIC` semantics and a practical typed `DATE` / `TIMESTAMP` / `TIME` runtime slice, but broader temporal behavior and catalog-facing compatibility are still in progress. |
 | Types | `JSON`, `ENUM`, `SET`, `BLOB`, `BINARY`, `VARBINARY`, `BYTEA` | Not Supported | Excluded in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:27). |
 | Primary key | Single-column PK | Supported | Supported throughout table creation and write-path enforcement. |
 | Primary key | Composite PK | Partial | Phase 4 now supports multi-column primary keys at DDL time and in write-path uniqueness enforcement. Broader downstream semantics and richer referencing behavior still remain narrower than PostgreSQL. |
@@ -131,8 +132,8 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Area | Feature | Status | Notes |
 |---|---|---|---|
 | Introspection | `SHOW DATABASES`, `SHOW TABLES`, `DESCRIBE`, `\\d` | Supported | Routed manually in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:166). |
-| Introspection | `INFORMATION_SCHEMA.TABLES`, `INFORMATION_SCHEMA.COLUMNS` | Partial | Only targeted handlers are implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:271). |
-| PostgreSQL catalogs | `pg_catalog` compatibility | Not Supported | There is no real pg_catalog emulation layer yet. |
+| Introspection | `INFORMATION_SCHEMA.TABLES`, `INFORMATION_SCHEMA.COLUMNS`, `INFORMATION_SCHEMA.TABLE_CONSTRAINTS`, `INFORMATION_SCHEMA.KEY_COLUMN_USAGE`, `INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` | Partial | Targeted handlers now cover the core table/column/constraint introspection paths in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:271) and [schema/src/ddl.rs](/e:/snowdrop-1/schema/src/ddl.rs:894), but broader `information_schema` parity and general query-shape support are still pending. |
+| PostgreSQL catalogs | `pg_catalog` compatibility | Not Supported | There is no real pg_catalog emulation layer yet; this remains a core Phase 5 target. |
 | Protocol | PostgreSQL wire protocol (`pgwire`) | Supported | Snowdrop is reachable through the pgwire server in [orchestrator/src/pgwire_handler.rs](/e:/snowdrop-1/orchestrator/src/pgwire_handler.rs:87). |
 
 ## Practical Conclusion

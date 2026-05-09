@@ -1,0 +1,24 @@
+{
+  "name": "numeric_precision",
+  "dataset": "numeric_precision",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "exact decimal arithmetic",
+      "sql": "SELECT amount + 0.20 FROM ledger WHERE id = 1;",
+      "expected_rows": [["0.30"]]
+    },
+    {
+      "kind": "sql",
+      "name": "exact decimal predicate",
+      "sql": "SELECT id FROM ledger WHERE amount + 0.20 = 0.30 ORDER BY id;",
+      "expected_rows": [["1"]]
+    },
+    {
+      "kind": "sql",
+      "name": "exact decimal aggregates",
+      "sql": "SELECT SUM(amount), AVG(fee) FROM ledger WHERE category = 'retail';",
+      "expected_rows": [["0.30", "1.6875"]]
+    }
+  ]
+}

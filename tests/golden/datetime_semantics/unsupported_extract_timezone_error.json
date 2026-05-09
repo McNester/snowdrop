@@ -1,0 +1,5 @@
+{
+  "name": "unsupported_extract_timezone_error",
+  "sql": "SELECT EXTRACT(TIMEZONE FROM event_at) FROM events;",
+  "expected_error": "EXTRACT(TIMEZONE) is not supported yet"
+}

@@ -1,0 +1,4 @@
+{
+  "name": "exact_decimal_aggregates",
+  "sql": "SELECT SUM(amount), AVG(fee) FROM ledger WHERE category = 'retail';"
+}

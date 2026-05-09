@@ -1,0 +1,5 @@
+{
+  "name": "numeric_precision",
+  "description": "PostgreSQL-style regression coverage for exact DECIMAL/NUMERIC semantics.",
+  "dataset": "numeric_precision"
+}

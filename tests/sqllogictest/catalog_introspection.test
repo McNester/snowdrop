@@ -1,0 +1,45 @@
+# dataset: catalog_introspection
+
+query T
+SELECT table_catalog, table_schema, table_name, column_name, ordinal_position, constraint_name FROM information_schema.key_column_usage WHERE table_schema = 'public' AND table_name IN ('accounts', 'parent_accounts') ORDER BY table_name, constraint_name, ordinal_position;
+----
+catalog_introspection public accounts parent_id 1 accounts_parent_fkey
+catalog_introspection public accounts id 1 accounts_pkey
+catalog_introspection public accounts tenant_id 1 accounts_tenant_email_key
+catalog_introspection public accounts email 2 accounts_tenant_email_key
+catalog_introspection public parent_accounts id 1 parent_accounts_pkey
+
+query T
+SELECT schemaname, tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename;
+----
+public accounts
+public parent_accounts
+
+query T
+SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY c.relname;
+----
+public accounts r
+public parent_accounts r
+
+query T
+SELECT a.attname, t.typname FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE n.nspname = 'public' AND c.relname = 'accounts' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum;
+----
+id int8
+tenant_id int8
+email varchar
+parent_id int8
+balance int8
+
+query T
+SELECT con.conname, con.contype
+FROM pg_catalog.pg_constraint con
+LEFT JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND con.conrelid <> 0
+ORDER BY con.conname;
+----
+accounts_balance_check c
+accounts_parent_fkey f
+accounts_pkey p
+accounts_tenant_email_key u
+parent_accounts_pkey p

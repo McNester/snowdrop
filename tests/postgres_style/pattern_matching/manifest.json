@@ -1,0 +1,5 @@
+{
+  "name": "pattern_matching",
+  "dataset": "pattern_matching",
+  "description": "PostgreSQL-style regression coverage for Phase 5 LIKE and ILIKE semantics."
+}
