@@ -57,7 +57,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Update | `UPDATE ... SET ... WHERE ...` | Partial | Works, but write-path `WHERE` is limited to simple equality via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
 | Delete | `DELETE ... WHERE ...` | Partial | Same simple `WHERE` restriction as `UPDATE`. |
 | Select | Basic `SELECT ... FROM ...` | Supported | The top-level `SELECT` entrypoint now dispatches either to the shared relation execution API or to the optimized simple-table storage path in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs), depending on the query shape. |
-| Select | `SELECT` without `FROM` | Not Supported | Rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:668). |
+| Select | `SELECT` without `FROM` | Partial | Phase 6.5 now supports a narrow scalar subset through the relation projection path, including constant projections such as `SELECT 1`. Broader expression coverage remains intentionally conservative until more no-source relation cases are regression-tested. |
 | Compound queries | `UNION ALL`, `UNION` | Supported | Compound relation execution now flows through the internal relation pipeline in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs), including relation-level `ORDER BY` and `LIMIT` over compound outputs, plus explicit column-count and type-compatibility mismatch errors. |
 | Compound queries | `INTERSECT`, `EXCEPT` | Partial | Phase 3.5 now supports distinct `INTERSECT` and `EXCEPT` through the relation-level compound-query pipeline. `INTERSECT ALL` and `EXCEPT ALL` remain explicitly unsupported. |
 | CTEs | non-recursive `WITH ...` | Supported | Non-recursive CTEs are loaded into relation context and can be referenced anywhere the current Phase 3 subset accepts a table-like source. |
@@ -72,7 +72,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Filtering | `AND`, `OR`, `NOT` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:53). |
 | Filtering | `IS NULL`, `IS NOT NULL` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:16). |
 | Filtering | `BETWEEN`, `IN (...)`, `LIKE` | Supported | Implemented in [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:23), [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:31), and [executor/src/filter.rs](/e:/snowdrop-1/executor/src/filter.rs:39). |
-| Filtering | `ILIKE`, regex, advanced pattern matching | Not Supported | `LIKE` is intentionally simplified in [typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs:116). |
+| Filtering | `ILIKE` and practical `LIKE` wildcards / `ESCAPE` | Partial | Phase 5 now supports `%`, `_`, `ESCAPE`, and case-insensitive `ILIKE` in [executor/src/typed_value.rs](/e:/snowdrop-1/executor/src/typed_value.rs). Regex operators and broader PostgreSQL text-pattern semantics remain unsupported. |
 | Ordering | `ORDER BY column` | Supported | Core row sort logic is in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2228). |
 | Ordering | `ORDER BY expression` | Partial | Relation-level sorting now evaluates general expressions after subqueries, CTEs, derived tables, and `UNION` results through the relation pipeline, but it is still a materialized-row path rather than a planner/optimizer feature. |
 | Limiting | `LIMIT`, `OFFSET` | Supported | Numeric extraction is implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
@@ -89,12 +89,14 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
-| Join type | `INNER JOIN ... ON` | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:859). |
-| Join type | `LEFT JOIN ... ON` | Supported | Implemented in the same join handler. |
-| Join type | `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN` | Not Supported | Only `INNER ... ON` and `LEFT ... ON` are accepted in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:921). |
-| Join predicate | Equi-join (`=`) | Supported | Extracted in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2803). |
-| Join predicate | Non-equality join predicates | Not Supported | Rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2815). |
-| Join optimization | Predicate pushdown and needed-column pruning | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:884), [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:927), and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:3129). |
+| Join type | `INNER JOIN ... ON` | Partial | Supported in the current table/derived-table relation subset through the shared join execution paths in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs). The `ON` predicate surface is still the practical subset listed below. |
+| Join type | `LEFT JOIN ... ON` | Partial | Supported in the same practical relation subset as `INNER JOIN`, including null-padding over the unmatched right side. |
+| Join type | `RIGHT JOIN ... ON` | Partial | Phase 6.5 now supports right-side null-padding and unmatched-right preservation in the shared join execution paths. `LATERAL` right joins and broader PostgreSQL planner semantics remain out of scope. |
+| Join type | `FULL OUTER JOIN ... ON` | Partial | Phase 6.5 now preserves unmatched rows from both sides with deterministic null-padding in the shared relation-backed join executor. Broader PostgreSQL join-expression parity remains out of scope. |
+| Join type | `CROSS JOIN` | Partial | Phase 6.5 now supports table and supported derived-relation cross products through the shared join execution paths. `NATURAL JOIN` / `USING` are still unsupported. |
+| Join predicate | Equi-join (`=`) | Partial | Only column-to-column equality predicates are supported, optionally combined with `AND`, in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:8224). |
+| Join predicate | Non-equality join predicates | Not Supported | Broader `ON` expressions are rejected in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:8224). |
+| Join optimization | Predicate pushdown and needed-column pruning | Partial | Needed-column pruning remains in place across the current join subset. Predicate pushdown is still intentionally conservative and does not claim full PostgreSQL outer-join rewrite safety. |
 
 ## Expressions and Functions
 
@@ -115,7 +117,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
-| Types | `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL`, `NUMERIC`, `CHAR`, `VARCHAR`, `TEXT`, `DATE`, `DATETIME`, `TIMESTAMP`, `BOOLEAN` | Partial | Declared in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:5). Phase 5 now preserves exact `DECIMAL` / `NUMERIC` semantics and a practical typed `DATE` / `TIMESTAMP` / `TIME` runtime slice, but broader temporal behavior and catalog-facing compatibility are still in progress. |
+| Types | `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL`, `NUMERIC`, `CHAR`, `VARCHAR`, `TEXT`, `DATE`, `DATETIME`, `TIMESTAMP`, `BOOLEAN` | Partial | Declared in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:5). Phase 5 now preserves exact `DECIMAL` / `NUMERIC` semantics and a practical typed `DATE` / `TIMESTAMP` / `TIME` runtime slice, but schema-level `TIME`, timezone-aware temporal types, and broader temporal behavior are still in progress. |
 | Types | `JSON`, `ENUM`, `SET`, `BLOB`, `BINARY`, `VARBINARY`, `BYTEA` | Not Supported | Excluded in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:27). |
 | Primary key | Single-column PK | Supported | Supported throughout table creation and write-path enforcement. |
 | Primary key | Composite PK | Partial | Phase 4 now supports multi-column primary keys at DDL time and in write-path uniqueness enforcement. Broader downstream semantics and richer referencing behavior still remain narrower than PostgreSQL. |
@@ -133,7 +135,9 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 |---|---|---|---|
 | Introspection | `SHOW DATABASES`, `SHOW TABLES`, `DESCRIBE`, `\\d` | Supported | Routed manually in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:166). |
 | Introspection | `INFORMATION_SCHEMA.TABLES`, `INFORMATION_SCHEMA.COLUMNS`, `INFORMATION_SCHEMA.TABLE_CONSTRAINTS`, `INFORMATION_SCHEMA.KEY_COLUMN_USAGE`, `INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` | Partial | Targeted handlers now cover the core table/column/constraint introspection paths in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:271) and [schema/src/ddl.rs](/e:/snowdrop-1/schema/src/ddl.rs:894), but broader `information_schema` parity and general query-shape support are still pending. |
-| PostgreSQL catalogs | `pg_catalog` compatibility | Not Supported | There is no real pg_catalog emulation layer yet; this remains a core Phase 5 target. |
+| PostgreSQL catalogs | `pg_catalog` compatibility | Partial | Phase 5 now exposes a narrow practical compatibility layer for common introspection queries over `pg_tables`, `pg_class`, `pg_attribute`, and table-backed `pg_constraint` rows in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs). Broader `pg_catalog` parity remains out of scope. |
+| Migration workflow | `migration-preflight` / `migration-run` | Partial | Phase 6 provides PostgreSQL schema introspection, unsupported/partial feature inventory, safe Snowdrop DDL preview, practical table-by-table loading, and replay of a basic verification-query subset (row counts, ordered samples, numeric aggregates) in [snowdrop-testkit/src/main.rs](/e:/snowdrop-1/snowdrop-testkit/src/main.rs). Broader application-query replay and more advanced orchestration remain pending. |
+| Migration workflow | `migration-auto` | Partial | Phase 6.5 adds a one-command automatic migration path over the safe subset. It can work from a live PostgreSQL database or a checked-in dump directory, fails early on unsafe blockers, writes structured preflight/workflow/automatic-migration artifacts, and only proceeds when the translated subset is considered safe. |
 | Protocol | PostgreSQL wire protocol (`pgwire`) | Supported | Snowdrop is reachable through the pgwire server in [orchestrator/src/pgwire_handler.rs](/e:/snowdrop-1/orchestrator/src/pgwire_handler.rs:87). |
 
 ## Practical Conclusion
@@ -146,7 +150,7 @@ Snowdrop already has a meaningful analytical SQL subset:
 - `GROUP BY`
 - `ORDER BY`
 - `LIMIT/OFFSET`
-- `INNER` and `LEFT` equi-joins
+- `INNER`, `LEFT`, `RIGHT`, `FULL OUTER`, and `CROSS` joins inside the current equi-join subset
 - the five core aggregate functions
 
 But it is not yet a PostgreSQL-compatible application substrate.

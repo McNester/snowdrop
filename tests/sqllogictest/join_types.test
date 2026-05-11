@@ -1,0 +1,43 @@
+# dataset: join_edge_cases
+
+query T
+SELECT c.name, tc.label FROM customers c CROSS JOIN ticket_classes tc ORDER BY c.name, tc.label;
+----
+Alice std
+Alice vip
+Bob std
+Bob vip
+Cara std
+Cara vip
+
+query T
+SELECT o.id, c.name, o.amount FROM customers c RIGHT JOIN orders o ON c.id = o.customer_id ORDER BY o.id;
+----
+10 Alice 10
+11 Alice 20
+12 Bob 5
+13 NULL 99
+
+query T
+SELECT COALESCE(c.name, 'orphan') AS customer_name, COALESCE(CAST(o.id AS TEXT), 'none') AS order_id
+FROM customers c
+FULL OUTER JOIN orders o ON c.id = o.customer_id
+ORDER BY customer_name, order_id;
+----
+Alice 10
+Alice 11
+Bob 12
+Cara none
+orphan 13
+
+query T
+SELECT c.name AS bucket, COUNT(o.id) AS order_count
+FROM customers c
+FULL OUTER JOIN orders o ON c.id = o.customer_id
+GROUP BY c.name
+ORDER BY bucket;
+----
+Alice 2
+Bob 1
+Cara 0
+NULL 1

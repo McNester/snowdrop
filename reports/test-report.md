@@ -1,6 +1,6 @@
 # Snowdrop Test Report
 
-Generated at: `2026-05-09T17:26:55.212303468+00:00`
+Generated at: `2026-05-11T04:50:30.682802164+00:00`
 
 ## Environment
 
@@ -27,7 +27,7 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | foreign_key_cases | foreign_key_cases | yes | Validate parent/child referential checks, NO ACTION or RESTRICT behavior, and explicit unsupported FK actions. | golden, differential, sqllogictest, tap, postgres_style |
 | having_cases | having_cases | yes | Exercise grouped filtering, aggregate aliases, and ORDER BY expressions on grouped output. | golden, differential, sqllogictest, tap, postgres_style |
 | insert_select_cases | insert_select_cases | yes | Exercise INSERT ... SELECT over grouped, CTE-backed, and ordered relation sources. | golden, differential, sqllogictest, tap, postgres_style |
-| join_edge_cases | join_edge_cases | yes | Exercise join edge behavior for inner and left join semantics. | golden, differential |
+| join_edge_cases | join_edge_cases | yes | Exercise INNER, LEFT, RIGHT, FULL OUTER, and CROSS JOIN behavior for the practical Phase 6.5 subset. | golden, differential, sqllogictest, postgres_style, tap |
 | join_skew | join_skew | yes | Exercise join behavior and simple skew-sensitive aggregations. | golden, differential |
 | lateral_cases | lateral_cases | yes | Validate INNER/LEFT JOIN LATERAL over derived SELECT subqueries and keep narrower unsupported LATERAL forms explicit. | golden, differential, sqllogictest, tap, postgres_style |
 | null_semantics | null_semantics | yes | Exercise NULL semantics in filters, counts, sums, and ordering. | golden, differential, sqllogictest, postgres_style |
@@ -104,8 +104,11 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | postgres-style | 6 | 0 | 0 | 0 |
 | insert_select_cases | sqllogictest | 6 | 0 | 0 | 0 |
 | insert_select_cases | tap | 5 | 0 | 0 | 0 |
-| join_edge_cases | differential | 2 | 0 | 0 | 0 |
-| join_edge_cases | golden | 2 | 0 | 0 | 0 |
+| join_edge_cases | differential | 5 | 0 | 1 | 0 |
+| join_edge_cases | golden | 5 | 0 | 1 | 0 |
+| join_edge_cases | postgres-style | 2 | 0 | 0 | 0 |
+| join_edge_cases | sqllogictest | 3 | 0 | 1 | 0 |
+| join_edge_cases | tap | 2 | 0 | 1 | 0 |
 | join_skew | differential | 1 | 0 | 0 | 0 |
 | join_skew | golden | 1 | 0 | 0 | 0 |
 | lateral_cases | differential | 3 | 0 | 0 | 0 |
@@ -140,8 +143,8 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | recursive_cte_cases | tap | 2 | 0 | 0 | 0 |
 | scalar_functions | differential | 5 | 0 | 0 | 0 |
 | scalar_functions | golden | 10 | 0 | 0 | 0 |
-| scalar_functions | postgres-style | 4 | 0 | 0 | 0 |
-| scalar_functions | sqllogictest | 5 | 0 | 0 | 0 |
+| scalar_functions | postgres-style | 5 | 0 | 0 | 0 |
+| scalar_functions | sqllogictest | 6 | 0 | 0 | 0 |
 | scalar_functions | tap | 4 | 0 | 0 | 0 |
 | schema_constraints | differential | 5 | 0 | 0 | 0 |
 | schema_constraints | golden | 10 | 0 | 0 | 0 |
@@ -246,8 +249,12 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | insert_grouped_customer_totals | insert_grouped_customer_totals | pass | matched expected rows |
 | insert_select_cases | insert_select_mismatch_error | insert_select_mismatch_error | pass | matched expected error |
 | insert_select_cases | insert_select_type_mismatch_error | insert_select_type_mismatch_error | pass | matched expected error |
+| join_edge_cases | cross_join_ticket_classes | cross_join_ticket_classes | pass | matched expected rows |
+| join_edge_cases | full_outer_grouped_counts | full_outer_grouped_counts | mismatch | actual output diverged from expected output |
+| join_edge_cases | full_outer_join_unmatched_both_sides | full_outer_join_unmatched_both_sides | pass | matched expected rows |
 | join_edge_cases | inner_join_duplicates | inner_join_duplicates | pass | matched expected rows |
 | join_edge_cases | left_join_rollup | left_join_rollup | pass | matched expected rows |
+| join_edge_cases | right_join_unmatched_orders | right_join_unmatched_orders | pass | matched expected rows |
 | join_skew | customer_totals | customer_totals | pass | matched expected rows |
 | lateral_cases | inner_join_lateral_latest_paid | inner_join_lateral_latest_paid | pass | matched expected rows |
 | lateral_cases | lateral_on_filter | lateral_on_filter | pass | matched expected rows |
@@ -369,8 +376,12 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | archive_via_cte | archive_via_cte | pass | Snowdrop matched PostgreSQL |
 | insert_select_cases | archive_without_column_list | archive_without_column_list | pass | Snowdrop matched PostgreSQL |
 | insert_select_cases | insert_grouped_customer_totals | insert_grouped_customer_totals | pass | Snowdrop matched PostgreSQL |
+| join_edge_cases | cross_join_ticket_classes | cross_join_ticket_classes | pass | Snowdrop matched PostgreSQL |
+| join_edge_cases | full_outer_grouped_counts | full_outer_grouped_counts | mismatch | actual output diverged from expected output |
+| join_edge_cases | full_outer_join_unmatched_both_sides | full_outer_join_unmatched_both_sides | pass | Snowdrop matched PostgreSQL |
 | join_edge_cases | inner_join_duplicates | inner_join_duplicates | pass | Snowdrop matched PostgreSQL |
 | join_edge_cases | left_join_rollup | left_join_rollup | pass | Snowdrop matched PostgreSQL |
+| join_edge_cases | right_join_unmatched_orders | right_join_unmatched_orders | pass | Snowdrop matched PostgreSQL |
 | join_skew | customer_totals | customer_totals | pass | Snowdrop matched PostgreSQL |
 | lateral_cases | inner_join_lateral_latest_paid | inner_join_lateral_latest_paid | pass | Snowdrop matched PostgreSQL |
 | lateral_cases | lateral_on_filter | lateral_on_filter | pass | Snowdrop matched PostgreSQL |
@@ -464,6 +475,10 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | insert_select_extended.test | command_2 | pass | query matched |
 | insert_select_cases | insert_select_extended.test | command_3 | pass | statement error |
 | insert_select_cases | insert_select_extended.test | command_4 | pass | statement error |
+| join_edge_cases | join_types.test | command_1 | pass | query matched |
+| join_edge_cases | join_types.test | command_2 | pass | query matched |
+| join_edge_cases | join_types.test | command_3 | pass | query matched |
+| join_edge_cases | join_types.test | command_4 | mismatch | actual output diverged from expected output |
 | lateral_cases | lateral.test | command_1 | pass | query matched |
 | lateral_cases | lateral.test | command_2 | pass | query matched |
 | lateral_cases | lateral.test | command_3 | pass | statement error |
@@ -483,9 +498,10 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | recursive_cte_cases | recursive_cte.test | command_4 | pass | statement error |
 | scalar_functions | scalar_functions.test | command_1 | pass | query matched |
 | scalar_functions | scalar_functions.test | command_2 | pass | query matched |
-| scalar_functions | scalar_functions.test | command_3 | pass | statement error |
+| scalar_functions | scalar_functions.test | command_3 | pass | query matched |
 | scalar_functions | scalar_functions.test | command_4 | pass | statement error |
 | scalar_functions | scalar_functions.test | command_5 | pass | statement error |
+| scalar_functions | scalar_functions.test | command_6 | pass | statement error |
 | schema_constraints | schema_constraints.test | command_1 | pass | query matched |
 | schema_constraints | schema_constraints.test | command_2 | pass | query matched |
 | schema_constraints | schema_constraints.test | command_3 | pass | statement error |
@@ -570,6 +586,9 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | insert_select_cases | insert select via cte | pass | sql matched |
 | insert_select_cases | insert_select_cases | insert grouped totals | pass | sql matched |
 | insert_select_cases | insert_select_cases | insert select mismatch | pass | expected error |
+| join_edge_cases | join_edge_cases | cross join ticket classes | pass | sql matched |
+| join_edge_cases | join_edge_cases | right join unmatched orders | pass | sql matched |
+| join_edge_cases | join_edge_cases | full outer grouped counts | mismatch | actual output diverged from expected output |
 | lateral_cases | lateral_cases | inner join lateral latest paid | pass | sql matched |
 | lateral_cases | lateral_cases | left join lateral latest paid | pass | sql matched |
 | lateral_cases | lateral_cases | lateral values unsupported | pass | expected error |
@@ -644,6 +663,8 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | insert_select_cases | insert_select_cases | insert_grouped_customer_totals | pass | matched expected output |
 | insert_select_cases | insert_select_cases | insert_select_mismatch_error | pass | matched expected error |
 | insert_select_cases | insert_select_cases | insert_select_type_mismatch_error | pass | matched expected error |
+| join_edge_cases | join_edge_cases | cross_join_ticket_classes | pass | matched expected output |
+| join_edge_cases | join_edge_cases | full_outer_join_unmatched_both_sides | pass | matched expected output |
 | lateral_cases | lateral_cases | inner_join_lateral_latest_paid | pass | matched expected output |
 | lateral_cases | lateral_cases | lateral_on_filter | pass | matched expected output |
 | lateral_cases | lateral_cases | lateral_values_error | pass | matched expected error |
@@ -662,6 +683,7 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 | recursive_cte_cases | recursive_cte_cases | recursive_union_distinct_error | pass | matched expected error |
 | scalar_functions | scalar_functions | current_date_filter | pass | matched expected output |
 | scalar_functions | scalar_functions | null_helpers | pass | matched expected output |
+| scalar_functions | scalar_functions | select_without_from | pass | matched expected output |
 | scalar_functions | scalar_functions | unsupported_cast_uuid | pass | matched expected error |
 | scalar_functions | scalar_functions | window_function_error | pass | matched expected error |
 | schema_constraints | schema_constraints | add_column_with_default | pass | matched expected output |
@@ -704,8 +726,8 @@ Generated at: `2026-05-09T17:26:55.212303468+00:00`
 
 ## Conclusions
 
-- Total cases: `484`
-- Passed: `484`
+- Total cases: `503`
+- Passed: `499`
 - Failed: `0`
-- Mismatched: `0`
+- Mismatched: `4`
 - Skipped: `0`

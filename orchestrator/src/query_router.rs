@@ -3,9 +3,11 @@ use executor::index::{self, encode_index_value};
 use executor::typed_value::EMPTY_TEXT_SENTINEL;
 use executor::{
     bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate,
-    evaluate_predicate_view, resolve_value, Row, StorageBackend, TypedValue, WriteEngine,
+    evaluate_predicate_view, resolve_value, serialize_columns, Row, StorageBackend, TypedValue,
+    WriteEngine,
 };
 use futures::{future::BoxFuture, stream, FutureExt};
+use keys::table_scan_prefix;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
@@ -70,6 +72,15 @@ struct RelationResult {
     columns: Vec<RelationColumn>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupportedJoinKind {
+    Inner,
+    Left,
+    Right,
+    Full,
+    Cross,
+}
+
 const RECURSIVE_CTE_MAX_ITERATIONS: usize = 128;
 const PG_CATALOG_NAMESPACE_OID: i64 = 11;
 const PUBLIC_NAMESPACE_OID: i64 = 2200;
@@ -102,6 +113,16 @@ impl RelationResult {
     }
 }
 
+impl SupportedJoinKind {
+    fn preserves_left_unmatched(self) -> bool {
+        matches!(self, Self::Left | Self::Full)
+    }
+
+    fn preserves_right_unmatched(self) -> bool {
+        matches!(self, Self::Right | Self::Full)
+    }
+}
+
 fn relation_columns_to_schema_cols(columns: &[RelationColumn]) -> Vec<ColumnInfo> {
     columns
         .iter()
@@ -117,6 +138,99 @@ fn relation_columns_to_schema_cols(columns: &[RelationColumn]) -> Vec<ColumnInfo
             index_name: None,
         })
         .collect()
+}
+
+fn join_operator_supported_kind<'a>(
+    operator: &'a JoinOperator,
+) -> PgWireResult<(SupportedJoinKind, Option<&'a Expr>)> {
+    match operator {
+        JoinOperator::Inner(JoinConstraint::On(expr)) => Ok((SupportedJoinKind::Inner, Some(expr))),
+        JoinOperator::LeftOuter(JoinConstraint::On(expr)) => {
+            Ok((SupportedJoinKind::Left, Some(expr)))
+        }
+        JoinOperator::RightOuter(JoinConstraint::On(expr)) => {
+            Ok((SupportedJoinKind::Right, Some(expr)))
+        }
+        JoinOperator::FullOuter(JoinConstraint::On(expr)) => {
+            Ok((SupportedJoinKind::Full, Some(expr)))
+        }
+        JoinOperator::CrossJoin => Ok((SupportedJoinKind::Cross, None)),
+        _ => Err(user_error(
+            "supported JOIN forms are INNER/LEFT/RIGHT/FULL ... ON and CROSS JOIN".to_string(),
+        )),
+    }
+}
+
+fn join_row_sets(
+    left_rows: &[Row],
+    right_rows: &[Row],
+    left_join_keys: &[String],
+    right_join_keys: &[String],
+    left_column_names: &[String],
+    right_column_names: &[String],
+    join_kind: SupportedJoinKind,
+) -> Vec<Row> {
+    if join_kind == SupportedJoinKind::Cross {
+        let mut rows = Vec::with_capacity(left_rows.len().saturating_mul(right_rows.len()));
+        for left_row in left_rows {
+            for right_row in right_rows {
+                let mut combined = left_row.clone();
+                combined.extend(right_row.clone());
+                rows.push(combined);
+            }
+        }
+        return rows;
+    }
+
+    let mut right_hash: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+    for (idx, row) in right_rows.iter().enumerate() {
+        let key = right_join_keys
+            .iter()
+            .map(|lookup| lookup_row_value(row, lookup).to_string())
+            .collect::<Vec<_>>();
+        right_hash.entry(key).or_default().push(idx);
+    }
+
+    let mut right_matched = vec![false; right_rows.len()];
+    let mut rows = Vec::new();
+
+    for left_row in left_rows {
+        let left_key = left_join_keys
+            .iter()
+            .map(|lookup| lookup_row_value(left_row, lookup).to_string())
+            .collect::<Vec<_>>();
+
+        if let Some(matches) = right_hash.get(&left_key) {
+            for right_idx in matches {
+                right_matched[*right_idx] = true;
+                let mut combined = left_row.clone();
+                combined.extend(right_rows[*right_idx].clone());
+                rows.push(combined);
+            }
+        } else if join_kind.preserves_left_unmatched() {
+            let mut combined = left_row.clone();
+            for name in right_column_names {
+                combined.insert(name.clone(), TypedValue::Null);
+            }
+            rows.push(combined);
+        }
+    }
+
+    if join_kind.preserves_right_unmatched() {
+        for (right_idx, matched) in right_matched.iter().enumerate() {
+            if *matched {
+                continue;
+            }
+            let mut combined = Row::new();
+            for name in left_column_names {
+                combined.insert(name.clone(), TypedValue::Null);
+            }
+            combined.extend(right_rows[right_idx].clone());
+            rows.push(combined);
+        }
+    }
+
+    rows
 }
 
 fn combine_relation_columns(
@@ -528,9 +642,43 @@ impl QueryRouter {
                     .options
                     .iter()
                     .any(|o| matches!(o.option, ColumnOption::NotNull));
+                let default_expr = column_def.options.iter().find_map(|option| {
+                    if let ColumnOption::Default(expr) = &option.option {
+                        Some(expr)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(default_expr) = default_expr {
+                    validate_supported_default_expr(default_expr)?;
+                }
+
+                let db_info = self.cached_get_database(&db_name).await?;
+                let table_info = self.cached_get_table(&db_name, &table_name).await?;
+                let existing_row_count = if let (Some(db), Some(table)) = (&db_info, &table_info) {
+                    self.count_table_rows(db.id, table.id).await?
+                } else {
+                    0
+                };
+                let default_bytes = match default_expr {
+                    Some(expr) => Some(default_expr_to_bytes(&expr.to_string())?),
+                    None => None,
+                };
+                if !nullable
+                    && existing_row_count > 0
+                    && default_bytes
+                        .as_ref()
+                        .map(|bytes| bytes.is_empty())
+                        .unwrap_or(true)
+                {
+                    return Err(user_error(
+                        "cannot ADD COLUMN ... NOT NULL on a non-empty table without a non-NULL DEFAULT"
+                            .to_string(),
+                    ));
+                }
 
                 let neo4j = self.neo4j.read().await;
-                neo4j
+                let new_column = neo4j
                     .add_column(
                         &db_name,
                         &table_name,
@@ -541,14 +689,7 @@ impl QueryRouter {
                     .await
                     .map_err(to_err)?;
 
-                if let Some(default_expr) = column_def.options.iter().find_map(|option| {
-                    if let ColumnOption::Default(expr) = &option.option {
-                        Some(expr)
-                    } else {
-                        None
-                    }
-                }) {
-                    validate_supported_default_expr(default_expr)?;
+                if let Some(default_expr) = default_expr {
                     neo4j
                         .set_column_default(
                             &db_name,
@@ -558,6 +699,23 @@ impl QueryRouter {
                         )
                         .await
                         .map_err(to_err)?;
+                }
+                drop(neo4j);
+
+                if let (Some(db), Some(table), Some(default_bytes)) = (
+                    db_info.as_ref(),
+                    table_info.as_ref(),
+                    default_bytes.as_ref(),
+                ) {
+                    if !default_bytes.is_empty() {
+                        self.backfill_column_default_for_existing_rows(
+                            db.id,
+                            table.id,
+                            new_column.id,
+                            default_bytes,
+                        )
+                        .await?;
+                    }
                 }
 
                 for option in &column_def.options {
@@ -574,6 +732,10 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                drop(cache);
+                if let (Some(db), Some(table)) = (db_info, table_info) {
+                    self.invalidate_column_cache(db.id, table.id).await;
+                }
 
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
@@ -581,6 +743,8 @@ impl QueryRouter {
                 old_column_name,
                 new_column_name,
             } => {
+                let db_info = self.cached_get_database(&db_name).await?;
+                let table_info = self.cached_get_table(&db_name, &table_name).await?;
                 let neo4j = self.neo4j.read().await;
                 neo4j
                     .rename_column(
@@ -594,9 +758,15 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                drop(cache);
+                if let (Some(db), Some(table)) = (db_info, table_info) {
+                    self.invalidate_column_cache(db.id, table.id).await;
+                }
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
             AlterTableOperation::DropColumn { column_name, .. } => {
+                let db_info = self.cached_get_database(&db_name).await?;
+                let table_info = self.cached_get_table(&db_name, &table_name).await?;
                 let neo4j = self.neo4j.read().await;
                 neo4j
                     .drop_column(&db_name, &table_name, &column_name.value)
@@ -605,9 +775,15 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                drop(cache);
+                if let (Some(db), Some(table)) = (db_info, table_info) {
+                    self.invalidate_column_cache(db.id, table.id).await;
+                }
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
             AlterTableOperation::AlterColumn { column_name, op } => {
+                let db_info = self.cached_get_database(&db_name).await?;
+                let table_info = self.cached_get_table(&db_name, &table_name).await?;
                 let neo4j = self.neo4j.read().await;
                 match op {
                     AlterColumnOperation::SetDefault { value } => {
@@ -629,6 +805,18 @@ impl QueryRouter {
                             .map_err(to_err)?;
                     }
                     AlterColumnOperation::SetNotNull => {
+                        if let (Some(db), Some(table)) = (&db_info, &table_info) {
+                            let schema_cols =
+                                self.cached_describe_table(&db_name, &table_name).await?;
+                            let column = schema_cols
+                                .iter()
+                                .find(|col| col.name.eq_ignore_ascii_case(&column_name.value))
+                                .ok_or_else(|| {
+                                    user_error(format!("column '{}' not found", column_name.value))
+                                })?;
+                            self.ensure_no_existing_nulls(db.id, table.id, column.id)
+                                .await?;
+                        }
                         neo4j
                             .set_column_nullability(
                                 &db_name,
@@ -655,6 +843,10 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                drop(cache);
+                if let (Some(db), Some(table)) = (db_info, table_info) {
+                    self.invalidate_column_cache(db.id, table.id).await;
+                }
                 Ok(Response::Execution(Tag::new("ALTER TABLE")))
             }
             other => Err(user_error(format!(
@@ -1004,14 +1196,15 @@ impl QueryRouter {
             return self.relation_to_response(&relation);
         }
 
+        if select.from.is_empty() {
+            let relation = self.execute_query_to_relation(&query).await?;
+            return self.relation_to_response(&relation);
+        }
+
         let t_total = std::time::Instant::now();
 
         validate_select_expressions(&select, &query)?;
         validate_query_surface_boundaries(&select, &query)?;
-
-        if select.from.is_empty() {
-            return Err(user_error("SELECT requires FROM clause".to_string()));
-        }
 
         if !select.from[0].joins.is_empty() {
             return self.handle_join_select(*select, query).await;
@@ -1264,17 +1457,7 @@ impl QueryRouter {
                 .await?
                 .ok_or_else(|| user_error(format!("table '{}' does not exist", right_tbl)))?;
 
-            let (is_left_join, on_expr) = match &join.join_operator {
-                JoinOperator::Inner(JoinConstraint::On(expr)) => (false, expr.clone()),
-                JoinOperator::LeftOuter(JoinConstraint::On(expr)) => (true, expr.clone()),
-                _ => {
-                    return Err(user_error(
-                        "only INNER JOIN ... ON and LEFT JOIN ... ON are supported".to_string(),
-                    ))
-                }
-            };
-
-            let join_conds = extract_join_conditions(&on_expr)?;
+            let (join_kind, on_expr) = join_operator_supported_kind(&join.join_operator)?;
             let right_prefix = right_alias.as_deref().unwrap_or(&right_tbl).to_lowercase();
             let right_pushdown =
                 take_pushdown_predicate(&mut remaining_conjuncts, &right_prefix, &right_schema);
@@ -1301,77 +1484,66 @@ impl QueryRouter {
             record_cardinality("join_left_rows", joined_rows.len());
             record_cardinality("join_right_rows", right_prefixed.len());
 
-            let oriented_conds: Vec<(String, String)> = join_conds
-                .iter()
-                .map(|(a, b)| {
-                    let a_is_right = a.starts_with(&format!("{}.", right_prefix));
-                    if a_is_right {
-                        (b.clone(), a.clone())
-                    } else {
-                        (a.clone(), b.clone())
-                    }
-                })
-                .collect();
-            let right_join_keys: Vec<String> = oriented_conds
-                .iter()
-                .map(|(_, rc)| {
-                    if rc.contains('.') {
-                        rc.clone()
-                    } else {
-                        format!("{}.{}", right_prefix, rc)
-                    }
-                })
-                .collect();
-            let left_join_keys: Vec<String> = oriented_conds
-                .iter()
-                .map(|(lc, _)| {
-                    if lc.contains('.') {
-                        lc.clone()
-                    } else {
-                        combined_schema
-                            .iter()
-                            .find(|c| c.name.ends_with(&format!(".{}", lc)))
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| lc.clone())
-                    }
-                })
-                .collect();
-
-            let t_build = std::time::Instant::now();
-            let mut right_hash: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
-            for row in &right_prefixed {
-                let key: Vec<String> = right_join_keys
+            let (left_join_keys, right_join_keys) = if let Some(on_expr) = on_expr {
+                let join_conds = extract_join_conditions(on_expr)?;
+                let oriented_conds: Vec<(String, String)> = join_conds
                     .iter()
-                    .map(|k| row.get(k).map(|v| v.to_string()).unwrap_or_default())
+                    .map(|(a, b)| {
+                        let a_is_right = a.starts_with(&format!("{}.", right_prefix));
+                        if a_is_right {
+                            (b.clone(), a.clone())
+                        } else {
+                            (a.clone(), b.clone())
+                        }
+                    })
                     .collect();
-                right_hash.entry(key).or_default().push(row);
-            }
-            record_stage_duration("join_build", t_build.elapsed().as_secs_f64());
+                (
+                    oriented_conds
+                        .iter()
+                        .map(|(lc, _)| {
+                            if lc.contains('.') {
+                                lc.clone()
+                            } else {
+                                combined_schema
+                                    .iter()
+                                    .find(|c| c.name.ends_with(&format!(".{}", lc)))
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| lc.clone())
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                    oriented_conds
+                        .iter()
+                        .map(|(_, rc)| {
+                            if rc.contains('.') {
+                                rc.clone()
+                            } else {
+                                format!("{}.{}", right_prefix, rc)
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
-            let t_probe = std::time::Instant::now();
-            let mut new_rows: Vec<Row> = Vec::new();
-            for left_row in &joined_rows {
-                let left_key: Vec<String> = left_join_keys
+            let t_join = std::time::Instant::now();
+            let new_rows = join_row_sets(
+                &joined_rows,
+                &right_prefixed,
+                &left_join_keys,
+                &right_join_keys,
+                &combined_schema
                     .iter()
-                    .map(|k| left_row.get(k).map(|v| v.to_string()).unwrap_or_default())
-                    .collect();
-
-                if let Some(matching_rights) = right_hash.get(&left_key) {
-                    for right_row in matching_rights {
-                        let mut combined = left_row.clone();
-                        combined.extend((*right_row).clone());
-                        new_rows.push(combined);
-                    }
-                } else if is_left_join {
-                    let mut combined = left_row.clone();
-                    for col in &right_schema {
-                        let key = format!("{}.{}", right_prefix, col.name.to_lowercase());
-                        combined.insert(key, TypedValue::Null);
-                    }
-                    new_rows.push(combined);
-                }
-            }
-            record_stage_duration("join_probe", t_probe.elapsed().as_secs_f64());
+                    .map(|col| col.name.clone())
+                    .collect::<Vec<_>>(),
+                &right_schema
+                    .iter()
+                    .map(|col| format!("{}.{}", right_prefix, col.name.to_lowercase()))
+                    .collect::<Vec<_>>(),
+                join_kind,
+            );
+            record_stage_duration("join_build_probe", t_join.elapsed().as_secs_f64());
             record_cardinality("join_output_rows", new_rows.len());
 
             joined_rows = new_rows;
@@ -1881,6 +2053,66 @@ impl QueryRouter {
         cache.remove(&(db_id, table_id));
     }
 
+    async fn count_table_rows(&self, db_id: u32, table_id: u32) -> PgWireResult<usize> {
+        let prefix = table_scan_prefix(db_id, table_id)
+            .map_err(|err| user_error(format!("could not build table scan prefix: {err}")))?;
+        let rows = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        Ok(rows.len())
+    }
+
+    async fn ensure_no_existing_nulls(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        column_id: u32,
+    ) -> PgWireResult<()> {
+        let prefix = table_scan_prefix(db_id, table_id)
+            .map_err(|err| user_error(format!("could not build table scan prefix: {err}")))?;
+        let rows = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        for (_, row_data) in rows {
+            let columns = deserialize_columns(&row_data);
+            let value = columns.iter().find(|(col_id, _)| *col_id == column_id);
+            if value.map(|(_, bytes)| bytes.is_empty()).unwrap_or(true) {
+                return Err(user_error(
+                    "cannot SET NOT NULL because existing rows still contain NULL values"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn backfill_column_default_for_existing_rows(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        column_id: u32,
+        default_bytes: &[u8],
+    ) -> PgWireResult<()> {
+        let prefix = table_scan_prefix(db_id, table_id)
+            .map_err(|err| user_error(format!("could not build table scan prefix: {err}")))?;
+        let rows = self.storage.scan_prefix(&prefix).await.map_err(to_err)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut pairs = Vec::with_capacity(rows.len());
+        for (row_key, row_data) in rows {
+            let mut columns = deserialize_columns(&row_data);
+            if columns.iter().any(|(col_id, _)| *col_id == column_id) {
+                continue;
+            }
+            columns.push((column_id, default_bytes.to_vec()));
+            columns.sort_by_key(|(col_id, _)| *col_id);
+            pairs.push((row_key, serialize_columns(&columns)));
+        }
+
+        if !pairs.is_empty() {
+            self.storage.mset(&pairs).await.map_err(to_err)?;
+        }
+        Ok(())
+    }
+
     /// Convert typed rows to a pgwire query response.
     fn rows_to_response<'a>(
         &self,
@@ -2025,6 +2257,7 @@ impl QueryRouter {
                     validate_select_expressions(select.as_ref(), query)?;
                     if ctx.ctes.is_empty()
                         && ctx.outer_rows.is_empty()
+                        && !select.from.is_empty()
                         && !select_must_use_relation_executor(select.as_ref(), query)
                         && query_can_use_optimized_relation_fast_path(query)
                     {
@@ -2181,7 +2414,11 @@ impl QueryRouter {
         validate_query_surface_boundaries(&select, query)?;
 
         if select.from.is_empty() {
-            return Err(user_error("SELECT requires FROM clause".to_string()));
+            let relation = self
+                .execute_select_to_relation(&select, query, &RelationContext::default())
+                .await?;
+            let field_names = relation.field_names();
+            return Ok((relation.rows, field_names));
         }
 
         if !select.from[0].joins.is_empty() {
@@ -2351,17 +2588,7 @@ impl QueryRouter {
                 .await?
                 .ok_or_else(|| user_error(format!("table '{}' does not exist", right_tbl)))?;
 
-            let (is_left_join, on_expr) = match &join.join_operator {
-                JoinOperator::Inner(JoinConstraint::On(expr)) => (false, expr.clone()),
-                JoinOperator::LeftOuter(JoinConstraint::On(expr)) => (true, expr.clone()),
-                _ => {
-                    return Err(user_error(
-                        "only INNER JOIN ... ON and LEFT JOIN ... ON are supported".to_string(),
-                    ))
-                }
-            };
-
-            let join_conds = extract_join_conditions(&on_expr)?;
+            let (join_kind, on_expr) = join_operator_supported_kind(&join.join_operator)?;
             let right_prefix = right_alias.as_deref().unwrap_or(&right_tbl).to_lowercase();
             let right_pushdown =
                 take_pushdown_predicate(&mut remaining_conjuncts, &right_prefix, &right_schema);
@@ -2385,73 +2612,64 @@ impl QueryRouter {
                 .map(|r| prefix_row(r, &right_prefix))
                 .collect();
 
-            let oriented_conds: Vec<(String, String)> = join_conds
-                .iter()
-                .map(|(a, b)| {
-                    let a_is_right = a.starts_with(&format!("{}.", right_prefix));
-                    if a_is_right {
-                        (b.clone(), a.clone())
-                    } else {
-                        (a.clone(), b.clone())
-                    }
-                })
-                .collect();
-            let right_join_keys: Vec<String> = oriented_conds
-                .iter()
-                .map(|(_, rc)| {
-                    if rc.contains('.') {
-                        rc.clone()
-                    } else {
-                        format!("{}.{}", right_prefix, rc)
-                    }
-                })
-                .collect();
-            let left_join_keys: Vec<String> = oriented_conds
-                .iter()
-                .map(|(lc, _)| {
-                    if lc.contains('.') {
-                        lc.clone()
-                    } else {
-                        combined_schema
-                            .iter()
-                            .find(|c| c.name.ends_with(&format!(".{}", lc)))
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| lc.clone())
-                    }
-                })
-                .collect();
-
-            let mut right_hash: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
-            for row in &right_prefixed {
-                let key: Vec<String> = right_join_keys
+            let (left_join_keys, right_join_keys) = if let Some(on_expr) = on_expr {
+                let join_conds = extract_join_conditions(on_expr)?;
+                let oriented_conds: Vec<(String, String)> = join_conds
                     .iter()
-                    .map(|k| row.get(k).map(|v| v.to_string()).unwrap_or_default())
+                    .map(|(a, b)| {
+                        let a_is_right = a.starts_with(&format!("{}.", right_prefix));
+                        if a_is_right {
+                            (b.clone(), a.clone())
+                        } else {
+                            (a.clone(), b.clone())
+                        }
+                    })
                     .collect();
-                right_hash.entry(key).or_default().push(row);
-            }
+                (
+                    oriented_conds
+                        .iter()
+                        .map(|(lc, _)| {
+                            if lc.contains('.') {
+                                lc.clone()
+                            } else {
+                                combined_schema
+                                    .iter()
+                                    .find(|c| c.name.ends_with(&format!(".{}", lc)))
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| lc.clone())
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                    oriented_conds
+                        .iter()
+                        .map(|(_, rc)| {
+                            if rc.contains('.') {
+                                rc.clone()
+                            } else {
+                                format!("{}.{}", right_prefix, rc)
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
-            let mut new_rows: Vec<Row> = Vec::new();
-            for left_row in &joined_rows {
-                let left_key: Vec<String> = left_join_keys
+            let new_rows = join_row_sets(
+                &joined_rows,
+                &right_prefixed,
+                &left_join_keys,
+                &right_join_keys,
+                &combined_schema
                     .iter()
-                    .map(|k| left_row.get(k).map(|v| v.to_string()).unwrap_or_default())
-                    .collect();
-
-                if let Some(matching_rights) = right_hash.get(&left_key) {
-                    for right_row in matching_rights {
-                        let mut combined = left_row.clone();
-                        combined.extend((*right_row).clone());
-                        new_rows.push(combined);
-                    }
-                } else if is_left_join {
-                    let mut combined = left_row.clone();
-                    for col in &right_schema {
-                        let key = format!("{}.{}", right_prefix, col.name.to_lowercase());
-                        combined.insert(key, TypedValue::Null);
-                    }
-                    new_rows.push(combined);
-                }
-            }
+                    .map(|col| col.name.clone())
+                    .collect::<Vec<_>>(),
+                &right_schema
+                    .iter()
+                    .map(|col| format!("{}.{}", right_prefix, col.name.to_lowercase()))
+                    .collect::<Vec<_>>(),
+                join_kind,
+            );
 
             joined_rows = new_rows;
             combined_schema.extend(right_schema.iter().map(|c| ColumnInfo {
@@ -2610,7 +2828,15 @@ impl QueryRouter {
         validate_select_body_expressions(select)?;
 
         if select.from.is_empty() {
-            return Err(user_error("SELECT requires FROM clause".to_string()));
+            let relation = RelationResult {
+                rows: vec![Row::new()],
+                columns: Vec::new(),
+            };
+            return self
+                .project_or_aggregate_relation_without_from(
+                    relation, select, order_by, limit, offset, ctx,
+                )
+                .await;
         }
 
         let current_db = self.current_db.read().await.clone();
@@ -2623,15 +2849,7 @@ impl QueryRouter {
         }
 
         for join in &select.from[0].joins {
-            let (is_left_join, on_expr) = match &join.join_operator {
-                JoinOperator::Inner(JoinConstraint::On(expr)) => (false, expr),
-                JoinOperator::LeftOuter(JoinConstraint::On(expr)) => (true, expr),
-                _ => {
-                    return Err(user_error(
-                        "only INNER JOIN ... ON and LEFT JOIN ... ON are supported".to_string(),
-                    ))
-                }
-            };
+            let (join_kind, on_expr) = join_operator_supported_kind(&join.join_operator)?;
 
             relation = match &join.relation {
                 sqlparser::ast::TableFactor::Derived {
@@ -2639,6 +2857,17 @@ impl QueryRouter {
                     subquery,
                     alias,
                 } => {
+                    if join_kind == SupportedJoinKind::Cross
+                        || matches!(
+                            join_kind,
+                            SupportedJoinKind::Right | SupportedJoinKind::Full
+                        )
+                    {
+                        return Err(user_error(
+                            "LATERAL joins currently support only INNER JOIN ... ON and LEFT JOIN ... ON"
+                                .to_string(),
+                        ));
+                    }
                     let alias = alias.as_ref().ok_or_else(|| {
                         user_error("LATERAL derived tables require an alias".to_string())
                     })?;
@@ -2646,8 +2875,10 @@ impl QueryRouter {
                         relation,
                         subquery.as_ref(),
                         alias,
-                        on_expr,
-                        is_left_join,
+                        on_expr.ok_or_else(|| {
+                            user_error("LATERAL joins require an ON predicate".to_string())
+                        })?,
+                        join_kind == SupportedJoinKind::Left,
                         ctx,
                     )
                     .await?
@@ -2657,7 +2888,7 @@ impl QueryRouter {
                         .build_source_relation(&join.relation, &current_db, ctx)
                         .await?;
                     qualify_relation_for_join_wildcard(&mut right_relation);
-                    self.join_relations(relation, right_relation, on_expr, is_left_join)
+                    self.join_relations(relation, right_relation, join_kind, on_expr)
                         .await?
                 }
             };
@@ -2671,7 +2902,64 @@ impl QueryRouter {
         let agg_exprs = extract_aggregates(&select.projection);
         let has_grouping = !group_by_exprs(&select.group_by).is_empty();
 
-        let mut relation = if has_window_functions && (!agg_exprs.is_empty() || has_grouping) {
+        let relation = self
+            .project_or_aggregate_relation(
+                relation,
+                select,
+                order_by,
+                limit,
+                offset,
+                has_window_functions,
+                !agg_exprs.is_empty(),
+                has_grouping,
+                ctx,
+            )
+            .await?;
+
+        self.apply_relation_limit_offset(relation, limit, offset)
+    }
+
+    async fn project_or_aggregate_relation_without_from(
+        &self,
+        relation: RelationResult,
+        select: &sqlparser::ast::Select,
+        order_by: Option<&sqlparser::ast::OrderBy>,
+        limit: Option<&Expr>,
+        offset: Option<&sqlparser::ast::Offset>,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let has_window_functions = projection_has_window_functions(&select.projection);
+        let agg_exprs = extract_aggregates(&select.projection);
+        let has_grouping = !group_by_exprs(&select.group_by).is_empty();
+        let relation = self
+            .project_or_aggregate_relation(
+                relation,
+                select,
+                order_by,
+                limit,
+                offset,
+                has_window_functions,
+                !agg_exprs.is_empty(),
+                has_grouping,
+                ctx,
+            )
+            .await?;
+        self.apply_relation_limit_offset(relation, limit, offset)
+    }
+
+    async fn project_or_aggregate_relation(
+        &self,
+        relation: RelationResult,
+        select: &sqlparser::ast::Select,
+        order_by: Option<&sqlparser::ast::OrderBy>,
+        _limit: Option<&Expr>,
+        _offset: Option<&sqlparser::ast::Offset>,
+        has_window_functions: bool,
+        has_aggregates: bool,
+        has_grouping: bool,
+        ctx: &RelationContext,
+    ) -> PgWireResult<RelationResult> {
+        let mut relation = if has_window_functions && (has_aggregates || has_grouping) {
             let base_projection = extract_window_base_projection(&select.projection)?;
             if base_projection.is_empty() {
                 return Err(user_error(
@@ -2703,7 +2991,7 @@ impl QueryRouter {
                 ctx,
             )
             .await?
-        } else if !agg_exprs.is_empty() {
+        } else if has_aggregates {
             self.execute_aggregate_relation(
                 relation,
                 &select.projection,
@@ -2721,7 +3009,7 @@ impl QueryRouter {
             relation = self.relation_order(relation, &order_by.exprs, ctx).await?;
         }
 
-        self.apply_relation_limit_offset(relation, limit, offset)
+        Ok(relation)
     }
 
     fn execute_setexpr_to_relation_boxed<'a>(
@@ -3155,67 +3443,76 @@ impl QueryRouter {
         &self,
         left: RelationResult,
         right: RelationResult,
-        on_expr: &Expr,
-        is_left_join: bool,
+        join_kind: SupportedJoinKind,
+        on_expr: Option<&Expr>,
     ) -> PgWireResult<RelationResult> {
-        let join_conds = extract_join_conditions(on_expr)?;
-        let right_lookup_names: HashSet<String> = right
-            .columns
-            .iter()
-            .map(|col| col.lookup_name.clone())
-            .collect();
-
-        let oriented_conds: Vec<(String, String)> = join_conds
-            .iter()
-            .map(|(a, b)| {
-                let a_is_right = right_lookup_names.contains(&normalize_join_key(a));
-                if a_is_right {
-                    (normalize_join_key(b), normalize_join_key(a))
-                } else {
-                    (normalize_join_key(a), normalize_join_key(b))
-                }
-            })
-            .collect();
-
-        let right_join_keys: Vec<String> = oriented_conds
-            .iter()
-            .map(|(_, right)| right.clone())
-            .collect();
-        let left_join_keys: Vec<String> = oriented_conds
-            .iter()
-            .map(|(left, _)| left.clone())
-            .collect();
-
-        let mut right_hash: HashMap<Vec<String>, Vec<&Row>> = HashMap::new();
-        for row in &right.rows {
-            let key = right_join_keys
+        let rows = if join_kind == SupportedJoinKind::Cross {
+            join_row_sets(
+                &left.rows,
+                &right.rows,
+                &[],
+                &[],
+                &left
+                    .columns
+                    .iter()
+                    .map(|col| col.lookup_name.clone())
+                    .collect::<Vec<_>>(),
+                &right
+                    .columns
+                    .iter()
+                    .map(|col| col.lookup_name.clone())
+                    .collect::<Vec<_>>(),
+                join_kind,
+            )
+        } else {
+            let on_expr = on_expr
+                .ok_or_else(|| user_error("JOIN type requires an ON predicate".to_string()))?;
+            let join_conds = extract_join_conditions(on_expr)?;
+            let right_lookup_names: HashSet<String> = right
+                .columns
                 .iter()
-                .map(|lookup| lookup_row_value(row, lookup).to_string())
-                .collect::<Vec<_>>();
-            right_hash.entry(key).or_default().push(row);
-        }
+                .map(|col| col.lookup_name.clone())
+                .collect();
 
-        let mut rows = Vec::new();
-        for left_row in &left.rows {
-            let left_key = left_join_keys
+            let oriented_conds: Vec<(String, String)> = join_conds
                 .iter()
-                .map(|lookup| lookup_row_value(left_row, lookup).to_string())
-                .collect::<Vec<_>>();
+                .map(|(a, b)| {
+                    let a_is_right = right_lookup_names.contains(&normalize_join_key(a));
+                    if a_is_right {
+                        (normalize_join_key(b), normalize_join_key(a))
+                    } else {
+                        (normalize_join_key(a), normalize_join_key(b))
+                    }
+                })
+                .collect();
 
-            if let Some(matches) = right_hash.get(&left_key) {
-                for right_row in matches {
-                    let mut combined = left_row.clone();
-                    combined.extend((*right_row).clone());
-                    rows.push(combined);
-                }
-            } else if is_left_join {
-                let mut combined = left_row.clone();
-                for col in &right.columns {
-                    combined.insert(col.lookup_name.clone(), TypedValue::Null);
-                }
-                rows.push(combined);
-            }
-        }
+            let right_join_keys: Vec<String> = oriented_conds
+                .iter()
+                .map(|(_, right)| right.clone())
+                .collect();
+            let left_join_keys: Vec<String> = oriented_conds
+                .iter()
+                .map(|(left, _)| left.clone())
+                .collect();
+
+            join_row_sets(
+                &left.rows,
+                &right.rows,
+                &left_join_keys,
+                &right_join_keys,
+                &left
+                    .columns
+                    .iter()
+                    .map(|col| col.lookup_name.clone())
+                    .collect::<Vec<_>>(),
+                &right
+                    .columns
+                    .iter()
+                    .map(|col| col.lookup_name.clone())
+                    .collect::<Vec<_>>(),
+                join_kind,
+            )
+        };
 
         let mut columns = left.columns;
         columns.extend(right.columns);
@@ -4450,6 +4747,47 @@ fn expr_to_bytes(expr: &Expr) -> PgWireResult<Vec<u8>> {
     }
 }
 
+fn default_expr_to_bytes(expr_sql: &str) -> PgWireResult<Vec<u8>> {
+    let sql = format!("SELECT {expr_sql}");
+    let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &sql)
+        .map_err(|err| user_error(format!("unsupported default expression: {err}")))?;
+    let stmt = stmts
+        .into_iter()
+        .next()
+        .ok_or_else(|| user_error("unsupported default expression".to_string()))?;
+    let query = match stmt {
+        Statement::Query(query) => query,
+        _ => {
+            return Err(user_error(
+                "unsupported default expression shape".to_string(),
+            ))
+        }
+    };
+    let select = match *query.body {
+        SetExpr::Select(select) => select,
+        _ => {
+            return Err(user_error(
+                "unsupported default expression shape".to_string(),
+            ))
+        }
+    };
+    let item = select
+        .projection
+        .into_iter()
+        .next()
+        .ok_or_else(|| user_error("unsupported default expression".to_string()))?;
+    let expr = match item {
+        SelectItem::UnnamedExpr(expr) => expr,
+        SelectItem::ExprWithAlias { expr, .. } => expr,
+        _ => {
+            return Err(user_error(
+                "unsupported default expression shape".to_string(),
+            ))
+        }
+    };
+    expr_to_bytes(&expr)
+}
+
 fn value_to_bytes(val: &Value) -> PgWireResult<Vec<u8>> {
     match val {
         Value::Number(n, _) => Ok(n.as_bytes().to_vec()),
@@ -5205,9 +5543,7 @@ fn validate_select_body_expressions(select: &sqlparser::ast::Select) -> PgWireRe
 
     for join in &select.from {
         for joined in &join.joins {
-            if let JoinOperator::Inner(JoinConstraint::On(expr))
-            | JoinOperator::LeftOuter(JoinConstraint::On(expr)) = &joined.join_operator
-            {
+            if let Ok((_, Some(expr))) = join_operator_supported_kind(&joined.join_operator) {
                 ensure_no_window_functions(expr, "JOIN predicates")?;
                 validate_supported_expr(expr)?;
             }
@@ -5876,6 +6212,31 @@ fn compute_aggregates(
                 let val =
                     compute_single_aggregate_expr(&name, arg_expr.as_ref(), rows, schema_cols)?;
                 result.push((alias, val));
+            }
+            SelectItem::ExprWithAlias {
+                expr: Expr::Identifier(ident),
+                alias,
+            } => {
+                let val = rows
+                    .first()
+                    .map(|r| lookup_row_value(r, &ident.value.to_lowercase()))
+                    .unwrap_or(TypedValue::Null);
+                result.push((alias.value.clone(), val));
+            }
+            SelectItem::ExprWithAlias {
+                expr: Expr::CompoundIdentifier(parts),
+                alias,
+            } => {
+                let full = parts
+                    .iter()
+                    .map(|p| p.value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let val = rows
+                    .first()
+                    .map(|r| lookup_row_value(r, &full))
+                    .unwrap_or(TypedValue::Null);
+                result.push((alias.value.clone(), val));
             }
             _ => {}
         }
@@ -6713,7 +7074,23 @@ fn select_must_use_relation_executor(
     select: &sqlparser::ast::Select,
     query: &sqlparser::ast::Query,
 ) -> bool {
-    select_references_virtual_catalog(select) || select_contains_pattern_match(select, query)
+    select_references_virtual_catalog(select)
+        || select_contains_pattern_match(select, query)
+        || select
+            .from
+            .iter()
+            .flat_map(|table| table.joins.iter())
+            .any(|join| {
+                matches!(
+                    join_operator_supported_kind(&join.join_operator),
+                    Ok((
+                        SupportedJoinKind::Right
+                            | SupportedJoinKind::Full
+                            | SupportedJoinKind::Cross,
+                        _
+                    ))
+                )
+            })
 }
 
 fn projection_has_window_functions(items: &[SelectItem]) -> bool {
@@ -8623,9 +9000,7 @@ fn collect_join_query_refs(
     }
 
     for join in &select.from[0].joins {
-        if let JoinOperator::Inner(JoinConstraint::On(expr))
-        | JoinOperator::LeftOuter(JoinConstraint::On(expr)) = &join.join_operator
-        {
+        if let Ok((_, Some(expr))) = join_operator_supported_kind(&join.join_operator) {
             collect_expr_refs(expr, &mut refs);
         }
     }

@@ -1,0 +1,5 @@
+{
+  "name": "full_outer_grouped_counts",
+  "sql": "SELECT c.name AS bucket, COUNT(o.id) AS order_count FROM customers c FULL OUTER JOIN orders o ON c.id = o.customer_id GROUP BY c.name ORDER BY bucket;",
+  "expected_rows": [["Alice", "2"], ["Bob", "1"], ["Cara", "0"], ["NULL", "1"]]
+}

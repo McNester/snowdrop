@@ -1,0 +1,87 @@
+{
+  "generated_at": "2026-05-11T03:50:35.748169905+00:00",
+  "runtime": {
+    "snowdrop_host": "orchestrator",
+    "snowdrop_port": 5432,
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "health_host": "orchestrator",
+    "health_port": 8080,
+    "metrics_host": "orchestrator",
+    "metrics_port": 9090
+  },
+  "source_mode": "dump-dir",
+  "source_database": "blocked_ticketing_orders",
+  "source_schema_filter": null,
+  "target_database": "blocked_ticketing_orders_snowdrop",
+  "success": false,
+  "summary": {
+    "supported_tables": 0,
+    "partial_tables": 0,
+    "blocked_tables": 1,
+    "verification_passed": false
+  },
+  "blockers": [
+    {
+      "status": "unsupported",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.payload",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'jsonb' which maps to the Snowdrop status 'unsupported'",
+      "recommendation": "rewrite this column to a supported Snowdrop type or exclude it from automatic migration"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.tags",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'ARRAY' which maps to the Snowdrop status 'unsupported'",
+      "recommendation": "rewrite this column to a supported Snowdrop type or exclude it from automatic migration"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "index",
+      "object_name": "public.blocked_orders.idx_blocked_orders_payload",
+      "category": "index",
+      "message": "index definition needs review during migration",
+      "recommendation": "recreate this index manually with a Snowdrop-supported index strategy"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "table",
+      "object_name": "public.blocked_orders",
+      "category": "translation",
+      "message": "default for column 'id' needs manual rewrite and is omitted from preview",
+      "recommendation": "remove this manual follow-up before relying on the automatic migration path"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "table",
+      "object_name": "public.blocked_orders",
+      "category": "translation",
+      "message": "column 'payload' has no safe Snowdrop type mapping yet",
+      "recommendation": "remove this manual follow-up before relying on the automatic migration path"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "table",
+      "object_name": "public.blocked_orders",
+      "category": "translation",
+      "message": "column 'tags' has no safe Snowdrop type mapping yet",
+      "recommendation": "remove this manual follow-up before relying on the automatic migration path"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "table",
+      "object_name": "public.blocked_orders",
+      "category": "translation",
+      "message": "default for column 'created_at' needs manual rewrite and is omitted from preview",
+      "recommendation": "remove this manual follow-up before relying on the automatic migration path"
+    }
+  ],
+  "skipped_objects": [
+    "public.blocked_orders -> index 'blocked_orders_pkey' is omitted from the preview and should be recreated manually if still needed",
+    "public.blocked_orders -> index 'idx_blocked_orders_payload' is omitted from the preview and should be recreated manually if still needed"
+  ],
+  "workflow": null
+}

@@ -3,6 +3,11 @@ use crate::types::ColumnType;
 use anyhow::{bail, Context, Result};
 use neo4rs::query;
 use serde::{Deserialize, Serialize};
+use sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, SetExpr, WindowType,
+};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -68,6 +73,119 @@ pub struct TableConstraintsInfo {
     pub unique_constraints: Vec<UniqueConstraintInfo>,
     pub foreign_keys: Vec<ForeignKeyConstraintInfo>,
     pub check_constraints: Vec<CheckConstraintInfo>,
+}
+
+fn check_constraint_references_column(expr_sql: &str, column_name: &str) -> Result<bool> {
+    let sql = format!("SELECT {expr_sql}");
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, &sql)
+        .with_context(|| format!("failed to parse CHECK expression '{expr_sql}'"))?;
+    let projection_expr = statements
+        .first()
+        .and_then(|statement| match statement {
+            sqlparser::ast::Statement::Query(query) => match query.body.as_ref() {
+                SetExpr::Select(select) => select.projection.first(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .and_then(|item| match item {
+            SelectItem::UnnamedExpr(expr) => Some(expr),
+            SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+            _ => None,
+        })
+        .context("failed to extract parsed CHECK expression")?;
+
+    let mut identifiers = Vec::new();
+    collect_expr_identifiers(projection_expr, &mut identifiers);
+    Ok(identifiers
+        .iter()
+        .any(|identifier| identifier.eq_ignore_ascii_case(column_name)))
+}
+
+fn collect_expr_identifiers(expr: &Expr, identifiers: &mut Vec<String>) {
+    match expr {
+        Expr::Identifier(identifier) => identifiers.push(identifier.value.clone()),
+        Expr::CompoundIdentifier(parts) => {
+            if let Some(identifier) = parts.last() {
+                identifiers.push(identifier.value.clone());
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_expr_identifiers(left, identifiers);
+            collect_expr_identifiers(right, identifiers);
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => collect_expr_identifiers(expr, identifiers),
+        Expr::Extract { expr, .. } => collect_expr_identifiers(expr, identifiers),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_expr_identifiers(expr, identifiers);
+            collect_expr_identifiers(low, identifiers);
+            collect_expr_identifiers(high, identifiers);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_expr_identifiers(expr, identifiers);
+            for item in list {
+                collect_expr_identifiers(item, identifiers);
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(operand) = operand {
+                collect_expr_identifiers(operand, identifiers);
+            }
+            for condition in conditions {
+                collect_expr_identifiers(condition, identifiers);
+            }
+            for result in results {
+                collect_expr_identifiers(result, identifiers);
+            }
+            if let Some(else_result) = else_result {
+                collect_expr_identifiers(else_result, identifiers);
+            }
+        }
+        Expr::Function(function) => {
+            if let FunctionArguments::List(argument_list) = &function.args {
+                for arg in &argument_list.args {
+                    match arg {
+                        FunctionArg::Named { arg, .. } | FunctionArg::Unnamed(arg) => match arg {
+                            FunctionArgExpr::Expr(expr) => {
+                                collect_expr_identifiers(expr, identifiers)
+                            }
+                            FunctionArgExpr::QualifiedWildcard(_) | FunctionArgExpr::Wildcard => {}
+                        },
+                        FunctionArg::ExprNamed { name, arg, .. } => {
+                            collect_expr_identifiers(name, identifiers);
+                            match arg {
+                                FunctionArgExpr::Expr(expr) => {
+                                    collect_expr_identifiers(expr, identifiers)
+                                }
+                                FunctionArgExpr::QualifiedWildcard(_)
+                                | FunctionArgExpr::Wildcard => {}
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(WindowType::WindowSpec(over)) = &function.over {
+                for expr in &over.partition_by {
+                    collect_expr_identifiers(expr, identifiers);
+                }
+                for order_by in &over.order_by {
+                    collect_expr_identifiers(&order_by.expr, identifiers);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Neo4jConnection {
@@ -706,7 +824,7 @@ impl Neo4jConnection {
 
         let mut constraints = self.get_table_constraints(db_name, table_name).await?;
         for check in &constraints.check_constraints {
-            if check.expr_sql.contains(old_name) {
+            if check_constraint_references_column(&check.expr_sql, old_name)? {
                 bail!(
                     "cannot rename column '{}' because check constraint '{}' must be rewritten manually",
                     old_name,
@@ -807,15 +925,13 @@ impl Neo4jConnection {
                 col_name
             );
         }
-        if constraints
-            .check_constraints
-            .iter()
-            .any(|check| check.expr_sql.contains(col_name))
-        {
-            bail!(
-                "cannot drop column '{}' because it is referenced by a CHECK constraint",
-                col_name
-            );
+        for check in &constraints.check_constraints {
+            if check_constraint_references_column(&check.expr_sql, col_name)? {
+                bail!(
+                    "cannot drop column '{}' because it is referenced by a CHECK constraint",
+                    col_name
+                );
+            }
         }
         constraints.defaults.remove(col_name);
         self.set_table_constraints(db_name, table_name, &constraints)

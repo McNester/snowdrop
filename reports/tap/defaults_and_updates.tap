@@ -1,0 +1,4 @@
+1..3
+ok 1 - omitted defaults
+ok 2 - explicit override defaults
+ok 3 - alter default roundtrip
