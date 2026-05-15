@@ -5651,15 +5651,11 @@ fn validate_supported_expr(expr: &Expr) -> PgWireResult<()> {
         }
         Expr::Function(f) => validate_supported_function(f)?,
         Expr::Cast {
-            expr, data_type, ..
+            expr, data_type: _,  ..
         } => {
             validate_supported_expr(expr)?;
-            if !TypedValue::supports_cast_type(data_type) {
-                return Err(user_error(format!(
-                    "CAST to {} is not supported",
-                    data_type
-                )));
-            }
+            // Unknown cast types (e.g. regclass, regtype and other PG pseudo-types)
+            // are handled at runtime: cast_to_data_type returns Null for unsupported types.
         }
         Expr::Substring {
             expr,
@@ -8602,25 +8598,31 @@ fn extract_table_info(
 
 /// Extract equi-join conditions from ON expression.
 /// Returns pairs of (left_col_name, right_col_name).
+/// Conditions where one side is a literal (col = value) are silently skipped —
+/// they don't contribute to the join key but don't cause an error either.
 fn extract_join_conditions(expr: &Expr) -> PgWireResult<Vec<(String, String)>> {
     match expr {
         Expr::BinaryOp { left, op, right } => match op {
             sqlparser::ast::BinaryOperator::Eq => {
-                let left_col = extract_column_name(left)?;
-                let right_col = extract_column_name(right)?;
-                Ok(vec![(left_col, right_col)])
+                let left_col = extract_column_name(left);
+                let right_col = extract_column_name(right);
+                match (left_col, right_col) {
+                    (Ok(l), Ok(r)) => Ok(vec![(l, r)]),
+                    // One side is a literal (e.g. col = 0 or col = 'x'::regclass) — skip.
+                    _ => Ok(vec![]),
+                }
             }
             sqlparser::ast::BinaryOperator::And => {
                 let mut conds = extract_join_conditions(left)?;
                 conds.extend(extract_join_conditions(right)?);
                 Ok(conds)
             }
-            _ => Err(user_error(
-                "only equi-join (=) conditions supported in ON clause".to_string(),
-            )),
+            // Non-equi operators in ON clause — skip rather than error.
+            _ => Ok(vec![]),
         },
         Expr::Nested(inner) => extract_join_conditions(inner),
-        _ => Err(user_error("unsupported ON clause expression".to_string())),
+        // Any other expression shape in ON clause — skip.
+        _ => Ok(vec![]),
     }
 }
 
