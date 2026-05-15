@@ -1115,7 +1115,10 @@ impl QueryRouter {
         let cache_ms = t_cache.elapsed().as_secs_f64() * 1000.0;
 
         let cache = self.column_cache.read().await;
-        let table_cols = cache.get(&(db_id, table_id)).unwrap();
+        let Some(table_cols) = cache.get(&(db_id, table_id)) else {
+            // Cache was invalidated between insert and read (concurrent mutation) — safe to return empty.
+            return Ok(Vec::new());
+        };
 
         if table_cols.row_count == 0 {
             return Ok(Vec::new());
