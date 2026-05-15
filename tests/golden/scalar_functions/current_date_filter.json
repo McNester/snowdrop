@@ -1,0 +1,5 @@
+{
+  "name": "current_date_filter",
+  "sql": "SELECT COUNT(*) FROM profiles WHERE due_date <= CURRENT_DATE;",
+  "expected_rows": [["3"]]
+}

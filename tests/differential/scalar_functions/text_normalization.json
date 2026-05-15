@@ -1,0 +1,4 @@
+{
+  "name": "text_normalization",
+  "sql": "SELECT id, LOWER(TRIM(display_name)), UPPER(TRIM(display_name)), LENGTH(TRIM(display_name)), SUBSTRING(TRIM(display_name) FROM 1 FOR 3), CONCAT(TRIM(display_name), '-', COALESCE(fallback_name, 'none')) FROM profiles WHERE display_name IS NOT NULL ORDER BY id;"
+}

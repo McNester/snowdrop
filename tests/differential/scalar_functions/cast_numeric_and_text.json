@@ -1,0 +1,4 @@
+{
+  "name": "cast_numeric_and_text",
+  "sql": "SELECT id, CAST(score_text AS BIGINT), CAST(amount_text AS DOUBLE PRECISION), CAST(score AS TEXT) FROM profiles WHERE id IN (1, 3, 4) ORDER BY id;"
+}

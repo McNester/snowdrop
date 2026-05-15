@@ -1,0 +1,5 @@
+{
+  "name": "unsupported_now_args",
+  "sql": "SELECT NOW(1) FROM profiles;",
+  "expected_error": "*"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "scalar_functions",
+  "description": "PostgreSQL-style regression subset for Phase 2 scalar function support.",
+  "dataset": "scalar_functions"
+}

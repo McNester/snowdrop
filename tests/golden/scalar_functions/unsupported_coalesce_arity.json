@@ -1,0 +1,5 @@
+{
+  "name": "unsupported_coalesce_arity",
+  "sql": "SELECT COALESCE() FROM profiles;",
+  "expected_error": "*"
+}

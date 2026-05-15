@@ -1,0 +1,9 @@
+{
+  "name": "text_normalization",
+  "sql": "SELECT id, LOWER(TRIM(display_name)), UPPER(TRIM(display_name)), LENGTH(TRIM(display_name)), SUBSTRING(TRIM(display_name) FROM 1 FOR 3), CONCAT(TRIM(display_name), '-', COALESCE(fallback_name, 'none')) FROM profiles WHERE display_name IS NOT NULL ORDER BY id;",
+  "expected_rows": [
+    ["1", "alice", "ALICE", "5", "Ali", "Alice-none"],
+    ["3", "bob", "BOB", "3", "Bob", "Bob-"],
+    ["4", "", "", "0", "", "-spare"]
+  ]
+}

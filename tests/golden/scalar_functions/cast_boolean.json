@@ -1,0 +1,10 @@
+{
+  "name": "cast_boolean",
+  "sql": "SELECT id, CAST(active_text AS BOOLEAN) FROM profiles ORDER BY id;",
+  "expected_rows": [
+    ["1", "true"],
+    ["2", "false"],
+    ["3", "true"],
+    ["4", "false"]
+  ]
+}
