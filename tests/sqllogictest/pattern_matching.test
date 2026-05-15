@@ -1,0 +1,18 @@
+# dataset: pattern_matching
+
+query T
+SELECT name FROM contacts WHERE name LIKE 'A_i_e' ORDER BY name;
+----
+Alice
+
+query T
+SELECT name FROM contacts WHERE name LIKE 'ali\_ce' ESCAPE '\' ORDER BY id;
+----
+ali_ce
+
+query T
+SELECT name FROM contacts WHERE name ILIKE 'ali%' ORDER BY id;
+----
+Alice
+ALICE
+ali_ce

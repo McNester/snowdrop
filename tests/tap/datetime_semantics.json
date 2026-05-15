@@ -1,0 +1,24 @@
+{
+  "name": "datetime_semantics",
+  "dataset": "datetime_semantics",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "date predicate",
+      "sql": "SELECT id FROM events WHERE event_date <= CAST('2024-01-02' AS DATE) ORDER BY event_date, id;",
+      "expected_rows": [["4"], ["1"], ["2"]]
+    },
+    {
+      "kind": "sql",
+      "name": "extract fields",
+      "sql": "SELECT EXTRACT(YEAR FROM event_at), EXTRACT(MONTH FROM event_at), EXTRACT(DAY FROM event_date), EXTRACT(HOUR FROM event_at), EXTRACT(MINUTE FROM reminder_at) FROM events WHERE id = 1;",
+      "expected_rows": [["2024", "1", "2", "3", "30"]]
+    },
+    {
+      "kind": "sql",
+      "name": "timestamp ordering",
+      "sql": "SELECT id FROM events WHERE event_at < CAST('2024-01-03 00:00:00' AS TIMESTAMP) ORDER BY event_at;",
+      "expected_rows": [["4"], ["1"], ["2"]]
+    }
+  ]
+}

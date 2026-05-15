@@ -1118,6 +1118,12 @@ fn evaluate_default_expr(expr_sql: &str) -> Result<Vec<u8>> {
         crate::TypedValue::Text(text) => text.into_bytes(),
         crate::TypedValue::Int(i) => i.to_string().into_bytes(),
         crate::TypedValue::Float(f) => f.to_string().into_bytes(),
+        crate::TypedValue::Decimal(d) => d.to_string().into_bytes(),
+        crate::TypedValue::Date(date) => date.format("%Y-%m-%d").to_string().into_bytes(),
+        crate::TypedValue::Timestamp(ts) => {
+            ts.format("%Y-%m-%d %H:%M:%S%.f").to_string().into_bytes()
+        }
+        crate::TypedValue::Time(time) => time.format("%H:%M:%S%.f").to_string().into_bytes(),
         crate::TypedValue::Boolean(flag) => {
             if flag {
                 b"true".to_vec()

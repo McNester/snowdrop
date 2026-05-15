@@ -25,3 +25,4 @@ async-trait.workspace = true
 futures.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+rust_decimal.workspace = true

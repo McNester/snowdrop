@@ -1,0 +1,4 @@
+1..3
+ok 1 - date predicate
+ok 2 - extract fields
+ok 3 - timestamp ordering

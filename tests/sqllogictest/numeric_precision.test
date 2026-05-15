@@ -1,0 +1,23 @@
+# dataset: numeric_precision
+
+query T
+SELECT amount + 0.20 FROM ledger WHERE id = 1;
+----
+0.30
+
+query I
+SELECT id FROM ledger WHERE amount + 0.20 = 0.30 ORDER BY id;
+----
+1
+
+query TT
+SELECT SUM(amount), AVG(fee) FROM ledger WHERE category = 'retail';
+----
+0.30 1.6875
+
+query I
+SELECT id FROM ledger ORDER BY amount DESC;
+----
+3
+2
+1

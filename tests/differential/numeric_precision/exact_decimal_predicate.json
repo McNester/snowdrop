@@ -1,0 +1,4 @@
+{
+  "name": "exact_decimal_predicate",
+  "sql": "SELECT id FROM ledger WHERE amount + 0.20 = 0.30 ORDER BY id;"
+}

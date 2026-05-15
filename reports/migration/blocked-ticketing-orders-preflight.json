@@ -1,0 +1,219 @@
+{
+  "generated_at": "2026-05-11T03:50:35.728413736+00:00",
+  "runtime": {
+    "snowdrop_host": "orchestrator",
+    "snowdrop_port": 5432,
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "health_host": "orchestrator",
+    "health_port": 8080,
+    "metrics_host": "orchestrator",
+    "metrics_port": 9090
+  },
+  "source_database": "blocked_ticketing_orders",
+  "source_schema_filter": null,
+  "summary": {
+    "table_count": 1,
+    "column_count": 4,
+    "constraint_count": 1,
+    "index_count": 2,
+    "supported_tables": 0,
+    "partial_tables": 0,
+    "unsupported_tables": 1,
+    "ddl_ready_tables": 0,
+    "ddl_partial_tables": 1,
+    "ddl_blocked_tables": 0,
+    "findings_by_status": {
+      "partial": 5,
+      "unsupported": 3
+    }
+  },
+  "tables": [
+    {
+      "schema_name": "public",
+      "table_name": "blocked_orders",
+      "status": "unsupported",
+      "translation_status": "partial",
+      "columns": [
+        {
+          "column_name": "id",
+          "source_type": "bigint",
+          "snowdrop_type": "BIGINT",
+          "nullable": false,
+          "default": "nextval('blocked_orders_id_seq'::regclass)",
+          "status": "partial",
+          "notes": [
+            "sequence-backed defaults need manual handling because Snowdrop does not expose PostgreSQL serial/sequence behavior directly"
+          ]
+        },
+        {
+          "column_name": "payload",
+          "source_type": "jsonb",
+          "snowdrop_type": null,
+          "nullable": false,
+          "default": null,
+          "status": "unsupported",
+          "notes": [
+            "JSON / JSONB are still unsupported in the current Snowdrop roadmap"
+          ]
+        },
+        {
+          "column_name": "tags",
+          "source_type": "ARRAY",
+          "snowdrop_type": null,
+          "nullable": false,
+          "default": "ARRAY['new'::text]",
+          "status": "unsupported",
+          "notes": [
+            "array types are not supported by the current Snowdrop type layer"
+          ]
+        },
+        {
+          "column_name": "created_at",
+          "source_type": "timestamp without time zone",
+          "snowdrop_type": "TIMESTAMP",
+          "nullable": false,
+          "default": "now()",
+          "status": "partial",
+          "notes": [
+            "function-backed default expression needs manual review before migration"
+          ]
+        }
+      ],
+      "constraints": [
+        {
+          "name": "blocked_orders_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ],
+          "status": "supported",
+          "reference": null,
+          "delete_rule": null,
+          "update_rule": null,
+          "check_clause": null,
+          "notes": []
+        }
+      ],
+      "indexes": [
+        {
+          "name": "blocked_orders_pkey",
+          "definition": "CREATE UNIQUE INDEX blocked_orders_pkey ON public.blocked_orders USING btree (id)",
+          "status": "partial",
+          "notes": [
+            "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
+          ]
+        },
+        {
+          "name": "idx_blocked_orders_payload",
+          "definition": "CREATE INDEX idx_blocked_orders_payload ON public.blocked_orders USING gin (payload)",
+          "status": "unsupported",
+          "notes": [
+            "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively",
+            "index uses a PostgreSQL-specific access method outside the current Snowdrop subset"
+          ]
+        }
+      ],
+      "notes": [
+        "table contains unsupported PostgreSQL features for the current Snowdrop roadmap"
+      ],
+      "translation_notes": [
+        "default for column 'id' needs manual rewrite and is omitted from preview",
+        "column 'payload' has no safe Snowdrop type mapping yet",
+        "column 'tags' has no safe Snowdrop type mapping yet",
+        "default for column 'created_at' needs manual rewrite and is omitted from preview",
+        "index 'blocked_orders_pkey' is omitted from the preview and should be recreated manually if still needed",
+        "index 'idx_blocked_orders_payload' is omitted from the preview and should be recreated manually if still needed"
+      ],
+      "translated_ddl": "-- Source table public.blocked_orders\nCREATE TABLE \"blocked_orders\" (\n  \"id\" BIGINT NOT NULL,\n  \"created_at\" TIMESTAMP NOT NULL,\n  PRIMARY KEY (\"id\")\n);\n\n-- NOTE: default for column 'id' needs manual rewrite and is omitted from preview\n-- NOTE: column 'payload' has no safe Snowdrop type mapping yet\n-- NOTE: column 'tags' has no safe Snowdrop type mapping yet\n-- NOTE: default for column 'created_at' needs manual rewrite and is omitted from preview\n-- NOTE: index 'blocked_orders_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'idx_blocked_orders_payload' is omitted from the preview and should be recreated manually if still needed"
+    }
+  ],
+  "findings": [
+    {
+      "status": "partial",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.id",
+      "category": "default",
+      "message": "sequence-backed defaults need manual handling because Snowdrop does not expose PostgreSQL serial/sequence behavior directly",
+      "recommendation": "rewrite this default into explicit application-managed keys or a Snowdrop-compatible loading strategy"
+    },
+    {
+      "status": "partial",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.id",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'bigint' which maps to the Snowdrop status 'partial'",
+      "recommendation": "review this column during migration and confirm the translated semantics are acceptable"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.payload",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'jsonb' which maps to the Snowdrop status 'unsupported'",
+      "recommendation": "rewrite this column to a supported Snowdrop type or exclude it from automatic migration"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.tags",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'ARRAY' which maps to the Snowdrop status 'unsupported'",
+      "recommendation": "rewrite this column to a supported Snowdrop type or exclude it from automatic migration"
+    },
+    {
+      "status": "partial",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.created_at",
+      "category": "default",
+      "message": "function-backed default expression needs manual review before migration",
+      "recommendation": "replace this default with a supported literal or add an application-side default during migration"
+    },
+    {
+      "status": "partial",
+      "object_kind": "column",
+      "object_name": "public.blocked_orders.created_at",
+      "category": "type",
+      "message": "column uses PostgreSQL type 'timestamp without time zone' which maps to the Snowdrop status 'partial'",
+      "recommendation": "review this column during migration and confirm the translated semantics are acceptable"
+    },
+    {
+      "status": "partial",
+      "object_kind": "index",
+      "object_name": "public.blocked_orders.blocked_orders_pkey",
+      "category": "index",
+      "message": "index definition needs review during migration",
+      "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
+    },
+    {
+      "status": "unsupported",
+      "object_kind": "index",
+      "object_name": "public.blocked_orders.idx_blocked_orders_payload",
+      "category": "index",
+      "message": "index definition needs review during migration",
+      "recommendation": "recreate this index manually with a Snowdrop-supported index strategy"
+    }
+  ],
+  "unsupported_inventory": {
+    "index": [
+      "index public.blocked_orders.idx_blocked_orders_payload -> index definition needs review during migration"
+    ],
+    "type": [
+      "column public.blocked_orders.payload -> column uses PostgreSQL type 'jsonb' which maps to the Snowdrop status 'unsupported'",
+      "column public.blocked_orders.tags -> column uses PostgreSQL type 'ARRAY' which maps to the Snowdrop status 'unsupported'"
+    ]
+  },
+  "partial_inventory": {
+    "default": [
+      "column public.blocked_orders.id -> sequence-backed defaults need manual handling because Snowdrop does not expose PostgreSQL serial/sequence behavior directly",
+      "column public.blocked_orders.created_at -> function-backed default expression needs manual review before migration"
+    ],
+    "index": [
+      "index public.blocked_orders.blocked_orders_pkey -> index definition needs review during migration"
+    ],
+    "type": [
+      "column public.blocked_orders.id -> column uses PostgreSQL type 'bigint' which maps to the Snowdrop status 'partial'",
+      "column public.blocked_orders.created_at -> column uses PostgreSQL type 'timestamp without time zone' which maps to the Snowdrop status 'partial'"
+    ]
+  }
+}

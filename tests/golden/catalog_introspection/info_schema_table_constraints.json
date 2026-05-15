@@ -1,0 +1,11 @@
+{
+  "name": "info_schema_table_constraints",
+  "sql": "SELECT table_catalog, table_schema, table_name, constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_schema = 'public' AND table_name IN ('accounts', 'parent_accounts') AND constraint_name NOT LIKE '%_not_null' ORDER BY table_name, constraint_name;",
+  "expected_rows": [
+    ["catalog_introspection", "public", "accounts", "accounts_balance_check", "CHECK"],
+    ["catalog_introspection", "public", "accounts", "accounts_parent_fkey", "FOREIGN KEY"],
+    ["catalog_introspection", "public", "accounts", "accounts_pkey", "PRIMARY KEY"],
+    ["catalog_introspection", "public", "accounts", "accounts_tenant_email_key", "UNIQUE"],
+    ["catalog_introspection", "public", "parent_accounts", "parent_accounts_pkey", "PRIMARY KEY"]
+  ]
+}

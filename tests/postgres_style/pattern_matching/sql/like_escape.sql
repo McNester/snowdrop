@@ -1,0 +1,4 @@
+SELECT name
+FROM contacts
+WHERE name LIKE 'ali\_ce' ESCAPE '\'
+ORDER BY id;

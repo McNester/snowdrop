@@ -1,0 +1,1 @@
+SELECT EXTRACT(YEAR FROM event_at), EXTRACT(MONTH FROM event_at), EXTRACT(DAY FROM event_date), EXTRACT(HOUR FROM event_at), EXTRACT(MINUTE FROM reminder_at) FROM events WHERE id = 1;

@@ -1,0 +1,5 @@
+accounts_balance_check|c
+accounts_parent_fkey|f
+accounts_pkey|p
+accounts_tenant_email_key|u
+parent_accounts_pkey|p

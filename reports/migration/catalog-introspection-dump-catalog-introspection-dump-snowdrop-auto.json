@@ -1,0 +1,394 @@
+{
+  "generated_at": "2026-05-11T03:51:23.003826317+00:00",
+  "runtime": {
+    "snowdrop_host": "orchestrator",
+    "snowdrop_port": 5432,
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "health_host": "orchestrator",
+    "health_port": 8080,
+    "metrics_host": "orchestrator",
+    "metrics_port": 9090
+  },
+  "source_mode": "dump-dir",
+  "source_database": "catalog_introspection_dump",
+  "source_schema_filter": null,
+  "target_database": "catalog_introspection_dump_snowdrop",
+  "success": true,
+  "summary": {
+    "supported_tables": 0,
+    "partial_tables": 2,
+    "blocked_tables": 0,
+    "verification_passed": true
+  },
+  "blockers": [],
+  "skipped_objects": [
+    "public.accounts -> index 'accounts_pkey' is omitted from the preview and should be recreated manually if still needed",
+    "public.accounts -> index 'accounts_tenant_email_key' is omitted from the preview and should be recreated manually if still needed",
+    "public.parent_accounts -> index 'parent_accounts_pkey' is omitted from the preview and should be recreated manually if still needed"
+  ],
+  "workflow": {
+    "generated_at": "2026-05-11T03:51:22.992824685+00:00",
+    "runtime": {
+      "snowdrop_host": "orchestrator",
+      "snowdrop_port": 5432,
+      "postgres_host": "postgres",
+      "postgres_port": 5432,
+      "health_host": "orchestrator",
+      "health_port": 8080,
+      "metrics_host": "orchestrator",
+      "metrics_port": 9090
+    },
+    "source_database": "catalog_introspection_dump",
+    "target_database": "catalog_introspection_dump_snowdrop",
+    "source_schema_filter": null,
+    "preflight": {
+      "generated_at": "2026-05-11T03:51:04.250768720+00:00",
+      "runtime": {
+        "snowdrop_host": "orchestrator",
+        "snowdrop_port": 5432,
+        "postgres_host": "postgres",
+        "postgres_port": 5432,
+        "health_host": "orchestrator",
+        "health_port": 8080,
+        "metrics_host": "orchestrator",
+        "metrics_port": 9090
+      },
+      "source_database": "catalog_introspection_dump",
+      "source_schema_filter": null,
+      "summary": {
+        "table_count": 2,
+        "column_count": 6,
+        "constraint_count": 5,
+        "index_count": 3,
+        "supported_tables": 0,
+        "partial_tables": 2,
+        "unsupported_tables": 0,
+        "ddl_ready_tables": 0,
+        "ddl_partial_tables": 2,
+        "ddl_blocked_tables": 0,
+        "findings_by_status": {
+          "partial": 4
+        }
+      },
+      "tables": [
+        {
+          "schema_name": "public",
+          "table_name": "accounts",
+          "status": "partial",
+          "translation_status": "partial",
+          "columns": [
+            {
+              "column_name": "id",
+              "source_type": "bigint",
+              "snowdrop_type": "BIGINT",
+              "nullable": false,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            },
+            {
+              "column_name": "tenant_id",
+              "source_type": "bigint",
+              "snowdrop_type": "BIGINT",
+              "nullable": true,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            },
+            {
+              "column_name": "email",
+              "source_type": "varchar(255)",
+              "snowdrop_type": "VARCHAR(255)",
+              "nullable": true,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            },
+            {
+              "column_name": "parent_id",
+              "source_type": "bigint",
+              "snowdrop_type": "BIGINT",
+              "nullable": true,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            },
+            {
+              "column_name": "balance",
+              "source_type": "bigint",
+              "snowdrop_type": "BIGINT",
+              "nullable": true,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            }
+          ],
+          "constraints": [
+            {
+              "name": "accounts_balance_check",
+              "kind": "CHECK",
+              "columns": [],
+              "status": "partial",
+              "reference": null,
+              "delete_rule": null,
+              "update_rule": null,
+              "check_clause": "((balance >= 0))",
+              "notes": [
+                "CHECK constraints are supported only for the current safe row-local scalar subset"
+              ]
+            },
+            {
+              "name": "accounts_parent_fkey",
+              "kind": "FOREIGN KEY",
+              "columns": [
+                "parent_id"
+              ],
+              "status": "supported",
+              "reference": "public.parent_accounts(id)",
+              "delete_rule": "NO ACTION",
+              "update_rule": "NO ACTION",
+              "check_clause": null,
+              "notes": []
+            },
+            {
+              "name": "accounts_pkey",
+              "kind": "PRIMARY KEY",
+              "columns": [
+                "id"
+              ],
+              "status": "supported",
+              "reference": null,
+              "delete_rule": null,
+              "update_rule": null,
+              "check_clause": null,
+              "notes": []
+            },
+            {
+              "name": "accounts_tenant_email_key",
+              "kind": "UNIQUE",
+              "columns": [
+                "tenant_id",
+                "email"
+              ],
+              "status": "supported",
+              "reference": null,
+              "delete_rule": null,
+              "update_rule": null,
+              "check_clause": null,
+              "notes": [
+                "multi-column UNIQUE is supported in the current narrow Phase 4 slice"
+              ]
+            }
+          ],
+          "indexes": [
+            {
+              "name": "accounts_pkey",
+              "definition": "CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)",
+              "status": "partial",
+              "notes": [
+                "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
+              ]
+            },
+            {
+              "name": "accounts_tenant_email_key",
+              "definition": "CREATE UNIQUE INDEX accounts_tenant_email_key ON public.accounts USING btree (tenant_id, email)",
+              "status": "partial",
+              "notes": [
+                "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
+              ]
+            }
+          ],
+          "notes": [
+            "table needs manual review for partial features before a production migration"
+          ],
+          "translation_notes": [
+            "index 'accounts_pkey' is omitted from the preview and should be recreated manually if still needed",
+            "index 'accounts_tenant_email_key' is omitted from the preview and should be recreated manually if still needed"
+          ],
+          "translated_ddl": "-- Source table public.accounts\nCREATE TABLE \"accounts\" (\n  \"id\" BIGINT NOT NULL,\n  \"tenant_id\" BIGINT,\n  \"email\" VARCHAR(255),\n  \"parent_id\" BIGINT,\n  \"balance\" BIGINT,\n  CHECK (((balance >= 0))),\n  FOREIGN KEY (\"parent_id\") REFERENCES \"parent_accounts\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"tenant_id\", \"email\")\n);\n\n-- NOTE: index 'accounts_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'accounts_tenant_email_key' is omitted from the preview and should be recreated manually if still needed"
+        },
+        {
+          "schema_name": "public",
+          "table_name": "parent_accounts",
+          "status": "partial",
+          "translation_status": "partial",
+          "columns": [
+            {
+              "column_name": "id",
+              "source_type": "bigint",
+              "snowdrop_type": "BIGINT",
+              "nullable": false,
+              "default": null,
+              "status": "supported",
+              "notes": []
+            }
+          ],
+          "constraints": [
+            {
+              "name": "parent_accounts_pkey",
+              "kind": "PRIMARY KEY",
+              "columns": [
+                "id"
+              ],
+              "status": "supported",
+              "reference": null,
+              "delete_rule": null,
+              "update_rule": null,
+              "check_clause": null,
+              "notes": []
+            }
+          ],
+          "indexes": [
+            {
+              "name": "parent_accounts_pkey",
+              "definition": "CREATE UNIQUE INDEX parent_accounts_pkey ON public.parent_accounts USING btree (id)",
+              "status": "partial",
+              "notes": [
+                "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
+              ]
+            }
+          ],
+          "notes": [
+            "table needs manual review for partial features before a production migration"
+          ],
+          "translation_notes": [
+            "index 'parent_accounts_pkey' is omitted from the preview and should be recreated manually if still needed"
+          ],
+          "translated_ddl": "-- Source table public.parent_accounts\nCREATE TABLE \"parent_accounts\" (\n  \"id\" BIGINT NOT NULL,\n  PRIMARY KEY (\"id\")\n);\n\n-- NOTE: index 'parent_accounts_pkey' is omitted from the preview and should be recreated manually if still needed"
+        }
+      ],
+      "findings": [
+        {
+          "status": "partial",
+          "object_kind": "constraint",
+          "object_name": "public.accounts.accounts_balance_check",
+          "category": "constraint",
+          "message": "CHECK constraint needs manual review during migration",
+          "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
+        },
+        {
+          "status": "partial",
+          "object_kind": "index",
+          "object_name": "public.accounts.accounts_pkey",
+          "category": "index",
+          "message": "index definition needs review during migration",
+          "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
+        },
+        {
+          "status": "partial",
+          "object_kind": "index",
+          "object_name": "public.accounts.accounts_tenant_email_key",
+          "category": "index",
+          "message": "index definition needs review during migration",
+          "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
+        },
+        {
+          "status": "partial",
+          "object_kind": "index",
+          "object_name": "public.parent_accounts.parent_accounts_pkey",
+          "category": "index",
+          "message": "index definition needs review during migration",
+          "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
+        }
+      ],
+      "unsupported_inventory": {},
+      "partial_inventory": {
+        "constraint": [
+          "constraint public.accounts.accounts_balance_check -> CHECK constraint needs manual review during migration"
+        ],
+        "index": [
+          "index public.accounts.accounts_pkey -> index definition needs review during migration",
+          "index public.accounts.accounts_tenant_email_key -> index definition needs review during migration",
+          "index public.parent_accounts.parent_accounts_pkey -> index definition needs review during migration"
+        ]
+      }
+    },
+    "summary": {
+      "planned_tables": 2,
+      "blocked_tables": 0,
+      "ddl_applied_tables": 2,
+      "loaded_tables": 2,
+      "verified_tables": 2,
+      "row_count_matches": 2,
+      "sample_matches": 2,
+      "aggregate_matches": 2,
+      "replay_queries_run": 6,
+      "replay_queries_matched": 6
+    },
+    "table_runs": [
+      {
+        "schema_name": "public",
+        "table_name": "parent_accounts",
+        "translation_status": "partial",
+        "ddl_applied": true,
+        "load_status": "verified",
+        "source_row_count": 0,
+        "target_row_count": 0,
+        "row_count_match": true,
+        "sample_rows_match": true,
+        "aggregate_match": true,
+        "replay_checks": [
+          {
+            "name": "row_count",
+            "source_sql": "SELECT COUNT(*) FROM \"public\".\"parent_accounts\";",
+            "target_sql": "SELECT COUNT(*) FROM \"parent_accounts\";",
+            "matched": true,
+            "note": null
+          },
+          {
+            "name": "ordered_sample",
+            "source_sql": "SELECT \"id\" FROM \"public\".\"parent_accounts\" ORDER BY \"id\" LIMIT 25;",
+            "target_sql": "SELECT \"id\" FROM \"parent_accounts\" ORDER BY \"id\" LIMIT 25;",
+            "matched": true,
+            "note": null
+          },
+          {
+            "name": "numeric_aggregates",
+            "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\") FROM \"public\".\"parent_accounts\";",
+            "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\") FROM \"parent_accounts\";",
+            "matched": true,
+            "note": null
+          }
+        ],
+        "notes": []
+      },
+      {
+        "schema_name": "public",
+        "table_name": "accounts",
+        "translation_status": "partial",
+        "ddl_applied": true,
+        "load_status": "verified",
+        "source_row_count": 0,
+        "target_row_count": 0,
+        "row_count_match": true,
+        "sample_rows_match": true,
+        "aggregate_match": true,
+        "replay_checks": [
+          {
+            "name": "row_count",
+            "source_sql": "SELECT COUNT(*) FROM \"public\".\"accounts\";",
+            "target_sql": "SELECT COUNT(*) FROM \"accounts\";",
+            "matched": true,
+            "note": null
+          },
+          {
+            "name": "ordered_sample",
+            "source_sql": "SELECT \"id\", \"tenant_id\", \"email\", \"parent_id\", \"balance\" FROM \"public\".\"accounts\" ORDER BY \"id\" LIMIT 25;",
+            "target_sql": "SELECT \"id\", \"tenant_id\", \"email\", \"parent_id\", \"balance\" FROM \"accounts\" ORDER BY \"id\" LIMIT 25;",
+            "matched": true,
+            "note": null
+          },
+          {
+            "name": "numeric_aggregates",
+            "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"tenant_id\"), SUM(\"tenant_id\"), COUNT(\"parent_id\"), SUM(\"parent_id\"), COUNT(\"balance\"), SUM(\"balance\") FROM \"public\".\"accounts\";",
+            "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"tenant_id\"), SUM(\"tenant_id\"), COUNT(\"parent_id\"), SUM(\"parent_id\"), COUNT(\"balance\"), SUM(\"balance\") FROM \"accounts\";",
+            "matched": true,
+            "note": null
+          }
+        ],
+        "notes": []
+      }
+    ]
+  }
+}

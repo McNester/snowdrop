@@ -1,0 +1,4 @@
+1..3
+ok 1 - valid insert
+ok 2 - invalid insert rejected
+ok 3 - invalid update rejected

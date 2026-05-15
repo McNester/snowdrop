@@ -1,0 +1,4 @@
+{
+  "name": "time_extract_cast",
+  "sql": "SELECT EXTRACT(MINUTE FROM CAST('12:34:56' AS TIME)), EXTRACT(SECOND FROM CAST('12:34:56' AS TIME)) FROM events WHERE id = 1;"
+}

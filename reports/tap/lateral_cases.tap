@@ -1,0 +1,4 @@
+1..3
+ok 1 - inner join lateral latest paid
+ok 2 - left join lateral latest paid
+ok 3 - lateral values unsupported

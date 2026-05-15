@@ -1,0 +1,4 @@
+1..3
+ok 1 - like single wildcard
+ok 2 - like escape
+ok 3 - ilike prefix

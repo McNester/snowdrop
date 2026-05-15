@@ -1,9 +1,9 @@
 {
   "name": "join_edge_cases",
   "database": "join_edge_cases",
-  "description": "Duplicate matches, unmatched rows, and left-join null-filling.",
-  "purpose": "Exercise join edge behavior for inner and left join semantics.",
-  "tables": ["orders", "customers"],
-  "suites": ["golden", "differential"],
+  "description": "Duplicate matches, unmatched rows, cross products, and null-padding across base JOIN types.",
+  "purpose": "Exercise INNER, LEFT, RIGHT, FULL OUTER, and CROSS JOIN behavior for the practical Phase 6.5 subset.",
+  "tables": ["orders", "customers", "ticket_classes"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style", "tap"],
   "postgres_enabled": true
 }

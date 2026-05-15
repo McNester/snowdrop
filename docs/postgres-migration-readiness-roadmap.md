@@ -53,6 +53,18 @@ This roadmap assumes the near-term priority is:
     - distinct `INTERSECT`
     - distinct `EXCEPT`
   - remaining advanced-query gaps are now narrower variants beyond the current narrow window / lateral / recursive slices
+- Phase 5 is now started with an initial numeric-semantics slice:
+  - `DECIMAL` / `NUMERIC` values now preserve exact runtime semantics in the row and relation execution paths instead of immediately degrading into loose float-only comparisons
+  - a first fixed-dataset `numeric_precision` family now covers exact decimal arithmetic, predicates, ordering, and aggregates
+  - a practical date/time slice now preserves typed `DATE` / `TIMESTAMP` / `TIME` values at runtime, adds a narrow `EXTRACT` subset, and is covered by the `datetime_semantics` dataset family
+  - `information_schema` coverage now also includes targeted constraint introspection handlers for `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`, and `REFERENTIAL_CONSTRAINTS`, backed by the `catalog_introspection` dataset family
+  - `LIKE` / `ILIKE` pattern matching now supports `%`, `_`, `ESCAPE`, and case-insensitive matching in the current practical subset
+  - a minimal `pg_catalog` compatibility layer now covers common introspection queries over `pg_tables`, `pg_class`, `pg_attribute`, and table-backed `pg_constraint` rows
+- Phase 6 is now started with a migration-preflight foundation:
+  - `snowdrop-testkit migration-preflight --database <db>` now performs PostgreSQL schema introspection over non-system schemas
+  - the preflight pass emits a structured `supported / partial / unsupported` compatibility report for tables, columns, constraints, and indexes
+  - JSON, Markdown, and SQL translation-preview artifacts are written under `reports/migration/`
+  - `snowdrop-testkit migration-run --database <db>` now builds on preflight to create a Snowdrop target database, apply safe translated DDL, load table data, and run row-count / sample / aggregate verification
 
 The remaining work for Phase 1 and Phase 3 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
 
@@ -577,19 +589,33 @@ Phase 4 is now started with a real implemented narrow slice and fixed-dataset co
 Datasets:
 
 - `numeric_precision`
-- `date_time_semantics`
+- `datetime_semantics`
 - `catalog_introspection`
 
 Cases to cover:
 
 - numeric rounding and equality edge cases
-- date comparisons and ordering
+- date comparisons, temporal ordering, and practical `EXTRACT`
 - introspection queries used by clients and migration tooling
 
 ### Exit Criteria
 
 - type behavior is less surprising and better documented
 - client and tool introspection friction is reduced
+
+Current status:
+
+- completed in the current practical slice:
+  - exact `DECIMAL` / `NUMERIC` runtime semantics
+  - practical typed `DATE` / `TIME` / `TIMESTAMP` handling plus a narrow `EXTRACT` subset
+  - richer `LIKE` / `ILIKE` behavior with wildcard and `ESCAPE` support
+  - targeted `information_schema` coverage for constraint introspection
+  - minimal `pg_catalog` compatibility for common introspection queries
+- remaining for later slices:
+  - broader PostgreSQL temporal semantics
+  - broader `pg_catalog` parity
+  - richer regex / text operator surface
+  - deeper client/tool compatibility beyond the current practical subset
 
 ## Phase 6: PostgreSQL Migration Workflow
 
@@ -639,6 +665,93 @@ Validation layers:
 - Snowdrop can explain what it can migrate
 - Snowdrop can reject unsupported features clearly
 - migration success is measured by repeatable validation, not by anecdotal loading success
+
+Current status:
+
+- implemented in the current practical slice:
+  - `migration-preflight` introspects PostgreSQL schemas and emits compatibility plus safe translation-preview artifacts before any load step begins
+  - `migration-run` creates a Snowdrop target database, applies safe translated DDL, loads supported tables, and records row-count / sample / aggregate verification
+  - preflight reports now include a clearer unsupported / partial feature inventory
+  - workflow reports now record the replayed verification-query subset, including count, ordered sample, and numeric aggregate checks
+- remaining:
+  - broader replay workflows for real application query subsets
+  - broader data-shape validation and more sophisticated load orchestration beyond the current practical subset
+
+## Phase 6.5: Automatic Migration and Join Completion
+
+### Objectives
+
+- bridge the gap between a practical migration workflow and an operator-usable automatic migration path
+- close the remaining base JOIN-type gaps that still block common PostgreSQL query surfaces
+- add a large reproducible PostgreSQL fixture that can stress migration, verification, and join-heavy reads
+- audit the compatibility contract so roadmap, matrix, and runtime behavior stay aligned
+
+### Functional Priorities
+
+1. `CROSS JOIN`
+2. `RIGHT JOIN ... ON`
+3. `FULL OUTER JOIN ... ON`
+4. join execution/performance hardening
+5. one-command automatic migration
+6. dump-input migration support
+7. large ticketing/orders PostgreSQL fixture
+8. a narrow cleanup pass over high-value read-path gaps
+
+### Recommended Deliverables
+
+- a canonical `migration-auto` command that runs preflight, safe translation, load, and verification as one workflow
+- dump-input staging that reuses the same safety model as live PostgreSQL sources
+- a deterministic large PostgreSQL fixture under `tests/large_postgres_bases_for_test/`
+- expanded JOIN coverage across `golden`, `differential`, `sqllogictest`, `postgres_style`, and `tap`
+- a final code/doc audit pass with generated artifacts cleaned from the worktree
+
+### Required Test Coverage
+
+JOIN coverage:
+
+- `CROSS JOIN` base product cases
+- `RIGHT JOIN` with unmatched rows
+- `FULL OUTER JOIN` with unmatched rows on both sides
+- null-padding projections over right/full join output
+- grouped and ordered queries over the new join outputs
+
+Automatic migration coverage:
+
+- good-candidate schema migrates end-to-end
+- unsupported features fail fast with a readable blocker report
+- safe omissions are reported explicitly
+- FK cycles are blocked deterministically
+- live and dump-input workflows both run through the same preflight / translation / load / verify model
+
+Large fixture coverage:
+
+- `migration-preflight`
+- `migration-run`
+- `migration-auto`
+- row-count / sample / aggregate verification
+- representative join-heavy operational queries
+
+### Exit Criteria
+
+- `RIGHT JOIN`, `FULL OUTER JOIN`, and `CROSS JOIN` move from explicit gaps to tested supported subsets
+- automatic migration exists as a one-command workflow over both live PostgreSQL sources and dump directories
+- the large PostgreSQL fixture is reproducible from checked-in SQL and used in migration validation
+- the compatibility matrix reflects the tested JOIN and migration contract precisely
+- the phase ends with a green regression pass and a cleaned worktree
+
+Current status:
+
+- implemented in the current practical slice:
+  - `RIGHT JOIN ... ON`, `FULL OUTER JOIN ... ON`, and `CROSS JOIN` are now routed through the shared relation-backed join semantics
+  - `migration-auto` now acts as the high-level automatic migration entrypoint on top of `migration-preflight` and `migration-run`
+  - migration commands can now work from either a live PostgreSQL database or a checked-in dump directory
+  - `tests/large_postgres_bases_for_test/` now contains:
+    - a large ticketing/orders fixture for stress validation
+    - a smaller blocked fixture for unsupported-feature reporting quality
+  - the current cleanup slice also adds a narrow `SELECT`-without-`FROM` subset for simple scalar projections
+- remaining:
+  - broader replay of real application query subsets
+  - more sophisticated orchestration and recovery beyond the current practical automatic subset
 
 ## Cross-Cutting Testing Strategy
 

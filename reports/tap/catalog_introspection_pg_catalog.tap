@@ -1,0 +1,5 @@
+1..4
+ok 1 - pg tables
+ok 2 - pg class
+ok 3 - pg attribute
+ok 4 - pg constraint

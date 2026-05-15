@@ -1,0 +1,5 @@
+{
+  "name": "right_join_unmatched_orders",
+  "sql": "SELECT o.id, c.name, o.amount FROM customers c RIGHT JOIN orders o ON c.id = o.customer_id ORDER BY o.id;",
+  "expected_rows": [["10", "Alice", "10"], ["11", "Alice", "20"], ["12", "Bob", "5"], ["13", "NULL", "99"]]
+}

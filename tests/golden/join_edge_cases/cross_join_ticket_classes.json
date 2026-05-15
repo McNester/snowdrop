@@ -1,0 +1,5 @@
+{
+  "name": "cross_join_ticket_classes",
+  "sql": "SELECT c.name, tc.label FROM customers c CROSS JOIN ticket_classes tc ORDER BY c.name, tc.label;",
+  "expected_rows": [["Alice", "std"], ["Alice", "vip"], ["Bob", "std"], ["Bob", "vip"], ["Cara", "std"], ["Cara", "vip"]]
+}

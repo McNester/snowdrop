@@ -1,0 +1,24 @@
+{
+  "name": "join_edge_cases",
+  "dataset": "join_edge_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "cross join ticket classes",
+      "sql": "SELECT c.name, tc.label FROM customers c CROSS JOIN ticket_classes tc ORDER BY c.name, tc.label;",
+      "expected_rows": [["Alice", "std"], ["Alice", "vip"], ["Bob", "std"], ["Bob", "vip"], ["Cara", "std"], ["Cara", "vip"]]
+    },
+    {
+      "kind": "sql",
+      "name": "right join unmatched orders",
+      "sql": "SELECT o.id, c.name, o.amount FROM customers c RIGHT JOIN orders o ON c.id = o.customer_id ORDER BY o.id;",
+      "expected_rows": [["10", "Alice", "10"], ["11", "Alice", "20"], ["12", "Bob", "5"], ["13", "NULL", "99"]]
+    },
+    {
+      "kind": "sql",
+      "name": "full outer grouped counts",
+      "sql": "SELECT c.name AS bucket, COUNT(o.id) AS order_count FROM customers c FULL OUTER JOIN orders o ON c.id = o.customer_id GROUP BY c.name ORDER BY bucket;",
+      "expected_rows": [["Alice", "2"], ["Bob", "1"], ["Cara", "0"], ["NULL", "1"]]
+    }
+  ]
+}

@@ -10,6 +10,11 @@ SELECT CAST(score_text AS BIGINT) FROM profiles WHERE id = 1;
 ----
 10
 
+query T
+SELECT 1;
+----
+1
+
 statement error
 SELECT COALESCE() FROM profiles;
 

@@ -1,0 +1,4 @@
+{
+  "name": "pg_catalog_pg_attribute",
+  "sql": "SELECT a.attname, t.typname FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE n.nspname = 'public' AND c.relname = 'accounts' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum;"
+}

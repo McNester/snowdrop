@@ -8,3 +8,7 @@ INSERT INTO orders (id, customer_id, amount) VALUES
   (11, 1, 20),
   (12, 2, 5),
   (13, 99, 99);
+
+INSERT INTO ticket_classes (id, label) VALUES
+  (1, 'std'),
+  (2, 'vip');
