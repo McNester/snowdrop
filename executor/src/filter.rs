@@ -107,12 +107,13 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
         }
         Expr::Value(val) => literal_to_typed(val),
         Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
-            if let TypedValue::Int(i) = resolve_value(expr, row, schema_cols) {
-                TypedValue::Int(-i)
-            } else if let TypedValue::Float(f) = resolve_value(expr, row, schema_cols) {
-                TypedValue::Float(-f)
-            } else {
-                TypedValue::Null
+            match resolve_value(expr, row, schema_cols) {
+                TypedValue::Int(i) => i
+                    .checked_neg()
+                    .map(TypedValue::Int)
+                    .unwrap_or(TypedValue::Null),
+                TypedValue::Float(f) => TypedValue::Float(-f),
+                _ => TypedValue::Null,
             }
         }
         Expr::BinaryOp { left, op, right } => {
@@ -357,12 +358,13 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
         }
         Expr::Value(val) => literal_to_typed(val),
         Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
-            if let TypedValue::Int(i) = resolve_value_view(expr, view, schema_cols) {
-                TypedValue::Int(-i)
-            } else if let TypedValue::Float(f) = resolve_value_view(expr, view, schema_cols) {
-                TypedValue::Float(-f)
-            } else {
-                TypedValue::Null
+            match resolve_value_view(expr, view, schema_cols) {
+                TypedValue::Int(i) => i
+                    .checked_neg()
+                    .map(TypedValue::Int)
+                    .unwrap_or(TypedValue::Null),
+                TypedValue::Float(f) => TypedValue::Float(-f),
+                _ => TypedValue::Null,
             }
         }
         Expr::BinaryOp { left, op, right } => {
