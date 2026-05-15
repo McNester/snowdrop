@@ -211,6 +211,9 @@ impl TypedValue {
                 .as_time()
                 .map(TypedValue::Time)
                 .ok_or_else(|| format!("cannot cast '{}' to {}", self, data_type)),
+            // PostgreSQL pseudo-types (regclass, regtype, oid, etc.) — return as text.
+            // DBeaver and other clients use these in catalog queries.
+            DataType::Custom(_, _) => Ok(TypedValue::Text(self.to_string())),
             _ => Err(format!("CAST to {} is not supported", data_type)),
         }
     }
@@ -262,6 +265,7 @@ impl TypedValue {
                 | DataType::Timestamp(_, _)
                 | DataType::Time(_, _)
                 | DataType::String(_)
+                | DataType::Custom(_, _)
         )
     }
 

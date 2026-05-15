@@ -1,4 +1,4 @@
-use executor::column_store::{self, Bitmap, CmpOp, TableColumns};
+ use executor::column_store::{self, Bitmap, CmpOp, TableColumns};
 use executor::index::{self, encode_index_value};
 use executor::typed_value::EMPTY_TEXT_SENTINEL;
 use executor::{
@@ -3227,6 +3227,24 @@ impl QueryRouter {
             "pg_type" => self.build_pg_type_relation(current_db).await?,
             "pg_attribute" => self.build_pg_attribute_relation(current_db).await?,
             "pg_constraint" => self.build_pg_constraint_relation(current_db).await?,
+            // Return empty relations for pg_catalog tables queried by clients like DBeaver
+            // that are not yet implemented in Snowdrop.
+            "pg_description" => relation_from_rows(
+                vec![],
+                &["objoid", "classoid", "objsubid", "description"],
+            ),
+            "pg_index" => relation_from_rows(
+                vec![],
+                &["indexrelid", "indrelid", "indisprimary", "indisunique"],
+            ),
+            "pg_trigger" => relation_from_rows(vec![], &["tgrelid", "tgname"]),
+            "pg_proc" => relation_from_rows(vec![], &["oid", "proname", "pronamespace"]),
+            "pg_roles" => relation_from_rows(vec![], &["oid", "rolname"]),
+            "pg_user" => relation_from_rows(vec![], &["usename", "usesysid"]),
+            "pg_stat_activity" => relation_from_rows(
+                vec![],
+                &["pid", "datname", "usename", "state", "query"],
+            ),
             _ => return Ok(None),
         };
 
