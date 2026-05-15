@@ -1,0 +1,5 @@
+{
+  "name": "insert_grouped_customer_totals",
+  "sql": "INSERT INTO customer_totals (customer, total) SELECT customer, SUM(total) AS total FROM live_orders GROUP BY customer ORDER BY customer; SELECT customer, total FROM customer_totals ORDER BY customer;",
+  "expected_rows": [["Alice", "75"], ["Bob", "20"], ["Cara", "120"]]
+}

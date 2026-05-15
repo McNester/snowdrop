@@ -1,0 +1,1 @@
+ERROR: INSERT ... SELECT value for target column 'total' is not compatible with type FLOAT

@@ -1,0 +1,5 @@
+{
+  "name": "recursive_cte_error",
+  "sql": "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 3) SELECT n FROM nums;",
+  "expected_error": "recursive CTE is not supported yet"
+}

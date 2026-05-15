@@ -1,0 +1,9 @@
+{
+  "name": "subquery_cases",
+  "database": "subquery_cases",
+  "description": "Non-correlated subquery fixture for scalar, IN, and EXISTS-style relation execution.",
+  "purpose": "Exercise supported non-correlated subqueries and keep unsupported nested forms explicit.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style"],
+  "postgres_enabled": true
+}

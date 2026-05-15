@@ -44,7 +44,7 @@ These queries exercise:
 From the host:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build orchestrator
 $env:PGPASSWORD = "<your-postgres-password>"
 cargo run --release -p tpch-bench -- --scale 1 --runs 10 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json
 ```
@@ -59,7 +59,7 @@ docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:
 To generate the unified report with the benchmark section included:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build orchestrator
 $env:PGPASSWORD = "<your-postgres-password>"
 cargo run -p snowdrop-testkit -- run-all --with-tpch
 ```
@@ -102,6 +102,7 @@ It should not be treated as:
 - Use `--seed` so Snowdrop and PostgreSQL receive the same generated dataset.
 - Use `--with-indexes` to compare the baseline and indexed Snowdrop paths.
 - Prefer the unified report for team-facing communication because it also shows correctness suite status.
+- Rebuild the `orchestrator` service before rerunning benchmarks after query-engine changes; otherwise you may benchmark an older Snowdrop binary.
 - If a benchmark regression appears, correlate it with query-stage metrics on `/metrics` before drawing conclusions.
 
 ## Related Docs

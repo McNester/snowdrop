@@ -1,0 +1,9 @@
+{
+  "name": "set_ops_cases",
+  "database": "set_ops_cases",
+  "description": "Compound-query fixture for UNION ALL, UNION, and explicit unsupported set-operation boundaries.",
+  "purpose": "Exercise supported UNION paths and keep INTERSECT/EXCEPT boundaries explicit.",
+  "tables": ["left_values", "right_values", "numeric_values"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style"],
+  "postgres_enabled": true
+}

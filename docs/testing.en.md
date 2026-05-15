@@ -9,7 +9,7 @@ Snowdrop now uses a dedicated testing foundation built around:
 - a Docker-oriented runner crate: `snowdrop-testkit`
 - one unified generated report: `reports/test-report.md`
 
-This v1 testing system is intentionally Docker-first. Start the services with `docker compose up -d`, then run the harness commands from the repository root.
+This testing system is intentionally Docker-first. After query-engine or SQL-surface changes, rebuild and restart Snowdrop with `docker compose up -d --build orchestrator`, then run the harness commands from the repository root.
 
 When a suite needs PostgreSQL access, the runner reads the password from `PGPASSWORD` first and falls back to `POSTGRES_PASSWORD`.
 
@@ -76,7 +76,7 @@ Rules:
 
 - Covers readiness and integration-style smoke checks
 - Uses JSON suite definitions in `tests/tap/`
-- Produces TAP-like output files under `target/snowdrop-testkit/tap/`
+- Produces TAP-like output files under `reports/tap/`
 
 ### PostgreSQL-style subset
 
@@ -89,7 +89,7 @@ Rules:
 Canonical workflow:
 
 ```powershell
-docker compose up -d
+docker compose up -d --build orchestrator
 $env:PGPASSWORD = "<your-postgres-password>"
 cargo run -p snowdrop-testkit -- list-datasets
 cargo run -p snowdrop-testkit -- run-all --with-tpch
@@ -111,6 +111,7 @@ Notes:
 
 - `golden`, `sqllogictest`, and `tap` suites can run without PostgreSQL credentials.
 - `differential`, `postgres-style`, and `run-all --with-tpch` need `PGPASSWORD` or `POSTGRES_PASSWORD` to be set before launch.
+- `run` and `run-all` perform a small Phase 3 runtime preflight. If the harness reports an outdated Snowdrop runtime, rebuild the orchestrator and rerun. Bypass this guard only intentionally with `SNOWDROP_SKIP_RUNTIME_PROBE=1`.
 
 ## Generated Artifacts
 
@@ -122,6 +123,7 @@ It includes:
 
 - environment metadata
 - dataset inventory
+- a short Phase 3 feature summary showing supported, partial, and explicitly unsupported families
 - per-dataset suite summary
 - case tables for golden, differential, sqllogictest, TAP-style, and PostgreSQL-style suites
 - skipped or unsupported cases

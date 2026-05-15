@@ -1,0 +1,5 @@
+{
+  "name": "subquery_in_function_error",
+  "sql": "SELECT name, COALESCE((SELECT COUNT(*) FROM orders), 0) FROM customers ORDER BY id;",
+  "expected_error": "subqueries inside function 'COALESCE' are not supported yet"
+}

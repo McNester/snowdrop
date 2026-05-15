@@ -1,0 +1,6 @@
+SELECT d.name, SUM(w.hours) AS total_hours
+FROM departments d
+INNER JOIN worklog w ON d.id = w.dept_id
+GROUP BY d.name
+HAVING SUM(w.hours) >= 5
+ORDER BY total_hours DESC, d.name;

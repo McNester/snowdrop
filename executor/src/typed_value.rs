@@ -1,6 +1,6 @@
+use sqlparser::ast::DataType;
 use std::cmp::Ordering;
 use std::fmt;
-use sqlparser::ast::DataType;
 
 pub const EMPTY_TEXT_SENTINEL: &str = "\u{0000}";
 
@@ -25,21 +25,24 @@ impl TypedValue {
         let dt_upper = data_type.to_uppercase();
 
         match dt_upper.as_str() {
-            "TINYINT" | "SMALLINT" | "INT" | "INTEGER" | "BIGINT" => {
-                s.parse::<i64>().map(TypedValue::Int).unwrap_or(TypedValue::Text(s.into_owned()))
-            }
-            "FLOAT" | "DOUBLE" | "REAL" => {
-                s.parse::<f64>().map(TypedValue::Float).unwrap_or(TypedValue::Text(s.into_owned()))
-            }
+            "TINYINT" | "SMALLINT" | "INT" | "INTEGER" | "BIGINT" => s
+                .parse::<i64>()
+                .map(TypedValue::Int)
+                .unwrap_or(TypedValue::Text(s.into_owned())),
+            "FLOAT" | "DOUBLE" | "REAL" => s
+                .parse::<f64>()
+                .map(TypedValue::Float)
+                .unwrap_or(TypedValue::Text(s.into_owned())),
             "BOOLEAN" | "BOOL" => match s.as_ref() {
                 "true" | "1" | "t" => TypedValue::Boolean(true),
                 "false" | "0" | "f" => TypedValue::Boolean(false),
                 _ => TypedValue::Text(s.into_owned()),
             },
             // DECIMAL/NUMERIC stored as text, compared as float for numeric operations
-            dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => {
-                s.parse::<f64>().map(TypedValue::Float).unwrap_or(TypedValue::Text(s.into_owned()))
-            }
+            dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => s
+                .parse::<f64>()
+                .map(TypedValue::Float)
+                .unwrap_or(TypedValue::Text(s.into_owned())),
             // VARCHAR, CHAR, TEXT, DATE, DATETIME, TIMESTAMP all stored as text
             _ => {
                 if s.as_ref() == EMPTY_TEXT_SENTINEL {
@@ -202,7 +205,9 @@ impl TypedValue {
             (TypedValue::Null, _) => Ordering::Less,
             (_, TypedValue::Null) => Ordering::Greater,
             (TypedValue::Int(a), TypedValue::Int(b)) => a.cmp(b),
-            (TypedValue::Float(a), TypedValue::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (TypedValue::Float(a), TypedValue::Float(b)) => {
+                a.partial_cmp(b).unwrap_or(Ordering::Equal)
+            }
             (TypedValue::Int(a), TypedValue::Float(b)) => {
                 (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
             }
@@ -229,8 +234,12 @@ impl TypedValue {
             (TypedValue::Text(a), TypedValue::Text(b)) => a == b,
             (TypedValue::Boolean(a), TypedValue::Boolean(b)) => a == b,
             // Allow string-to-number comparison for WHERE col = '42'
-            (TypedValue::Int(a), TypedValue::Text(b)) => b.parse::<i64>().map_or(false, |v| *a == v),
-            (TypedValue::Text(a), TypedValue::Int(b)) => a.parse::<i64>().map_or(false, |v| v == *b),
+            (TypedValue::Int(a), TypedValue::Text(b)) => {
+                b.parse::<i64>().map_or(false, |v| *a == v)
+            }
+            (TypedValue::Text(a), TypedValue::Int(b)) => {
+                a.parse::<i64>().map_or(false, |v| v == *b)
+            }
             _ => false,
         }
     }
@@ -305,13 +314,22 @@ mod tests {
 
     #[test]
     fn from_bytes_float_types() {
-        assert_eq!(TypedValue::from_bytes(b"3.14", "FLOAT"), TypedValue::Float(3.14));
-        assert_eq!(TypedValue::from_bytes(b"2.0", "DOUBLE"), TypedValue::Float(2.0));
+        assert_eq!(
+            TypedValue::from_bytes(b"3.14", "FLOAT"),
+            TypedValue::Float(3.14)
+        );
+        assert_eq!(
+            TypedValue::from_bytes(b"2.0", "DOUBLE"),
+            TypedValue::Float(2.0)
+        );
     }
 
     #[test]
     fn from_bytes_decimal() {
-        assert_eq!(TypedValue::from_bytes(b"99.95", "DECIMAL(10,2)"), TypedValue::Float(99.95));
+        assert_eq!(
+            TypedValue::from_bytes(b"99.95", "DECIMAL(10,2)"),
+            TypedValue::Float(99.95)
+        );
     }
 
     #[test]
@@ -332,8 +350,14 @@ mod tests {
 
     #[test]
     fn from_bytes_boolean() {
-        assert_eq!(TypedValue::from_bytes(b"true", "BOOLEAN"), TypedValue::Boolean(true));
-        assert_eq!(TypedValue::from_bytes(b"0", "BOOLEAN"), TypedValue::Boolean(false));
+        assert_eq!(
+            TypedValue::from_bytes(b"true", "BOOLEAN"),
+            TypedValue::Boolean(true)
+        );
+        assert_eq!(
+            TypedValue::from_bytes(b"0", "BOOLEAN"),
+            TypedValue::Boolean(false)
+        );
     }
 
     #[test]
@@ -359,14 +383,26 @@ mod tests {
 
     #[test]
     fn cmp_order_nulls_sort_first() {
-        assert_eq!(TypedValue::Null.cmp_order(&TypedValue::Int(1)), Ordering::Less);
-        assert_eq!(TypedValue::Int(1).cmp_order(&TypedValue::Null), Ordering::Greater);
+        assert_eq!(
+            TypedValue::Null.cmp_order(&TypedValue::Int(1)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TypedValue::Int(1).cmp_order(&TypedValue::Null),
+            Ordering::Greater
+        );
     }
 
     #[test]
     fn cmp_order_integers() {
-        assert_eq!(TypedValue::Int(1).cmp_order(&TypedValue::Int(2)), Ordering::Less);
-        assert_eq!(TypedValue::Int(5).cmp_order(&TypedValue::Int(5)), Ordering::Equal);
+        assert_eq!(
+            TypedValue::Int(1).cmp_order(&TypedValue::Int(2)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TypedValue::Int(5).cmp_order(&TypedValue::Int(5)),
+            Ordering::Equal
+        );
     }
 
     #[test]

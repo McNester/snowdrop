@@ -1,0 +1,5 @@
+{
+  "name": "lateral_error",
+  "sql": "SELECT c.name FROM customers c INNER JOIN LATERAL (SELECT o.total FROM orders o WHERE o.customer_id = c.id) AS recent ON TRUE;",
+  "expected_error": "LATERAL is not supported yet"
+}

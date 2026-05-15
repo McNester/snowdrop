@@ -1,0 +1,9 @@
+{
+  "name": "correlated_subquery_cases",
+  "database": "correlated_subquery_cases",
+  "description": "Correlated subquery fixture for EXISTS, IN, scalar projection, and grouped HAVING coverage.",
+  "purpose": "Exercise supported correlated subqueries while keeping lateral-style boundaries explicit.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style"],
+  "postgres_enabled": true
+}

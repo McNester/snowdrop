@@ -1,0 +1,5 @@
+{
+  "name": "correlated_subquery_cases",
+  "description": "PostgreSQL-style regression subset for correlated subqueries.",
+  "dataset": "correlated_subquery_cases"
+}

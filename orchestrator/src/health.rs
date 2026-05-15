@@ -11,10 +11,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-pub async fn serve_health(
-    state: Arc<RwLock<AppState>>,
-    port: u16,
-) -> anyhow::Result<()> {
+pub async fn serve_health(state: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     info!(port, "health endpoint listening");
@@ -27,9 +24,7 @@ pub async fn serve_health(
         tokio::spawn(async move {
             let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                 let state = state.clone();
-                async move {
-                    handle_health(req, state).await
-                }
+                async move { handle_health(req, state).await }
             });
 
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {

@@ -1,0 +1,2 @@
+SELECT ROW_NUMBER() OVER (ORDER BY id)
+FROM profiles;

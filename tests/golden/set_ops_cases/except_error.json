@@ -1,0 +1,5 @@
+{
+  "name": "except_error",
+  "sql": "SELECT value FROM left_values EXCEPT SELECT value FROM right_values;",
+  "expected_error": "EXCEPT is not supported yet"
+}

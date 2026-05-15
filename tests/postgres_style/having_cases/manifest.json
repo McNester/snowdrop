@@ -1,0 +1,5 @@
+{
+  "name": "having_cases",
+  "description": "PostgreSQL-style regression subset for grouped HAVING and ORDER BY expression coverage.",
+  "dataset": "having_cases"
+}

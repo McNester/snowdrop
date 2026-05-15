@@ -1,0 +1,13 @@
+INSERT INTO archive_orders (id, customer, total, status)
+WITH staged AS (
+  SELECT id, customer, total, UPPER(status) AS status
+  FROM live_orders
+  WHERE total >= 50
+)
+SELECT id, customer, total, status
+FROM staged
+ORDER BY id;
+
+SELECT id, customer, total, status
+FROM archive_orders
+ORDER BY id;

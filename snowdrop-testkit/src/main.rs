@@ -12,6 +12,8 @@ use tpch_bench::{tpch_markdown_section, BenchmarkOptions, QueryResult};
 const RAW_RESULTS_PATH: &str = "reports/raw/snowdrop-testkit-results.json";
 const REPORT_PATH: &str = "reports/test-report.md";
 const LEGACY_RAW_RESULTS_PATH: &str = "target/snowdrop-testkit/results.json";
+const PHASE3_RUNTIME_PROBE_DB: &str = "__snowdrop_phase3_probe";
+const SKIP_RUNTIME_PROBE_ENV: &str = "SNOWDROP_SKIP_RUNTIME_PROBE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeConfig {
@@ -112,9 +114,16 @@ struct SqlLogicFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum SqlLogicCommand {
-    StatementOk { sql: String },
-    StatementError { sql: String },
-    Query { sql: String, expected_rows: Vec<Vec<String>> },
+    StatementOk {
+        sql: String,
+    },
+    StatementError {
+        sql: String,
+    },
+    Query {
+        sql: String,
+        expected_rows: Vec<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,9 +164,16 @@ struct CaseOutcome {
 
 enum Command {
     ListDatasets,
-    Load { dataset: String },
-    Run { dataset: Option<String>, suite: String },
-    RunAll { with_tpch: bool },
+    Load {
+        dataset: String,
+    },
+    Run {
+        dataset: Option<String>,
+        suite: String,
+    },
+    RunAll {
+        with_tpch: bool,
+    },
     Report,
 }
 
@@ -189,12 +205,14 @@ async fn async_main() -> Result<()> {
         }
         Command::Load { dataset } => {
             let manifest = dataset_by_name(&repo_root, &dataset)?;
-            load_dataset(&runtime, &manifest, manifest.postgres_enabled).await?;
+            load_dataset(&repo_root, &runtime, &manifest, manifest.postgres_enabled).await?;
             println!("Loaded dataset {}", manifest.name);
         }
         Command::Run { dataset, suite } => {
+            ensure_phase3_runtime(&runtime).await?;
             let datasets = load_dataset_manifests(&repo_root)?;
-            let run = run_named_suite(&repo_root, &runtime, &suite, dataset.as_deref(), &datasets).await?;
+            let run = run_named_suite(&repo_root, &runtime, &suite, dataset.as_deref(), &datasets)
+                .await?;
             let results = UnifiedResults {
                 generated_at: Utc::now().to_rfc3339(),
                 runtime,
@@ -204,12 +222,21 @@ async fn async_main() -> Result<()> {
                 tpch_options: None,
             };
             write_results_artifacts(&repo_root, &results)?;
+            print_console_summary(&results);
         }
         Command::RunAll { with_tpch } => {
+            ensure_phase3_runtime(&runtime).await?;
             let datasets = load_dataset_manifests(&repo_root)?;
             let mut suite_runs = Vec::new();
-            for suite in ["golden", "differential", "sqllogictest", "tap", "postgres-style"] {
-                suite_runs.push(run_named_suite(&repo_root, &runtime, suite, None, &datasets).await?);
+            for suite in [
+                "golden",
+                "differential",
+                "sqllogictest",
+                "tap",
+                "postgres-style",
+            ] {
+                suite_runs
+                    .push(run_named_suite(&repo_root, &runtime, suite, None, &datasets).await?);
             }
 
             let (tpch_results, tpch_options) = if with_tpch {
@@ -245,6 +272,7 @@ async fn async_main() -> Result<()> {
                 tpch_options,
             };
             write_results_artifacts(&repo_root, &results)?;
+            print_console_summary(&results);
         }
         Command::Report => {
             let results = read_results(&repo_root)?;
@@ -257,11 +285,96 @@ async fn async_main() -> Result<()> {
     Ok(())
 }
 
+async fn ensure_phase3_runtime(runtime: &RuntimeConfig) -> Result<()> {
+    if std::env::var_os(SKIP_RUNTIME_PROBE_ENV).is_some() {
+        return Ok(());
+    }
+
+    let admin = open_snowdrop_admin(runtime)
+        .await
+        .context("could not connect to Snowdrop for the Phase 3 runtime preflight")?;
+    let _ = admin
+        .simple_query(&format!("DROP DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await;
+    admin
+        .simple_query(&format!("CREATE DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await
+        .with_context(|| {
+            format!(
+                "could not create Phase 3 runtime probe database '{}'",
+                PHASE3_RUNTIME_PROBE_DB
+            )
+        })?;
+
+    let probe_result = async {
+        let client = open_snowdrop_dataset(runtime, PHASE3_RUNTIME_PROBE_DB).await?;
+        client
+            .simple_query("CREATE TABLE probe (id BIGINT PRIMARY KEY, grp VARCHAR(16), val BIGINT);")
+            .await?;
+        client
+            .simple_query(
+                "INSERT INTO probe (id, grp, val) VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30);",
+            )
+            .await?;
+
+        for (family, sql) in phase3_runtime_probes() {
+            match execute_query(&client, sql).await {
+                Ok(_) => {}
+                Err(err) if looks_like_stale_phase3_runtime(&err) => {
+                    return Err(anyhow!(
+                        "Snowdrop runtime preflight detected an outdated Phase 3 server while probing {}: {}. Rebuild and restart the orchestrator, then rerun the harness. Suggested command: `docker compose up -d --build orchestrator`. If you intentionally want to skip this guard, set {}=1.",
+                        family,
+                        err,
+                        SKIP_RUNTIME_PROBE_ENV
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow!(
+                        "Snowdrop runtime preflight failed while probing {}: {}",
+                        family,
+                        err
+                    ));
+                }
+            }
+        }
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = admin
+        .simple_query(&format!("DROP DATABASE {};", PHASE3_RUNTIME_PROBE_DB))
+        .await;
+    probe_result
+}
+
+fn phase3_runtime_probes() -> [(&'static str, &'static str); 4] {
+    [
+        (
+            "subqueries",
+            "SELECT id FROM probe WHERE id IN (SELECT id FROM probe WHERE val >= 20) ORDER BY id;",
+        ),
+        (
+            "derived tables",
+            "SELECT d.id FROM (SELECT id FROM probe WHERE val >= 20) AS d ORDER BY d.id;",
+        ),
+        (
+            "CTEs",
+            "WITH picked AS (SELECT id FROM probe WHERE val >= 20) SELECT id FROM picked ORDER BY id;",
+        ),
+        (
+            "compound queries",
+            "SELECT id FROM probe WHERE id = 1 UNION ALL SELECT id FROM probe WHERE id = 2 ORDER BY id;",
+        ),
+    ]
+}
+
 fn parse_command(args: &[String]) -> Result<Command> {
     match args.get(1).map(String::as_str) {
         Some("list-datasets") => Ok(Command::ListDatasets),
         Some("load") => {
-            let dataset = read_flag(args, "--dataset").ok_or_else(|| anyhow!("missing --dataset"))?;
+            let dataset =
+                read_flag(args, "--dataset").ok_or_else(|| anyhow!("missing --dataset"))?;
             Ok(Command::Load { dataset })
         }
         Some("run") => {
@@ -328,10 +441,16 @@ async fn run_named_suite(
 ) -> Result<SuiteRun> {
     match normalize_suite_name(suite) {
         "golden" => run_golden_suite(repo_root, runtime, dataset_filter, datasets).await,
-        "differential" => run_differential_suite(repo_root, runtime, dataset_filter, datasets).await,
-        "sqllogictest" => run_sqllogictest_suite(repo_root, runtime, dataset_filter, datasets).await,
+        "differential" => {
+            run_differential_suite(repo_root, runtime, dataset_filter, datasets).await
+        }
+        "sqllogictest" => {
+            run_sqllogictest_suite(repo_root, runtime, dataset_filter, datasets).await
+        }
         "tap" => run_tap_suite(repo_root, runtime, dataset_filter, datasets).await,
-        "postgres-style" => run_postgres_style_suite(repo_root, runtime, dataset_filter, datasets).await,
+        "postgres-style" => {
+            run_postgres_style_suite(repo_root, runtime, dataset_filter, datasets).await
+        }
         other => Err(anyhow!("unknown suite {}", other)),
     }
 }
@@ -352,23 +471,32 @@ async fn run_golden_suite(
     let root = tests_root(repo_root).join("golden");
     let mut cases = Vec::new();
 
-    for dataset in datasets.iter().filter(|d| dataset_filter.map(|f| f == d.name).unwrap_or(true)) {
+    for dataset in datasets
+        .iter()
+        .filter(|d| dataset_filter.map(|f| f == d.name).unwrap_or(true))
+    {
         let dataset_dir = root.join(&dataset.name);
         if !dataset_dir.exists() {
             continue;
         }
 
-        load_dataset(runtime, dataset, false).await?;
-        let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
         for file in sorted_files(&dataset_dir, "json")? {
             let case: GoldenCase = serde_json::from_str(&fs::read_to_string(&file)?)?;
+            load_dataset(repo_root, runtime, dataset, false).await?;
+            let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
             let query = execute_query(&client, &case.sql).await;
             let outcome = match query {
                 Ok(rows) => {
                     if let Some(expected) = case.expected_rows.clone() {
                         let expected_rows = normalize_rows(expected);
                         if expected_rows == rows {
-                            pass("golden", &dataset.name, file_stem(&file), &case.name, "matched expected rows")
+                            pass(
+                                "golden",
+                                &dataset.name,
+                                file_stem(&file),
+                                &case.name,
+                                "matched expected rows",
+                            )
                         } else {
                             mismatch(
                                 "golden",
@@ -392,7 +520,13 @@ async fn run_golden_suite(
                 Err(err) => {
                     if let Some(expected_error) = case.expected_error.clone() {
                         if expected_error == "*" || err.contains(&expected_error) {
-                            pass("golden", &dataset.name, file_stem(&file), &case.name, "matched expected error")
+                            pass(
+                                "golden",
+                                &dataset.name,
+                                file_stem(&file),
+                                &case.name,
+                                "matched expected error",
+                            )
                         } else {
                             mismatch(
                                 "golden",
@@ -404,13 +538,7 @@ async fn run_golden_suite(
                             )
                         }
                     } else {
-                        fail(
-                            "golden",
-                            &dataset.name,
-                            file_stem(&file),
-                            &case.name,
-                            err,
-                        )
+                        fail("golden", &dataset.name, file_stem(&file), &case.name, err)
                     }
                 }
             };
@@ -433,7 +561,10 @@ async fn run_differential_suite(
     let root = tests_root(repo_root).join("differential");
     let mut cases = Vec::new();
 
-    for dataset in datasets.iter().filter(|d| dataset_filter.map(|f| f == d.name).unwrap_or(true)) {
+    for dataset in datasets
+        .iter()
+        .filter(|d| dataset_filter.map(|f| f == d.name).unwrap_or(true))
+    {
         let dataset_dir = root.join(&dataset.name);
         if !dataset_dir.exists() {
             continue;
@@ -450,12 +581,11 @@ async fn run_differential_suite(
             continue;
         }
 
-        load_dataset(runtime, dataset, true).await?;
-        let snowdrop = open_snowdrop_dataset(runtime, &dataset.database).await?;
-        let postgres = open_postgres_dataset(runtime, &dataset.database).await?;
-
         for file in sorted_files(&dataset_dir, "json")? {
             let case: DifferentialCase = serde_json::from_str(&fs::read_to_string(&file)?)?;
+            load_dataset(repo_root, runtime, dataset, true).await?;
+            let snowdrop = open_snowdrop_dataset(runtime, &dataset.database).await?;
+            let postgres = open_postgres_dataset(runtime, &dataset.database).await?;
             let pg = execute_query(&postgres, &case.sql).await;
             let sd = execute_query(&snowdrop, &case.sql).await;
             let outcome = match (pg, sd) {
@@ -537,44 +667,66 @@ async fn run_sqllogictest_suite(
             .iter()
             .find(|d| d.name == parsed.dataset)
             .ok_or_else(|| anyhow!("unknown dataset {} in {}", parsed.dataset, parsed.path))?;
-        load_dataset(runtime, dataset, false).await?;
+        load_dataset(repo_root, runtime, dataset, false).await?;
         let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
 
         for (idx, command) in parsed.commands.iter().enumerate() {
             let name = format!("command_{}", idx + 1);
             let outcome = match command {
                 SqlLogicCommand::StatementOk { sql } => match execute_query(&client, sql).await {
-                    Ok(_) => pass("sqllogictest", &dataset.name, &parsed.path, &name, "statement ok"),
-                    Err(err) => fail("sqllogictest", &dataset.name, &parsed.path, &name, err),
-                },
-                SqlLogicCommand::StatementError { sql } => match execute_query(&client, sql).await {
-                    Ok(_) => fail(
+                    Ok(_) => pass(
                         "sqllogictest",
                         &dataset.name,
                         &parsed.path,
                         &name,
-                        "statement succeeded but expected error".into(),
+                        "statement ok",
                     ),
-                    Err(_) => pass("sqllogictest", &dataset.name, &parsed.path, &name, "statement error"),
-                },
-                SqlLogicCommand::Query { sql, expected_rows } => match execute_query(&client, sql).await {
-                    Ok(rows) => {
-                        let expected = normalize_rows(expected_rows.clone());
-                        if expected == rows {
-                            pass("sqllogictest", &dataset.name, &parsed.path, &name, "query matched")
-                        } else {
-                            mismatch(
-                                "sqllogictest",
-                                &dataset.name,
-                                &parsed.path,
-                                &name,
-                                rows_to_text(&expected),
-                                rows_to_text(&rows),
-                            )
-                        }
-                    }
                     Err(err) => fail("sqllogictest", &dataset.name, &parsed.path, &name, err),
                 },
+                SqlLogicCommand::StatementError { sql } => {
+                    match execute_query(&client, sql).await {
+                        Ok(_) => fail(
+                            "sqllogictest",
+                            &dataset.name,
+                            &parsed.path,
+                            &name,
+                            "statement succeeded but expected error".into(),
+                        ),
+                        Err(_) => pass(
+                            "sqllogictest",
+                            &dataset.name,
+                            &parsed.path,
+                            &name,
+                            "statement error",
+                        ),
+                    }
+                }
+                SqlLogicCommand::Query { sql, expected_rows } => {
+                    match execute_query(&client, sql).await {
+                        Ok(rows) => {
+                            let expected = normalize_rows(expected_rows.clone());
+                            if expected == rows {
+                                pass(
+                                    "sqllogictest",
+                                    &dataset.name,
+                                    &parsed.path,
+                                    &name,
+                                    "query matched",
+                                )
+                            } else {
+                                mismatch(
+                                    "sqllogictest",
+                                    &dataset.name,
+                                    &parsed.path,
+                                    &name,
+                                    rows_to_text(&expected),
+                                    rows_to_text(&rows),
+                                )
+                            }
+                        }
+                        Err(err) => fail("sqllogictest", &dataset.name, &parsed.path, &name, err),
+                    }
+                }
             };
             cases.push(outcome);
         }
@@ -593,7 +745,7 @@ async fn run_tap_suite(
     datasets: &[DatasetManifest],
 ) -> Result<SuiteRun> {
     let root = tests_root(repo_root).join("tap");
-    let tap_out_root = repo_root.join("target/snowdrop-testkit/tap");
+    let tap_out_root = repo_root.join("reports/tap");
     fs::create_dir_all(&tap_out_root)?;
     let mut cases = Vec::new();
 
@@ -609,38 +761,61 @@ async fn run_tap_suite(
         let mut tap_lines = Vec::new();
         tap_lines.push(format!("1..{}", suite.checks.len()));
 
-        let client = if let Some(dataset_name) = suite.dataset.as_deref() {
-            let dataset = datasets
-                .iter()
-                .find(|d| d.name == dataset_name)
-                .ok_or_else(|| anyhow!("unknown dataset {}", dataset_name))?;
-            load_dataset(runtime, dataset, false).await?;
-            Some(open_snowdrop_dataset(runtime, &dataset.database).await?)
-        } else {
-            None
-        };
-
         for (idx, check) in suite.checks.iter().enumerate() {
             let number = idx + 1;
             let outcome = match check {
-                TapCheck::Health { name, path, contains } => {
-                    let body = http_get_text(&runtime.health_host, runtime.health_port, path).await?;
+                TapCheck::Health {
+                    name,
+                    path,
+                    contains,
+                } => {
+                    let body =
+                        http_get_text(&runtime.health_host, runtime.health_port, path).await?;
                     if contains.as_ref().map(|c| body.contains(c)).unwrap_or(true) {
                         tap_lines.push(format!("ok {} - {}", number, name));
-                        pass("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, "health ok")
+                        pass(
+                            "tap",
+                            suite.dataset.as_deref().unwrap_or("runtime"),
+                            &suite.name,
+                            name,
+                            "health ok",
+                        )
                     } else {
                         tap_lines.push(format!("not ok {} - {}", number, name));
-                        fail("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, body)
+                        fail(
+                            "tap",
+                            suite.dataset.as_deref().unwrap_or("runtime"),
+                            &suite.name,
+                            name,
+                            body,
+                        )
                     }
                 }
-                TapCheck::Metrics { name, path, contains } => {
-                    let body = http_get_text(&runtime.metrics_host, runtime.metrics_port, path).await?;
+                TapCheck::Metrics {
+                    name,
+                    path,
+                    contains,
+                } => {
+                    let body =
+                        http_get_text(&runtime.metrics_host, runtime.metrics_port, path).await?;
                     if contains.as_ref().map(|c| body.contains(c)).unwrap_or(true) {
                         tap_lines.push(format!("ok {} - {}", number, name));
-                        pass("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, "metrics ok")
+                        pass(
+                            "tap",
+                            suite.dataset.as_deref().unwrap_or("runtime"),
+                            &suite.name,
+                            name,
+                            "metrics ok",
+                        )
                     } else {
                         tap_lines.push(format!("not ok {} - {}", number, name));
-                        fail("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, body)
+                        fail(
+                            "tap",
+                            suite.dataset.as_deref().unwrap_or("runtime"),
+                            &suite.name,
+                            name,
+                            body,
+                        )
                     }
                 }
                 TapCheck::Sql {
@@ -649,16 +824,29 @@ async fn run_tap_suite(
                     expected_rows,
                     expected_error,
                 } => {
-                    let client = client
-                        .as_ref()
+                    let dataset_name = suite
+                        .dataset
+                        .as_deref()
                         .ok_or_else(|| anyhow!("tap SQL checks require a dataset"))?;
-                    match execute_query(client, sql).await {
+                    let dataset = datasets
+                        .iter()
+                        .find(|d| d.name == dataset_name)
+                        .ok_or_else(|| anyhow!("unknown dataset {}", dataset_name))?;
+                    load_dataset(repo_root, runtime, dataset, false).await?;
+                    let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
+                    match execute_query(&client, sql).await {
                         Ok(rows) => {
                             if let Some(expected) = expected_rows {
                                 let expected = normalize_rows(expected.clone());
                                 if expected == rows {
                                     tap_lines.push(format!("ok {} - {}", number, name));
-                                    pass("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, "sql matched")
+                                    pass(
+                                        "tap",
+                                        suite.dataset.as_deref().unwrap_or("runtime"),
+                                        &suite.name,
+                                        name,
+                                        "sql matched",
+                                    )
                                 } else {
                                     tap_lines.push(format!("not ok {} - {}", number, name));
                                     mismatch(
@@ -681,7 +869,13 @@ async fn run_tap_suite(
                                 )
                             } else {
                                 tap_lines.push(format!("ok {} - {}", number, name));
-                                pass("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, "sql ok")
+                                pass(
+                                    "tap",
+                                    suite.dataset.as_deref().unwrap_or("runtime"),
+                                    &suite.name,
+                                    name,
+                                    "sql ok",
+                                )
                             }
                         }
                         Err(err) => {
@@ -692,10 +886,22 @@ async fn run_tap_suite(
                                     .unwrap_or(false)
                             {
                                 tap_lines.push(format!("ok {} - {}", number, name));
-                                pass("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, "expected error")
+                                pass(
+                                    "tap",
+                                    suite.dataset.as_deref().unwrap_or("runtime"),
+                                    &suite.name,
+                                    name,
+                                    "expected error",
+                                )
                             } else {
                                 tap_lines.push(format!("not ok {} - {}", number, name));
-                                fail("tap", suite.dataset.as_deref().unwrap_or("runtime"), &suite.name, name, err)
+                                fail(
+                                    "tap",
+                                    suite.dataset.as_deref().unwrap_or("runtime"),
+                                    &suite.name,
+                                    name,
+                                    err,
+                                )
                             }
                         }
                     }
@@ -704,7 +910,10 @@ async fn run_tap_suite(
             cases.push(outcome);
         }
 
-        fs::write(tap_out_root.join(format!("{}.tap", suite.name)), tap_lines.join("\n"))?;
+        fs::write(
+            tap_out_root.join(format!("{}.tap", suite.name)),
+            tap_lines.join("\n"),
+        )?;
     }
 
     Ok(SuiteRun {
@@ -730,7 +939,10 @@ async fn run_postgres_style_suite(
         let group_root = entry.path();
         let manifest: PostgresStyleGroupManifest =
             serde_json::from_str(&fs::read_to_string(group_root.join("manifest.json"))?)?;
-        if dataset_filter.map(|f| f != manifest.dataset).unwrap_or(false) {
+        if dataset_filter
+            .map(|f| f != manifest.dataset)
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -738,14 +950,13 @@ async fn run_postgres_style_suite(
             .iter()
             .find(|d| d.name == manifest.dataset)
             .ok_or_else(|| anyhow!("unknown dataset {}", manifest.dataset))?;
-        load_dataset(runtime, dataset, false).await?;
-        let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
-
         for sql_file in sorted_files(&group_root.join("sql"), "sql")? {
             let base = file_stem(&sql_file);
             let expected_file = group_root.join("expected").join(format!("{}.out", base));
             let sql = fs::read_to_string(&sql_file)?;
             let expected = fs::read_to_string(expected_file)?.trim().to_string();
+            load_dataset(repo_root, runtime, dataset, false).await?;
+            let client = open_snowdrop_dataset(runtime, &dataset.database).await?;
             let outcome = match execute_query(&client, &sql).await {
                 Ok(rows) => {
                     if expected.starts_with("ERROR:") {
@@ -759,7 +970,13 @@ async fn run_postgres_style_suite(
                     } else {
                         let expected_rows = parse_expected_rows(&expected);
                         if expected_rows == rows {
-                            pass("postgres-style", &dataset.name, &manifest.name, &base, "matched expected output")
+                            pass(
+                                "postgres-style",
+                                &dataset.name,
+                                &manifest.name,
+                                &base,
+                                "matched expected output",
+                            )
                         } else {
                             mismatch(
                                 "postgres-style",
@@ -773,8 +990,19 @@ async fn run_postgres_style_suite(
                     }
                 }
                 Err(err) => {
-                    if expected == "ERROR:" || expected.strip_prefix("ERROR:").map(|suffix| err.contains(suffix.trim())).unwrap_or(false) {
-                        pass("postgres-style", &dataset.name, &manifest.name, &base, "matched expected error")
+                    if expected == "ERROR:"
+                        || expected
+                            .strip_prefix("ERROR:")
+                            .map(|suffix| err.contains(suffix.trim()))
+                            .unwrap_or(false)
+                    {
+                        pass(
+                            "postgres-style",
+                            &dataset.name,
+                            &manifest.name,
+                            &base,
+                            "matched expected error",
+                        )
                     } else {
                         fail("postgres-style", &dataset.name, &manifest.name, &base, err)
                     }
@@ -790,8 +1018,13 @@ async fn run_postgres_style_suite(
     })
 }
 
-async fn load_dataset(runtime: &RuntimeConfig, dataset: &DatasetManifest, load_postgres: bool) -> Result<()> {
-    let dataset_dir = tests_root(Path::new(".")).join("datasets").join(&dataset.name);
+async fn load_dataset(
+    repo_root: &Path,
+    runtime: &RuntimeConfig,
+    dataset: &DatasetManifest,
+    load_postgres: bool,
+) -> Result<()> {
+    let dataset_dir = tests_root(repo_root).join("datasets").join(&dataset.name);
     let schema = fs::read_to_string(dataset_dir.join("schema.sql"))?;
     let seed = fs::read_to_string(dataset_dir.join("seed.sql"))?;
 
@@ -805,7 +1038,9 @@ async fn load_dataset(runtime: &RuntimeConfig, dataset: &DatasetManifest, load_p
     snowdrop
         .simple_query(&format!("CREATE DATABASE {};", dataset.database))
         .await?;
-    snowdrop.simple_query(&format!("USE {};", dataset.database)).await?;
+    snowdrop
+        .simple_query(&format!("USE {};", dataset.database))
+        .await?;
     snowdrop.simple_query(&schema).await?;
     snowdrop.simple_query(&seed).await?;
 
@@ -885,19 +1120,35 @@ async fn connect_client(
     Ok(client)
 }
 
-async fn execute_query(client: &Client, sql: &str) -> std::result::Result<Vec<Vec<String>>, String> {
+async fn execute_query(
+    client: &Client,
+    sql: &str,
+) -> std::result::Result<Vec<Vec<String>>, String> {
     match client.simple_query(sql).await {
         Ok(messages) => Ok(messages
             .iter()
             .filter_map(|msg| match msg {
-                SimpleQueryMessage::Row(row) => Some((0..row.len())
-                    .map(|idx| normalize_cell(row.get(idx).unwrap_or("NULL")))
-                    .collect::<Vec<_>>()),
+                SimpleQueryMessage::Row(row) => Some(
+                    (0..row.len())
+                        .map(|idx| {
+                            row.get(idx)
+                                .map(normalize_cell)
+                                .unwrap_or_else(|| "NULL".to_string())
+                        })
+                        .collect::<Vec<_>>(),
+                ),
                 _ => None,
             })
             .collect()),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(format_db_error(&err)),
     }
+}
+
+fn format_db_error(err: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = err.as_db_error() {
+        return format!("{}: {}", db_err.severity(), db_err.message());
+    }
+    err.to_string()
 }
 
 fn normalize_rows(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
@@ -932,12 +1183,38 @@ fn require_postgres_password() -> Result<String> {
 
 fn looks_unsupported(message: &str) -> bool {
     let lower = message.to_lowercase();
-    ["unsupported", "not implemented", "only inner join", "not supported"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "unsupported",
+        "not implemented",
+        "only inner join",
+        "not supported",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
-fn pass(suite: &str, dataset: &str, group: impl Into<String>, case_name: &str, details: impl Into<String>) -> CaseOutcome {
+fn looks_like_stale_phase3_runtime(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    [
+        "with / cte queries are not supported yet",
+        "compound queries like union are not supported yet",
+        "subqueries in select filters are not supported yet",
+        "subqueries in projection expressions are not supported yet",
+        "subqueries in having are not supported yet",
+        "derived tables in from are not supported yet",
+        "derived tables in join clauses are not supported yet",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn pass(
+    suite: &str,
+    dataset: &str,
+    group: impl Into<String>,
+    case_name: &str,
+    details: impl Into<String>,
+) -> CaseOutcome {
     CaseOutcome {
         suite: suite.into(),
         dataset: Some(dataset.into()),
@@ -950,7 +1227,13 @@ fn pass(suite: &str, dataset: &str, group: impl Into<String>, case_name: &str, d
     }
 }
 
-fn fail(suite: &str, dataset: &str, group: impl Into<String>, case_name: &str, details: String) -> CaseOutcome {
+fn fail(
+    suite: &str,
+    dataset: &str,
+    group: impl Into<String>,
+    case_name: &str,
+    details: String,
+) -> CaseOutcome {
     CaseOutcome {
         suite: suite.into(),
         dataset: Some(dataset.into()),
@@ -1055,6 +1338,100 @@ fn write_results_artifacts(repo_root: &Path, results: &UnifiedResults) -> Result
     Ok(())
 }
 
+fn print_console_summary(results: &UnifiedResults) {
+    let totals = summarize_totals(&results.suite_runs);
+    println!("\n=== Snowdrop Test Summary ===");
+    println!(
+        "cases={} pass={} fail={} mismatch={} skip={}",
+        totals.get("total").copied().unwrap_or(0),
+        totals.get("pass").copied().unwrap_or(0),
+        totals.get("fail").copied().unwrap_or(0),
+        totals.get("mismatch").copied().unwrap_or(0),
+        totals.get("skip").copied().unwrap_or(0),
+    );
+
+    println!("\nPer-suite:");
+    for run in &results.suite_runs {
+        let mut counts = BTreeMap::new();
+        for case in &run.cases {
+            *counts.entry(case.status.clone()).or_insert(0usize) += 1;
+        }
+        println!(
+            "- {:<15} pass={} fail={} mismatch={} skip={}",
+            prettify_suite_name(&run.suite),
+            counts.get("pass").copied().unwrap_or(0),
+            counts.get("fail").copied().unwrap_or(0),
+            counts.get("mismatch").copied().unwrap_or(0),
+            counts.get("skip").copied().unwrap_or(0),
+        );
+    }
+
+    println!("\nFeature buckets:");
+    for (group, counts) in summarize_by_group(&results.suite_runs) {
+        println!(
+            "- {:<32} pass={} fail={} mismatch={} skip={}",
+            group,
+            counts.get("pass").copied().unwrap_or(0),
+            counts.get("fail").copied().unwrap_or(0),
+            counts.get("mismatch").copied().unwrap_or(0),
+            counts.get("skip").copied().unwrap_or(0),
+        );
+    }
+
+    let notable_cases = results
+        .suite_runs
+        .iter()
+        .flat_map(|run| run.cases.iter())
+        .filter(|case| case.status != "pass")
+        .collect::<Vec<_>>();
+    if !notable_cases.is_empty() {
+        println!("\nNon-pass cases:");
+        for case in notable_cases {
+            println!(
+                "- {} :: {} :: {} -> {}",
+                prettify_suite_name(&case.suite),
+                case.group,
+                case.case_name,
+                case.details
+            );
+        }
+    }
+
+    if !results.tpch_results.is_empty() {
+        println!("\nTPC-H benchmark (warm averages):");
+        for (query, label) in [
+            ("Q6", "Revenue from discounted shipments"),
+            ("Q1", "Pricing summary"),
+            ("Q14", "Promotion effect"),
+            ("Q3", "Shipping priority"),
+        ] {
+            let sd = tpch_bench::warm_avg(&results.tpch_results, query, "Snowdrop", "baseline");
+            let sdi = tpch_bench::warm_avg(&results.tpch_results, query, "Snowdrop", "indexed");
+            let pg =
+                tpch_bench::warm_avg(&results.tpch_results, query, "PostgreSQL 16", "baseline");
+            let sd_str = if sd > 0.0 {
+                format!("{sd:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
+            let sdi_str = if sdi > 0.0 {
+                format!("{sdi:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
+            let pg_str = if pg > 0.0 {
+                format!("{pg:.1}ms")
+            } else {
+                "n/a".to_string()
+            };
+            println!(
+                "- {} ({}) -> Snowdrop {} | Indexed {} | PostgreSQL {}",
+                query, label, sd_str, sdi_str, pg_str
+            );
+        }
+    }
+}
+
 fn read_results(repo_root: &Path) -> Result<UnifiedResults> {
     let raw_path = repo_root.join(RAW_RESULTS_PATH);
     let legacy_raw_path = repo_root.join(LEGACY_RAW_RESULTS_PATH);
@@ -1105,7 +1482,11 @@ fn render_report(results: &UnifiedResults) -> String {
             "| {} | {} | {} | {} | {} |\n",
             dataset.name,
             dataset.database,
-            if dataset.postgres_enabled { "yes" } else { "no" },
+            if dataset.postgres_enabled {
+                "yes"
+            } else {
+                "no"
+            },
             dataset.purpose,
             dataset.suites.join(", ")
         ));
@@ -1128,9 +1509,55 @@ fn render_report(results: &UnifiedResults) -> String {
     }
     out.push('\n');
 
-    for suite_name in ["golden", "differential", "sqllogictest", "tap", "postgres-style"] {
-        if let Some(run) = results.suite_runs.iter().find(|run| run.suite == suite_name) {
-            out.push_str(&format!("## {} Results\n\n", prettify_suite_name(suite_name)));
+    out.push_str("## Phase 3 Feature Summary\n\n");
+    out.push_str("| Status | Feature family |\n");
+    out.push_str("|---|---|\n");
+    for feature in [
+        "HAVING over the grouped aggregate subset",
+        "non-correlated subqueries in scalar, IN, and EXISTS forms",
+        "correlated EXISTS, IN, and scalar subqueries in WHERE / HAVING",
+        "derived tables in FROM and JOIN with required aliases",
+        "non-recursive WITH / CTE chains",
+        "UNION ALL and UNION",
+        "broader INSERT ... SELECT over relation-producing query sources",
+        "relation-level ORDER BY after subqueries, CTEs, derived tables, and UNION outputs",
+    ] {
+        out.push_str(&format!("| Supported | {} |\n", feature));
+    }
+    for feature in [
+        "GROUP BY expressions beyond plain identifiers / qualified identifiers",
+        "INSERT ... SELECT currently materializes source relations in memory before insert",
+        "subqueries nested inside complex scalar function arguments remain intentionally narrow",
+    ] {
+        out.push_str(&format!("| Partial | {} |\n", feature));
+    }
+    for feature in [
+        "recursive CTE",
+        "INTERSECT",
+        "EXCEPT",
+        "LATERAL",
+        "window functions",
+    ] {
+        out.push_str(&format!("| Explicitly unsupported | {} |\n", feature));
+    }
+    out.push('\n');
+
+    for suite_name in [
+        "golden",
+        "differential",
+        "sqllogictest",
+        "tap",
+        "postgres-style",
+    ] {
+        if let Some(run) = results
+            .suite_runs
+            .iter()
+            .find(|run| run.suite == suite_name)
+        {
+            out.push_str(&format!(
+                "## {} Results\n\n",
+                prettify_suite_name(suite_name)
+            ));
             out.push_str("| Dataset | Group | Case | Status | Details |\n");
             out.push_str("|---|---|---|---|---|\n");
             for case in &run.cases {
@@ -1175,13 +1602,21 @@ fn render_report(results: &UnifiedResults) -> String {
                 "Runs: `{}`. Seed: `{}`. Indexed phase: `{}`.\n\n",
                 meta.runs,
                 meta.seed,
-                if meta.with_indexes { "enabled" } else { "disabled" }
+                if meta.with_indexes {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
             )
         });
         if let Some(meta) = tpch_meta {
             out.push_str(&meta);
         }
-        let scale = results.tpch_options.as_ref().map(|meta| meta.scale).unwrap_or(1);
+        let scale = results
+            .tpch_options
+            .as_ref()
+            .map(|meta| meta.scale)
+            .unwrap_or(1);
         let with_indexes = results
             .tpch_options
             .as_ref()
@@ -1222,7 +1657,9 @@ fn sanitize_table_cell(text: &str) -> String {
     text.replace('\n', "<br>")
 }
 
-fn summarize_by_dataset(suite_runs: &[SuiteRun]) -> BTreeMap<(String, String), BTreeMap<String, usize>> {
+fn summarize_by_dataset(
+    suite_runs: &[SuiteRun],
+) -> BTreeMap<(String, String), BTreeMap<String, usize>> {
     let mut map = BTreeMap::new();
     for run in suite_runs {
         for case in &run.cases {
@@ -1231,6 +1668,17 @@ fn summarize_by_dataset(suite_runs: &[SuiteRun]) -> BTreeMap<(String, String), B
                 run.suite.clone(),
             );
             let counts = map.entry(key).or_insert_with(BTreeMap::new);
+            *counts.entry(case.status.clone()).or_insert(0) += 1;
+        }
+    }
+    map
+}
+
+fn summarize_by_group(suite_runs: &[SuiteRun]) -> BTreeMap<String, BTreeMap<String, usize>> {
+    let mut map = BTreeMap::new();
+    for run in suite_runs {
+        for case in &run.cases {
+            let counts = map.entry(case.group.clone()).or_insert_with(BTreeMap::new);
             *counts.entry(case.status.clone()).or_insert(0) += 1;
         }
     }
@@ -1307,7 +1755,9 @@ fn parse_sqllogictest_file(path: &Path) -> Result<SqlLogicFile> {
                     if line.contains('\t') {
                         line.split('\t').map(normalize_cell).collect::<Vec<_>>()
                     } else {
-                        line.split_whitespace().map(normalize_cell).collect::<Vec<_>>()
+                        line.split_whitespace()
+                            .map(normalize_cell)
+                            .collect::<Vec<_>>()
                     }
                 })
                 .collect();
@@ -1331,7 +1781,8 @@ fn parse_sqllogictest_file(path: &Path) -> Result<SqlLogicFile> {
             .and_then(|name| name.to_str())
             .unwrap_or("suite.test")
             .to_string(),
-        dataset: dataset.ok_or_else(|| anyhow!("missing '# dataset:' header in {}", path.display()))?,
+        dataset: dataset
+            .ok_or_else(|| anyhow!("missing '# dataset:' header in {}", path.display()))?,
         commands,
     })
 }
@@ -1480,5 +1931,21 @@ mod tests {
         assert!(report.contains("## TPC-H Benchmark"));
         assert!(report.contains("Q6"));
         assert!(report.contains("Runs: `3`. Seed: `42`. Indexed phase: `enabled`."));
+    }
+
+    #[test]
+    fn stale_runtime_detector_recognizes_old_phase3_boundaries() {
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: WITH / CTE queries are not supported yet"
+        ));
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: subqueries in SELECT filters are not supported yet"
+        ));
+        assert!(looks_like_stale_phase3_runtime(
+            "ERROR: compound queries like UNION are not supported yet"
+        ));
+        assert!(!looks_like_stale_phase3_runtime(
+            "ERROR: recursive CTE is not supported yet"
+        ));
     }
 }

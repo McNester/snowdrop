@@ -15,32 +15,51 @@ pub type Row = HashMap<String, TypedValue>;
 pub fn evaluate_predicate(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> bool {
     match expr {
         Expr::BinaryOp { left, op, right } => eval_binary_op(left, op, right, row, schema_cols),
-        Expr::UnaryOp { op: UnaryOperator::Not, expr } => {
-            !evaluate_predicate(expr, row, schema_cols)
-        }
-        Expr::IsNull(inner) => {
-            resolve_value(inner, row, schema_cols).is_null()
-        }
-        Expr::IsNotNull(inner) => {
-            !resolve_value(inner, row, schema_cols).is_null()
-        }
-        Expr::Between { expr: col, low, high, negated } => {
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => !evaluate_predicate(expr, row, schema_cols),
+        Expr::IsNull(inner) => resolve_value(inner, row, schema_cols).is_null(),
+        Expr::IsNotNull(inner) => !resolve_value(inner, row, schema_cols).is_null(),
+        Expr::Between {
+            expr: col,
+            low,
+            high,
+            negated,
+        } => {
             let val = resolve_value(col, row, schema_cols);
             let lo = resolve_value(low, row, schema_cols);
             let hi = resolve_value(high, row, schema_cols);
-            let in_range = (val.sql_eq(&lo) || val.sql_gt(&lo))
-                && (val.sql_eq(&hi) || val.sql_lt(&hi));
-            if *negated { !in_range } else { in_range }
+            let in_range =
+                (val.sql_eq(&lo) || val.sql_gt(&lo)) && (val.sql_eq(&hi) || val.sql_lt(&hi));
+            if *negated {
+                !in_range
+            } else {
+                in_range
+            }
         }
-        Expr::InList { expr: col, list, negated } => {
+        Expr::InList {
+            expr: col,
+            list,
+            negated,
+        } => {
             let val = resolve_value(col, row, schema_cols);
             let found = list.iter().any(|item| {
                 let item_val = resolve_value(item, row, schema_cols);
                 val.sql_eq(&item_val)
             });
-            if *negated { !found } else { found }
+            if *negated {
+                !found
+            } else {
+                found
+            }
         }
-        Expr::Like { expr: col_expr, pattern, negated, .. } => {
+        Expr::Like {
+            expr: col_expr,
+            pattern,
+            negated,
+            ..
+        } => {
             let val = resolve_value(col_expr, row, schema_cols);
             let pat = resolve_value(pattern, row, schema_cols);
             let matches = if let TypedValue::Text(p) = &pat {
@@ -48,7 +67,11 @@ pub fn evaluate_predicate(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) ->
             } else {
                 false
             };
-            if *negated { !matches } else { matches }
+            if *negated {
+                !matches
+            } else {
+                matches
+            }
         }
         Expr::Nested(inner) => evaluate_predicate(inner, row, schema_cols),
         _ => false,
@@ -95,23 +118,37 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
             let col_name = ident.value.to_lowercase();
             // Try exact match first, then search for any key ending with .col_name (for JOIN rows)
             row.get(&col_name)
-                .or_else(|| row.iter().find(|(k, _)| k.ends_with(&format!(".{}", col_name))).map(|(_, v)| v))
+                .or_else(|| {
+                    row.iter()
+                        .find(|(k, _)| k.ends_with(&format!(".{}", col_name)))
+                        .map(|(_, v)| v)
+                })
                 .cloned()
                 .unwrap_or(TypedValue::Null)
         }
         Expr::CompoundIdentifier(parts) => {
             // Try fully qualified alias.column first (for JOIN rows)
-            let qualified = parts.iter().map(|p| p.value.to_lowercase()).collect::<Vec<_>>().join(".");
+            let qualified = parts
+                .iter()
+                .map(|p| p.value.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(".");
             if let Some(val) = row.get(&qualified) {
                 return val.clone();
             }
             // Fall back to last part only
-            let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
+            let col_name = parts
+                .last()
+                .map(|p| p.value.to_lowercase())
+                .unwrap_or_default();
             row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
         }
         Expr::Value(val) => literal_to_typed(val),
         Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
-        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => {
             if let TypedValue::Int(i) = resolve_value(expr, row, schema_cols) {
                 TypedValue::Int(-i)
             } else if let TypedValue::Float(f) = resolve_value(expr, row, schema_cols) {
@@ -120,26 +157,52 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
                 TypedValue::Null
             }
         }
-        Expr::BinaryOp { left, op, right } => {
-            eval_arithmetic(left, op, right, row, schema_cols)
-        }
+        Expr::BinaryOp { left, op, right } => eval_arithmetic(left, op, right, row, schema_cols),
         Expr::Nested(inner) => resolve_value(inner, row, schema_cols),
-        Expr::Case { operand, conditions, results, else_result, .. } => {
-            eval_case(operand.as_deref(), conditions, results, else_result.as_deref(), row, schema_cols)
-        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => eval_case(
+            operand.as_deref(),
+            conditions,
+            results,
+            else_result.as_deref(),
+            row,
+            schema_cols,
+        ),
         Expr::Function(f) => {
             let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
             eval_function(f, &mut resolver)
         }
-        Expr::Cast { expr, data_type, .. } => {
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
             let val = resolve_value(expr, row, schema_cols);
             val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
         }
-        Expr::Substring { expr, substring_from, substring_for, .. } => {
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
             let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
-            eval_substring_expr(expr, substring_from.as_deref(), substring_for.as_deref(), &mut resolver)
+            eval_substring_expr(
+                expr,
+                substring_from.as_deref(),
+                substring_for.as_deref(),
+                &mut resolver,
+            )
         }
-        Expr::Trim { expr, trim_where, trim_what, trim_characters } => {
+        Expr::Trim {
+            expr,
+            trim_where,
+            trim_what,
+            trim_characters,
+        } => {
             let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
             eval_trim_expr(
                 expr,
@@ -250,9 +313,7 @@ fn literal_to_typed(val: &Value) -> TypedValue {
                 TypedValue::Text(n.clone())
             }
         }
-        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-            TypedValue::Text(s.clone())
-        }
+        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => TypedValue::Text(s.clone()),
         Value::Boolean(b) => TypedValue::Boolean(*b),
         Value::Null => TypedValue::Null,
         _ => TypedValue::Null,
@@ -327,7 +388,10 @@ where
     }
 }
 
-fn resolve_function_args<F>(args: &FunctionArguments, resolve_expr: &mut F) -> Option<Vec<TypedValue>>
+fn resolve_function_args<F>(
+    args: &FunctionArguments,
+    resolve_expr: &mut F,
+) -> Option<Vec<TypedValue>>
 where
     F: FnMut(&Expr) -> TypedValue,
 {
@@ -418,7 +482,8 @@ where
     };
 
     let trim_chars = if let Some(chars) = trim_characters {
-        chars.first()
+        chars
+            .first()
             .map(resolve_expr)
             .and_then(|value| match value {
                 TypedValue::Text(text) => Some(text),
@@ -438,7 +503,9 @@ where
     let char_set: Vec<char> = trim_chars.chars().collect();
     let trimmed = match trim_where.unwrap_or(&TrimWhereField::Both) {
         TrimWhereField::Both => text.trim_matches(|c| char_set.contains(&c)).to_string(),
-        TrimWhereField::Leading => text.trim_start_matches(|c| char_set.contains(&c)).to_string(),
+        TrimWhereField::Leading => text
+            .trim_start_matches(|c| char_set.contains(&c))
+            .to_string(),
         TrimWhereField::Trailing => text.trim_end_matches(|c| char_set.contains(&c)).to_string(),
     };
 
@@ -476,29 +543,54 @@ pub fn bytes_to_row_ref(col_values: &[(&ColumnInfo, Option<&[u8]>)]) -> Row {
 /// to skip parsing columns for rows that fail early predicates.
 pub fn evaluate_predicate_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -> bool {
     match expr {
-        Expr::BinaryOp { left, op, right } => eval_binary_op_view(left, op, right, view, schema_cols),
-        Expr::UnaryOp { op: UnaryOperator::Not, expr } => {
-            !evaluate_predicate_view(expr, view, schema_cols)
+        Expr::BinaryOp { left, op, right } => {
+            eval_binary_op_view(left, op, right, view, schema_cols)
         }
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => !evaluate_predicate_view(expr, view, schema_cols),
         Expr::IsNull(inner) => resolve_value_view(inner, view, schema_cols).is_null(),
         Expr::IsNotNull(inner) => !resolve_value_view(inner, view, schema_cols).is_null(),
-        Expr::Between { expr: col, low, high, negated } => {
+        Expr::Between {
+            expr: col,
+            low,
+            high,
+            negated,
+        } => {
             let val = resolve_value_view(col, view, schema_cols);
             let lo = resolve_value_view(low, view, schema_cols);
             let hi = resolve_value_view(high, view, schema_cols);
-            let in_range = (val.sql_eq(&lo) || val.sql_gt(&lo))
-                && (val.sql_eq(&hi) || val.sql_lt(&hi));
-            if *negated { !in_range } else { in_range }
+            let in_range =
+                (val.sql_eq(&lo) || val.sql_gt(&lo)) && (val.sql_eq(&hi) || val.sql_lt(&hi));
+            if *negated {
+                !in_range
+            } else {
+                in_range
+            }
         }
-        Expr::InList { expr: col, list, negated } => {
+        Expr::InList {
+            expr: col,
+            list,
+            negated,
+        } => {
             let val = resolve_value_view(col, view, schema_cols);
             let found = list.iter().any(|item| {
                 let item_val = resolve_value_view(item, view, schema_cols);
                 val.sql_eq(&item_val)
             });
-            if *negated { !found } else { found }
+            if *negated {
+                !found
+            } else {
+                found
+            }
         }
-        Expr::Like { expr: col_expr, pattern, negated, .. } => {
+        Expr::Like {
+            expr: col_expr,
+            pattern,
+            negated,
+            ..
+        } => {
             let val = resolve_value_view(col_expr, view, schema_cols);
             let pat = resolve_value_view(pattern, view, schema_cols);
             let matches = if let TypedValue::Text(p) = &pat {
@@ -506,7 +598,11 @@ pub fn evaluate_predicate_view(expr: &Expr, view: &RowView, schema_cols: &[Colum
             } else {
                 false
             };
-            if *negated { !matches } else { matches }
+            if *negated {
+                !matches
+            } else {
+                matches
+            }
         }
         Expr::Nested(inner) => evaluate_predicate_view(inner, view, schema_cols),
         _ => false,
@@ -550,7 +646,10 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
     match expr {
         Expr::Identifier(ident) => {
             let col_name = ident.value.to_lowercase();
-            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+            if let Some(col) = schema_cols
+                .iter()
+                .find(|c| c.name.to_lowercase() == col_name)
+            {
                 view.find_col(col.id)
                     .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
                     .unwrap_or(TypedValue::Null)
@@ -559,8 +658,14 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             }
         }
         Expr::CompoundIdentifier(parts) => {
-            let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
-            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+            let col_name = parts
+                .last()
+                .map(|p| p.value.to_lowercase())
+                .unwrap_or_default();
+            if let Some(col) = schema_cols
+                .iter()
+                .find(|c| c.name.to_lowercase() == col_name)
+            {
                 view.find_col(col.id)
                     .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
                     .unwrap_or(TypedValue::Null)
@@ -570,7 +675,10 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
         }
         Expr::Value(val) => literal_to_typed(val),
         Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
-        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => {
             if let TypedValue::Int(i) = resolve_value_view(expr, view, schema_cols) {
                 TypedValue::Int(-i)
             } else if let TypedValue::Float(f) = resolve_value_view(expr, view, schema_cols) {
@@ -585,29 +693,50 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             eval_arithmetic_typed(&lval, op, &rval)
         }
         Expr::Nested(inner) => resolve_value_view(inner, view, schema_cols),
-        Expr::Case { operand, conditions, results, else_result, .. } => {
-            eval_case_view(
-                operand.as_deref(),
-                conditions,
-                results,
-                else_result.as_deref(),
-                view,
-                schema_cols,
-            )
-        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => eval_case_view(
+            operand.as_deref(),
+            conditions,
+            results,
+            else_result.as_deref(),
+            view,
+            schema_cols,
+        ),
         Expr::Function(f) => {
             let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
             eval_function(f, &mut resolver)
         }
-        Expr::Cast { expr, data_type, .. } => {
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
             let val = resolve_value_view(expr, view, schema_cols);
             val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
         }
-        Expr::Substring { expr, substring_from, substring_for, .. } => {
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
             let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
-            eval_substring_expr(expr, substring_from.as_deref(), substring_for.as_deref(), &mut resolver)
+            eval_substring_expr(
+                expr,
+                substring_from.as_deref(),
+                substring_for.as_deref(),
+                &mut resolver,
+            )
         }
-        Expr::Trim { expr, trim_where, trim_what, trim_characters } => {
+        Expr::Trim {
+            expr,
+            trim_where,
+            trim_what,
+            trim_characters,
+        } => {
             let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
             eval_trim_expr(
                 expr,
@@ -662,11 +791,15 @@ fn eval_arithmetic_typed(lval: &TypedValue, op: &BinaryOperator, rval: &TypedVal
                 BinaryOperator::Minus => l - r,
                 BinaryOperator::Multiply => l * r,
                 BinaryOperator::Divide => {
-                    if r == 0.0 { return TypedValue::Null; }
+                    if r == 0.0 {
+                        return TypedValue::Null;
+                    }
                     l / r
                 }
                 BinaryOperator::Modulo => {
-                    if r == 0.0 { return TypedValue::Null; }
+                    if r == 0.0 {
+                        return TypedValue::Null;
+                    }
                     l % r
                 }
                 _ => return TypedValue::Null,
@@ -718,9 +851,36 @@ mod tests {
 
     fn test_schema() -> Vec<ColumnInfo> {
         vec![
-            ColumnInfo { id: 1, name: "id".into(), data_type: "BIGINT".into(), nullable: false, is_pk: true, table_id: 1, indexed: false, index_name: None },
-            ColumnInfo { id: 2, name: "name".into(), data_type: "VARCHAR(255)".into(), nullable: false, is_pk: false, table_id: 1, indexed: false, index_name: None },
-            ColumnInfo { id: 3, name: "age".into(), data_type: "INT".into(), nullable: true, is_pk: false, table_id: 1, indexed: false, index_name: None },
+            ColumnInfo {
+                id: 1,
+                name: "id".into(),
+                data_type: "BIGINT".into(),
+                nullable: false,
+                is_pk: true,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
+            ColumnInfo {
+                id: 2,
+                name: "name".into(),
+                data_type: "VARCHAR(255)".into(),
+                nullable: false,
+                is_pk: false,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
+            ColumnInfo {
+                id: 3,
+                name: "age".into(),
+                data_type: "INT".into(),
+                nullable: true,
+                is_pk: false,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
         ]
     }
 
@@ -884,25 +1044,37 @@ mod tests {
         let mut row = test_row();
         row.insert("name".into(), TypedValue::Null);
         let expr = parse_select_expr("COALESCE(name, 'fallback')");
-        assert_eq!(resolve_value(&expr, &row, &test_schema()), TypedValue::Text("fallback".into()));
+        assert_eq!(
+            resolve_value(&expr, &row, &test_schema()),
+            TypedValue::Text("fallback".into())
+        );
     }
 
     #[test]
     fn nullif_returns_null_for_equal_values() {
         let expr = parse_select_expr("NULLIF(name, 'alice')");
-        assert_eq!(resolve_value(&expr, &test_row(), &test_schema()), TypedValue::Null);
+        assert_eq!(
+            resolve_value(&expr, &test_row(), &test_schema()),
+            TypedValue::Null
+        );
     }
 
     #[test]
     fn text_functions_and_substring_work() {
         let expr = parse_select_expr("SUBSTRING(UPPER(TRIM(name)) FROM 2 FOR 3)");
-        assert_eq!(resolve_value(&expr, &test_row(), &test_schema()), TypedValue::Text("LIC".into()));
+        assert_eq!(
+            resolve_value(&expr, &test_row(), &test_schema()),
+            TypedValue::Text("LIC".into())
+        );
     }
 
     #[test]
     fn cast_and_current_date_expressions_work() {
         let cast_expr = parse_select_expr("CAST(age AS TEXT)");
-        assert_eq!(resolve_value(&cast_expr, &test_row(), &test_schema()), TypedValue::Text("30".into()));
+        assert_eq!(
+            resolve_value(&cast_expr, &test_row(), &test_schema()),
+            TypedValue::Text("30".into())
+        );
 
         let date_expr = parse_select_expr("CURRENT_DATE");
         match resolve_value(&date_expr, &test_row(), &test_schema()) {

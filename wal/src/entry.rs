@@ -154,7 +154,11 @@ pub fn append<W: Write + Seek>(
     header.write_to(writer)?;
     writer.write_all(&payload_bytes)?;
 
-    debug!(entry_id = next_entry_id, payload_len = payload_bytes.len(), "WAL entry appended");
+    debug!(
+        entry_id = next_entry_id,
+        payload_len = payload_bytes.len(),
+        "WAL entry appended"
+    );
 
     Ok(next_entry_id)
 }
@@ -236,7 +240,12 @@ mod tests {
         let read_payload: WalPayload = bincode::deserialize(&payload_buf).unwrap();
 
         match read_payload {
-            WalPayload::V1(WalPayloadV1::Insert { db_id, table_id, row_id, columns }) => {
+            WalPayload::V1(WalPayloadV1::Insert {
+                db_id,
+                table_id,
+                row_id,
+                columns,
+            }) => {
                 assert_eq!(db_id, 1);
                 assert_eq!(table_id, 2);
                 assert_eq!(row_id, "aX3kP9mQr2z");

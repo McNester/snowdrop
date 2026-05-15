@@ -1,0 +1,9 @@
+{
+  "name": "having_cases",
+  "database": "having_cases",
+  "description": "Aggregate filtering fixture for HAVING and expression-based ordering after grouping.",
+  "purpose": "Exercise grouped filtering, aggregate aliases, and ORDER BY expressions on grouped output.",
+  "tables": ["departments", "worklog"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

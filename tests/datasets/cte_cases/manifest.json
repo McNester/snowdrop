@@ -1,0 +1,9 @@
+{
+  "name": "cte_cases",
+  "database": "cte_cases",
+  "description": "CTE fixture for non-recursive WITH chains and alias-aware reuse across query stages.",
+  "purpose": "Exercise single and multi-CTE relation execution while keeping recursive CTE unsupported.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

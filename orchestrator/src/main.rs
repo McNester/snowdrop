@@ -22,7 +22,12 @@ fn env_port(name: &str, default: u16) -> u16 {
         Ok(raw) => match raw.parse::<u16>() {
             Ok(port) => port,
             Err(_) => {
-                warn!(env = name, value = raw, default, "invalid port value, using default");
+                warn!(
+                    env = name,
+                    value = raw,
+                    default,
+                    "invalid port value, using default"
+                );
                 default
             }
         },
@@ -68,18 +73,17 @@ async fn main() -> Result<()> {
     let wal_path = std::env::var("WAL_PATH").unwrap_or_else(|_| "/data/wal".to_string());
     let wal_file_path = format!("{wal_path}/wal.log");
 
-    let mut wal = wal::WalFile::open(&wal_file_path)
-        .context("failed to open WAL")?;
+    let mut wal = wal::WalFile::open(&wal_file_path).context("failed to open WAL")?;
 
-    let needs_replay = wal.replay()
-        .context("WAL replay failed")?;
+    let needs_replay = wal.replay().context("WAL replay failed")?;
 
     if !needs_replay.is_empty() {
         info!(count = needs_replay.len(), "WAL entries need replay");
     }
 
     // Step 3: Verify Neo4j connectivity
-    let neo4j_uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+    let neo4j_uri =
+        std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let neo4j_user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
     let neo4j_pass = std::env::var("NEO4J_PASS").unwrap_or_else(|_| "snowdroppassword".to_string());
 
@@ -87,14 +91,19 @@ async fn main() -> Result<()> {
         .await
         .context("Neo4j connection failed")?;
 
-    neo4j.init_schema().await.context("schema initialization failed")?;
+    neo4j
+        .init_schema()
+        .await
+        .context("schema initialization failed")?;
     info!("Neo4j connectivity verified");
 
     // Step 4: Open storage backend (embedded RocksDB or remote Kvrocks)
-    let storage_backend = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "rocksdb".to_string());
+    let storage_backend =
+        std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "rocksdb".to_string());
     let storage: Arc<dyn executor::StorageBackend> = match storage_backend.as_str() {
         "kvrocks" => {
-            let kvrocks_addr = std::env::var("KVROCKS_ADDR").unwrap_or_else(|_| "localhost:6666".to_string());
+            let kvrocks_addr =
+                std::env::var("KVROCKS_ADDR").unwrap_or_else(|_| "localhost:6666".to_string());
             let kv = executor::KvrocksConnection::connect(&kvrocks_addr)
                 .await
                 .context("Kvrocks connection failed")?;
@@ -102,9 +111,9 @@ async fn main() -> Result<()> {
             Arc::new(kv)
         }
         _ => {
-            let rocks_path = std::env::var("ROCKS_PATH").unwrap_or_else(|_| "/data/rocks".to_string());
-            let rocks = executor::RocksStorage::open(&rocks_path)
-                .context("RocksDB open failed")?;
+            let rocks_path =
+                std::env::var("ROCKS_PATH").unwrap_or_else(|_| "/data/rocks".to_string());
+            let rocks = executor::RocksStorage::open(&rocks_path).context("RocksDB open failed")?;
             info!("Storage: RocksDB (embedded)");
             Arc::new(rocks)
         }
@@ -115,7 +124,10 @@ async fn main() -> Result<()> {
 
     // Step 5: Re-execute writes for Neo4jCommitted entries
     if !needs_replay.is_empty() {
-        info!(count = needs_replay.len(), "replaying WAL entries to storage");
+        info!(
+            count = needs_replay.len(),
+            "replaying WAL entries to storage"
+        );
         executor::replay_wal_entries(storage.as_ref(), &neo4j, &needs_replay, &wal)
             .await
             .context("WAL replay failed")?;
@@ -126,7 +138,10 @@ async fn main() -> Result<()> {
         let mut s = state.write().await;
         s.status = ServerStatus::Ready;
     }
-    info!(port = pgwire_port, "Snowdrop ready - accepting pgwire connections");
+    info!(
+        port = pgwire_port,
+        "Snowdrop ready - accepting pgwire connections"
+    );
 
     let pgwire_addr = format!("0.0.0.0:{pgwire_port}");
     pgwire_handler::serve_pgwire(pgwire_addr, neo4j, storage, wal).await

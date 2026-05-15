@@ -1,0 +1,5 @@
+{
+  "name": "insert_select_mismatch_error",
+  "sql": "INSERT INTO customer_totals (customer, total) SELECT id, customer, total FROM live_orders;",
+  "expected_error": "INSERT ... SELECT source/target column count mismatch"
+}

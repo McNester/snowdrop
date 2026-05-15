@@ -1,0 +1,5 @@
+{
+  "name": "window_function_error",
+  "sql": "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM profiles;",
+  "expected_error": "window functions are not supported yet"
+}

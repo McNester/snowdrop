@@ -1,0 +1,5 @@
+{
+  "name": "cte_cases",
+  "description": "PostgreSQL-style regression subset for non-recursive CTEs.",
+  "dataset": "cte_cases"
+}

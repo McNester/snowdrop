@@ -1,0 +1,5 @@
+{
+  "name": "correlated_scalar_projection",
+  "sql": "SELECT c.name, (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) AS order_count FROM customers c ORDER BY c.id;",
+  "expected_rows": [["Alpha", "2"], ["Beta", "1"], ["Gamma", "0"]]
+}
