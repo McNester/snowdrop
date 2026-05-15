@@ -1,0 +1,2 @@
+INSERT INTO inventory (id, qty, price) VALUES (2, 0, 12);
+SELECT id, qty, price FROM inventory WHERE id = 2;

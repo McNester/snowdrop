@@ -1,0 +1,9 @@
+{
+  "name": "foreign_key_cases",
+  "database": "foreign_key_cases",
+  "description": "Phase 4 fixture for immediate FOREIGN KEY enforcement.",
+  "purpose": "Validate parent/child referential checks, NO ACTION or RESTRICT behavior, and explicit unsupported FK actions.",
+  "tables": ["parents", "children"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

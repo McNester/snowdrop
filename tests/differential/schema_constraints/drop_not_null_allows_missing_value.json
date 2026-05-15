@@ -1,0 +1,4 @@
+{
+  "name": "drop_not_null_allows_missing_value",
+  "sql": "ALTER TABLE users ALTER COLUMN nickname SET NOT NULL; ALTER TABLE users ALTER COLUMN nickname DROP NOT NULL; INSERT INTO users (id, email) VALUES (3, 'cara@example.com'); SELECT id, email FROM users WHERE id = 3;"
+}

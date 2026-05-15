@@ -1,0 +1,5 @@
+{
+  "name": "set_not_null_error",
+  "sql": "ALTER TABLE users ALTER COLUMN nickname SET NOT NULL; INSERT INTO users (id, email) VALUES (3, 'cara@example.com');",
+  "expected_error": "column 'nickname' cannot be NULL"
+}

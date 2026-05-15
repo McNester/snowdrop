@@ -1,0 +1,13 @@
+# dataset: check_constraints
+
+query T
+INSERT INTO inventory (id, qty, price) VALUES (2, 0, 12);
+SELECT id, qty, price FROM inventory WHERE id = 2;
+----
+2 0 12
+
+statement error
+INSERT INTO inventory (id, qty, price) VALUES (2, -1, 12);
+
+statement error
+UPDATE inventory SET price = 0 WHERE id = 1;

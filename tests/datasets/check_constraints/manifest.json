@@ -1,0 +1,9 @@
+{
+  "name": "check_constraints",
+  "database": "check_constraints",
+  "description": "Phase 4 fixture for row-local CHECK constraint enforcement.",
+  "purpose": "Validate CHECK acceptance and rejection for the current safe scalar expression subset.",
+  "tables": ["inventory"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

@@ -1,0 +1,5 @@
+{
+  "name": "subquery_check_error",
+  "sql": "CREATE TABLE invalid_inventory (id BIGINT PRIMARY KEY, qty INT, CHECK (qty > (SELECT 1)));",
+  "expected_error": "subqueries are not supported in the current Phase 4 expression subset"
+}

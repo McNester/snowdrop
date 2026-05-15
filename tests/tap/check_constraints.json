@@ -1,0 +1,24 @@
+{
+  "name": "check_constraints",
+  "dataset": "check_constraints",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "valid insert",
+      "sql": "INSERT INTO inventory (id, qty, price) VALUES (2, 0, 12); SELECT id, qty, price FROM inventory WHERE id = 2;",
+      "expected_rows": [["2", "0", "12"]]
+    },
+    {
+      "kind": "sql",
+      "name": "invalid insert rejected",
+      "sql": "INSERT INTO inventory (id, qty, price) VALUES (2, -1, 12);",
+      "expected_error": "CHECK constraint"
+    },
+    {
+      "kind": "sql",
+      "name": "invalid update rejected",
+      "sql": "UPDATE inventory SET price = 0 WHERE id = 1;",
+      "expected_error": "CHECK constraint"
+    }
+  ]
+}

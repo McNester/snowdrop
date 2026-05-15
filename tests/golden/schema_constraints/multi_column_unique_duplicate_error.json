@@ -1,0 +1,5 @@
+{
+  "name": "multi_column_unique_duplicate_error",
+  "sql": "CREATE TABLE tenant_users (user_id BIGINT PRIMARY KEY, tenant_id BIGINT, email VARCHAR(255), UNIQUE (tenant_id, email)); INSERT INTO tenant_users (user_id, tenant_id, email) VALUES (1, 10, 'shared@example.com'); INSERT INTO tenant_users (user_id, tenant_id, email) VALUES (2, 10, 'shared@example.com');",
+  "expected_error": "duplicate constraint value"
+}

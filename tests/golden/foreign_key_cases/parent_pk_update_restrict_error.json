@@ -1,0 +1,5 @@
+{
+  "name": "parent_pk_update_restrict_error",
+  "sql": "UPDATE parents SET id = 3 WHERE id = 1;",
+  "expected_error": "FOREIGN KEY"
+}

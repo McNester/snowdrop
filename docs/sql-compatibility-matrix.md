@@ -51,7 +51,7 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 | Database DDL | `CREATE DATABASE`, `DROP DATABASE`, `USE` | Supported | Routed directly in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:166) and [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:229). |
 | Table DDL | `CREATE TABLE`, `DROP TABLE` | Partial | Basic table lifecycle works, but schema features are narrow. |
 | Index DDL | `CREATE INDEX`, `DROP INDEX` | Partial | Present, but practical support is aimed at the current RocksDB secondary-index path. |
-| Alter DDL | `ALTER TABLE` | Partial | Only `ADD COLUMN` is supported in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:383). |
+| Alter DDL | `ALTER TABLE` | Partial | Phase 4 now supports `ADD COLUMN`, `RENAME COLUMN`, `DROP COLUMN`, `ALTER COLUMN SET DEFAULT`, `ALTER COLUMN DROP DEFAULT`, `ALTER COLUMN SET NOT NULL`, and `ALTER COLUMN DROP NOT NULL` in the current narrow schema-fidelity subset. Existing-row backfill/validation semantics still remain narrower than PostgreSQL for `ADD COLUMN ... DEFAULT` and `SET NOT NULL`. Type rewrites, broader PostgreSQL-only `ALTER` forms, and multi-action atomic migration behavior remain out of scope. |
 | Insert | `INSERT ... VALUES` | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:504). |
 | Insert | `INSERT ... SELECT` | Partial | Now runs through the relation pipeline in [orchestrator/src/query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs), supports grouped, ordered, subquery-backed, derived-table, CTE, and `UNION` sources inside the current Phase 3 subset, and fails explicitly on source/target column-count and source/target type-coercion mismatch. It remains partial because source relations are still materialized in memory before insert. |
 | Update | `UPDATE ... SET ... WHERE ...` | Partial | Works, but write-path `WHERE` is limited to simple equality via [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:2718). |
@@ -116,12 +116,15 @@ These datasets are exercised through a mix of `golden`, `differential`, `sqllogi
 |---|---|---|---|
 | Types | `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DECIMAL`, `NUMERIC`, `CHAR`, `VARCHAR`, `TEXT`, `DATE`, `DATETIME`, `TIMESTAMP`, `BOOLEAN` | Supported | Declared in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:5). |
 | Types | `JSON`, `ENUM`, `SET`, `BLOB`, `BINARY`, `VARBINARY`, `BYTEA` | Not Supported | Excluded in [schema/src/types.rs](/e:/snowdrop-1/schema/src/types.rs:27). |
-| Primary key | Single-column PK | Supported | Required by [schema/src/ddl.rs](/e:/snowdrop-1/schema/src/ddl.rs:223). |
-| Primary key | Composite PK | Not Supported | Exactly one primary key column is enforced in [schema/src/ddl.rs](/e:/snowdrop-1/schema/src/ddl.rs:223). |
+| Primary key | Single-column PK | Supported | Supported throughout table creation and write-path enforcement. |
+| Primary key | Composite PK | Partial | Phase 4 now supports multi-column primary keys at DDL time and in write-path uniqueness enforcement. Broader downstream semantics and richer referencing behavior still remain narrower than PostgreSQL. |
 | Constraints | `NOT NULL` | Supported | Parsed in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:339). |
-| Constraints | `DEFAULT`, `CHECK`, `FOREIGN KEY`, user-facing `UNIQUE` beyond PK semantics | Not Supported | No dedicated implementation path exists in current table DDL handling. |
+| Constraints | `DEFAULT` | Partial | Phase 4 now stores normalized default expressions in schema metadata and applies them during `INSERT` for the current safe scalar subset. Existing-row backfill during `ALTER TABLE ... ADD COLUMN ... DEFAULT` is still narrower than PostgreSQL. Volatile PostgreSQL-specific defaults remain out of scope. |
+| Constraints | user-facing `UNIQUE` | Partial | Phase 4 now supports single-column and multi-column `UNIQUE` constraints with insert/update enforcement and dedicated duplicate-constraint failures. |
+| Constraints | `FOREIGN KEY` | Partial | Phase 4 now supports immediate enforcement for the narrow subset: single-column references and primary-key-shaped references, with `NO ACTION` / `RESTRICT` semantics only. `CASCADE`, `SET NULL`, `SET DEFAULT`, deferred constraints, and broader planner/cycle semantics remain unsupported. |
+| Constraints | `CHECK` | Partial | Phase 4 now supports row-local boolean checks over the current safe scalar subset and rejects unsupported expressions such as subqueries at DDL time. |
 | Alter DDL | Column add | Supported | Implemented in [query_router.rs](/e:/snowdrop-1/orchestrator/src/query_router.rs:383). |
-| Alter DDL | Rename/drop/alter type/default/constraint changes | Not Supported | Rejected by the narrow `ALTER TABLE` implementation. |
+| Alter DDL | Rename/drop/default/nullability changes | Partial | Supported in the current Phase 4 subset. Existing-row validation for nullability changes is still narrower than PostgreSQL. Type rewrites and broader table rewrite semantics remain unsupported. |
 
 ## Catalog and Compatibility Surface
 
@@ -149,7 +152,7 @@ But it is not yet a PostgreSQL-compatible application substrate.
 
 The biggest functional gaps before migration work are now:
 
-- broader schema fidelity
+- broader schema fidelity beyond the narrow Phase 4 slice
 - richer write-path semantics beyond the current equality-based update/delete subset
 - deeper grouped/query semantics such as complex `GROUP BY` expressions
 - remaining out-of-scope query forms: `INTERSECT ALL`, `EXCEPT ALL`, and the broader advanced variants beyond the current narrow window/LATERAL/recursive CTE slices
@@ -172,3 +175,14 @@ These remaining boundaries do not block every migration equally:
 4. distinct `INTERSECT` / `EXCEPT`
 
 In practical terms, Snowdrop's current Phase 3 + Phase 3.5 subset is strong enough for a meaningful migration-oriented SQL baseline, but it is not yet sufficient for arbitrary PostgreSQL SQL with zero rewrite expectations. The remaining gaps are now narrower advanced variants and the broader schema-fidelity backlog rather than top-level missing query families.
+
+Phase 4 has now materially reduced schema-level migration risk for practical workloads by landing a narrow but real schema-fidelity slice:
+
+1. broader `ALTER TABLE`
+2. `DEFAULT` values
+3. user-facing `UNIQUE`
+4. composite primary keys
+5. immediate narrow `FOREIGN KEY` enforcement
+6. practical `CHECK` constraints
+
+What still remains for later phases is the broader PostgreSQL schema surface, not the complete absence of schema contracts.
