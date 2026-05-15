@@ -68,6 +68,7 @@ curl http://localhost:19090/metrics
 cargo run -p sndsql -- --port 15432 -d snowdrop
 ```
 
+
 ## Testing Foundation
 
 Canonical testing workflow:
@@ -100,19 +101,24 @@ The unified report is generated at:
 
 - [test-report.md](/e:/snowdrop-1/docs/test-report.md)
 
+
 ## Benchmark Commands
 
 Snowdrop vs PostgreSQL benchmark:
 
 ```powershell
+
 $env:PGPASSWORD = "<your-postgres-password>"
+
 cargo run --release -p tpch-bench -- --port 15432 --pg-port 15433 --scale 1 --runs 10 --with-indexes --seed 42 --output results.json
 ```
 
 Benchmark from a Docker-networked Rust container:
 
 ```powershell
+
 docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:\snowdrop-1:/app -w /app rust:1.86-bookworm `
+
   bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host orchestrator --pg-host postgres --port 5432 --pg-port 5432 --scale 1 --runs 3 --with-indexes --seed 42 --output results-seeded.json"
 ```
 
@@ -124,3 +130,4 @@ docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:
 - Use `--seed` for reproducible data generation across Snowdrop and PostgreSQL.
 - Use `--host` and `--pg-host` when the benchmark client runs inside Docker instead of on the host.
 - `tpch-bench` now focuses on raw benchmark execution and JSON output; the unified markdown report is owned by `snowdrop-testkit`.
+

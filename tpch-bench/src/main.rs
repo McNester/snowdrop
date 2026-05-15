@@ -1,5 +1,6 @@
 use tpch_bench::{parse_args, run_benchmark_suite, write_json_output};
 
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
