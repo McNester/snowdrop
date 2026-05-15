@@ -5,7 +5,7 @@ mod query_router;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus {
@@ -15,6 +15,19 @@ pub enum ServerStatus {
 
 pub struct AppState {
     pub status: ServerStatus,
+}
+
+fn env_port(name: &str, default: u16) -> u16 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => {
+                warn!(env = name, value = raw, default, "invalid port value, using default");
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 #[tokio::main]
@@ -28,12 +41,16 @@ async fn main() -> Result<()> {
 
     info!("Snowdrop database starting");
 
-    // Initialize Prometheus metrics exporter on :9090
+    let metrics_port = env_port("METRICS_PORT", 9090);
+    let health_port = env_port("HEALTH_PORT", 8080);
+    let pgwire_port = env_port("PGWIRE_PORT", 5432);
+
+    // Initialize Prometheus metrics exporter on METRICS_PORT
     metrics_exporter_prometheus::PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], 9090))
+        .with_http_listener(([0, 0, 0, 0], metrics_port))
         .install()
         .expect("failed to install Prometheus metrics exporter");
-    info!("Prometheus metrics exporter running on :9090");
+    info!(port = metrics_port, "Prometheus metrics exporter running");
 
     let state = Arc::new(RwLock::new(AppState {
         status: ServerStatus::Starting,
@@ -42,7 +59,7 @@ async fn main() -> Result<()> {
     // Step 1: Start health endpoint (returns 503 until ready)
     let health_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = health::serve_health(health_state, 8080).await {
+        if let Err(e) = health::serve_health(health_state, health_port).await {
             error!("health server failed: {e}");
         }
     });
@@ -109,8 +126,8 @@ async fn main() -> Result<()> {
         let mut s = state.write().await;
         s.status = ServerStatus::Ready;
     }
-    info!("Snowdrop ready - accepting connections on :5432");
+    info!(port = pgwire_port, "Snowdrop ready - accepting pgwire connections");
 
-    let pgwire_addr = "0.0.0.0:5432";
+    let pgwire_addr = format!("0.0.0.0:{pgwire_port}");
     pgwire_handler::serve_pgwire(pgwire_addr, neo4j, storage, wal).await
 }

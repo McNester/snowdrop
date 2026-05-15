@@ -1,0 +1,278 @@
+[
+  {
+    "query": "Q6",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 8.108537,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 0.659636,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 0.956151,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q1",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 14.096258,
+        "row_count": 6
+      },
+      {
+        "run": 2,
+        "latency_ms": 15.273022000000001,
+        "row_count": 6
+      },
+      {
+        "run": 3,
+        "latency_ms": 17.319332,
+        "row_count": 6
+      }
+    ]
+  },
+  {
+    "query": "Q14",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 7.99763,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 7.926025999999999,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 7.691614,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q3",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 17.385835,
+        "row_count": 10
+      },
+      {
+        "run": 2,
+        "latency_ms": 17.010716,
+        "row_count": 10
+      },
+      {
+        "run": 3,
+        "latency_ms": 16.504887999999998,
+        "row_count": 10
+      }
+    ]
+  },
+  {
+    "query": "Q6",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "indexed",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 20.778118000000003,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 4.188725,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 3.833207,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q1",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "indexed",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 17.380535,
+        "row_count": 6
+      },
+      {
+        "run": 2,
+        "latency_ms": 17.416837,
+        "row_count": 6
+      },
+      {
+        "run": 3,
+        "latency_ms": 16.980213000000003,
+        "row_count": 6
+      }
+    ]
+  },
+  {
+    "query": "Q14",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "indexed",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 7.9978299999999996,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 7.714015,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 7.7080150000000005,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q3",
+    "system": "Snowdrop",
+    "scale": 1,
+    "phase": "indexed",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 16.777701999999998,
+        "row_count": 10
+      },
+      {
+        "run": 2,
+        "latency_ms": 16.937311,
+        "row_count": 10
+      },
+      {
+        "run": 3,
+        "latency_ms": 16.294277,
+        "row_count": 10
+      }
+    ]
+  },
+  {
+    "query": "Q6",
+    "system": "PostgreSQL 16",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 81.690691,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 36.704108,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 35.845858,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q1",
+    "system": "PostgreSQL 16",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 106.656525,
+        "row_count": 6
+      },
+      {
+        "run": 2,
+        "latency_ms": 77.76796599999999,
+        "row_count": 6
+      },
+      {
+        "run": 3,
+        "latency_ms": 77.105328,
+        "row_count": 6
+      }
+    ]
+  },
+  {
+    "query": "Q14",
+    "system": "PostgreSQL 16",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 65.29375,
+        "row_count": 1
+      },
+      {
+        "run": 2,
+        "latency_ms": 41.589888,
+        "row_count": 1
+      },
+      {
+        "run": 3,
+        "latency_ms": 36.262482,
+        "row_count": 1
+      }
+    ]
+  },
+  {
+    "query": "Q3",
+    "system": "PostgreSQL 16",
+    "scale": 1,
+    "phase": "baseline",
+    "runs": [
+      {
+        "run": 1,
+        "latency_ms": 59.069792,
+        "row_count": 10
+      },
+      {
+        "run": 2,
+        "latency_ms": 43.656307,
+        "row_count": 10
+      },
+      {
+        "run": 3,
+        "latency_ms": 43.737012,
+        "row_count": 10
+      }
+    ]
+  }
+]
