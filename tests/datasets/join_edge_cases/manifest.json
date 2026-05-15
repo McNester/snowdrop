@@ -1,0 +1,9 @@
+{
+  "name": "join_edge_cases",
+  "database": "join_edge_cases",
+  "description": "Duplicate matches, unmatched rows, and left-join null-filling.",
+  "purpose": "Exercise join edge behavior for inner and left join semantics.",
+  "tables": ["orders", "customers"],
+  "suites": ["golden", "differential"],
+  "postgres_enabled": true
+}

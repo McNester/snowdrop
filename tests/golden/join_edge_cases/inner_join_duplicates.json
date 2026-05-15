@@ -1,0 +1,5 @@
+{
+  "name": "inner_join_duplicates",
+  "sql": "SELECT c.name, o.id, o.amount FROM customers c INNER JOIN orders o ON c.id = o.customer_id ORDER BY c.name, o.id;",
+  "expected_rows": [["Alice", "10", "10"], ["Alice", "11", "20"], ["Bob", "12", "5"]]
+}

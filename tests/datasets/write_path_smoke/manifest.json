@@ -1,0 +1,9 @@
+{
+  "name": "write_path_smoke",
+  "database": "write_path_smoke",
+  "description": "Simple mutable fixture for INSERT, UPDATE, and DELETE round-trips.",
+  "purpose": "Exercise the existing write-path contract with read-after-write validation.",
+  "tables": ["accounts"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

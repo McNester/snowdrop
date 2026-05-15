@@ -2,7 +2,7 @@
 
 ## Source of Truth
 
-- Current source of truth is the code in this repository plus [performance-architecture.md](/e:/snowdrop-1/docs/performance-architecture.md).
+- Current source of truth is the code in this repository plus [performance-architecture.md](/e:/snowdrop-1/docs/performance-architecture.md:1).
 - `Snowdrop architecture.pdf` should be treated as historical context. It still describes Neo4j-backed `IndexEntry` storage, while the current code stores secondary indexes in RocksDB and uses Neo4j for schema metadata.
 
 ## Configurable Ports
@@ -96,10 +96,13 @@ Testing docs:
 
 - [testing.en.md](/e:/snowdrop-1/docs/testing.en.md:1)
 - [testing.ru.md](/e:/snowdrop-1/docs/testing.ru.md:1)
+- [sql-compatibility-matrix.md](/e:/snowdrop-1/docs/sql-compatibility-matrix.md:1)
+- [postgres-migration-readiness-roadmap.md](/e:/snowdrop-1/docs/postgres-migration-readiness-roadmap.md:1)
 
-The unified report is generated at:
+Generated reports:
 
-- [test-report.md](/e:/snowdrop-1/docs/test-report.md)
+- [reports/test-report.md](/e:/snowdrop-1/reports/test-report.md:1)
+- [reports/README.md](/e:/snowdrop-1/reports/README.md:1)
 
 
 ## Benchmark Commands
@@ -109,8 +112,7 @@ Snowdrop vs PostgreSQL benchmark:
 ```powershell
 
 $env:PGPASSWORD = "<your-postgres-password>"
-
-cargo run --release -p tpch-bench -- --port 15432 --pg-port 15433 --scale 1 --runs 10 --with-indexes --seed 42 --output results.json
+cargo run --release -p tpch-bench -- --port 15432 --pg-port 15433 --scale 1 --runs 10 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json
 ```
 
 Benchmark from a Docker-networked Rust container:
@@ -118,16 +120,14 @@ Benchmark from a Docker-networked Rust container:
 ```powershell
 
 docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:\snowdrop-1:/app -w /app rust:1.86-bookworm `
-
-  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host orchestrator --pg-host postgres --port 5432 --pg-port 5432 --scale 1 --runs 3 --with-indexes --seed 42 --output results-seeded.json"
+  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host orchestrator --pg-host postgres --port 5432 --pg-port 5432 --scale 1 --runs 3 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json"
 ```
 
 ## Notes
 
 - `docker-compose.yml` no longer forces `linux/arm64`, so it can run natively on `AMD64` hosts when matching images exist.
-- PostgreSQL-backed differential suites and benchmarks now read the password from `PGPASSWORD` first and fall back to `POSTGRES_PASSWORD`.
+- PostgreSQL-backed differential suites and benchmarks read the password from `PGPASSWORD` first and fall back to `POSTGRES_PASSWORD`.
 - The benchmark suite already accepts non-default ports via `--port` and `--pg-port`.
 - Use `--seed` for reproducible data generation across Snowdrop and PostgreSQL.
 - Use `--host` and `--pg-host` when the benchmark client runs inside Docker instead of on the host.
-- `tpch-bench` now focuses on raw benchmark execution and JSON output; the unified markdown report is owned by `snowdrop-testkit`.
-
+- `tpch-bench` focuses on raw benchmark execution and JSON output, while the unified human-facing markdown report is owned by `snowdrop-testkit`.

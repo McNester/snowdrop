@@ -1,0 +1,5 @@
+SELECT c.name, SUM(s.qty) AS total_qty
+FROM categories c
+INNER JOIN sales s ON c.id = s.category_id
+GROUP BY c.name
+ORDER BY total_qty DESC, c.name;

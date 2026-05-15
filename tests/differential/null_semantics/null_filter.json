@@ -1,0 +1,4 @@
+{
+  "name": "null_filter",
+  "sql": "SELECT id, note FROM measurements WHERE note IS NULL ORDER BY id;"
+}

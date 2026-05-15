@@ -5,13 +5,13 @@
 Теперь в Snowdrop есть отдельный фундамент для тестирования, который состоит из:
 
 - фиксированных SQL-датасетов в `tests/datasets/`
-- описаний suite'ов в `tests/golden/`, `tests/differential/`, `tests/sqllogictest/`, `tests/tap/`, `tests/postgres_style/`
-- отдельного Docker-ориентированного раннера: `snowdrop-testkit`
-- одного общего генерируемого отчёта: `docs/test-report.md`
+- описаний suite-ов в `tests/golden/`, `tests/differential/`, `tests/sqllogictest/`, `tests/tap/`, `tests/postgres_style/`
+- отдельного Docker-ориентированного раннера `snowdrop-testkit`
+- одного общего генерируемого отчёта `reports/test-report.md`
 
-Первая версия этой системы специально сделана `Docker-first`. Сначала подними сервисы через `docker compose up -d`, затем запускай команды harness'а из корня репозитория.
+Первая версия этой системы специально сделана Docker-first. Сначала подними сервисы через `docker compose up -d`, затем запускай команды harness-а из корня репозитория.
 
-Если suite требует доступ к PostgreSQL, раннер теперь берёт пароль сначала из `PGPASSWORD`, а затем из `POSTGRES_PASSWORD`.
+Если suite требует доступ к PostgreSQL, раннер сначала берёт пароль из `PGPASSWORD`, а затем из `POSTGRES_PASSWORD`.
 
 ## Структура папок
 
@@ -27,15 +27,20 @@ tests/
   sqllogictest/
   tap/
   postgres_style/
+
+reports/
+  test-report.md
+  raw/
+    snowdrop-testkit-results.json
 ```
 
 ## Формат датасетов
 
 Каждый датасет лежит в `tests/datasets/<dataset>/` и содержит:
 
-- `manifest.json`: metadata датасета, имя базы, порядок очистки таблиц, поддерживаемые suite'ы
+- `manifest.json`: metadata датасета, имя базы, порядок очистки таблиц, поддерживаемые suite-ы
 - `schema.sql`: DDL схемы
-- `seed.sql`: фиксированные INSERT'ы
+- `seed.sql`: фиксированные INSERT-ы
 
 Правила:
 
@@ -44,7 +49,7 @@ tests/
 - внутри fixture SQL предпочитать не fully-qualified таблицы
 - считать эти файлы общим source of truth для Snowdrop и PostgreSQL в differential tests
 
-## Поддерживаемые suite'ы
+## Поддерживаемые suite-ы
 
 ### Golden
 
@@ -56,7 +61,7 @@ tests/
 
 - Запускает одинаковый SQL на Snowdrop и PostgreSQL
 - Сравнивает нормализованные результаты
-- Помечает неподдержанное поведение Snowdrop как `skip`, если ошибка явно говорит про unsupported/unimplemented поведение
+- Помечает неподдержанное поведение Snowdrop как `skip`, если ошибка явно говорит про unsupported или unimplemented поведение
 
 ### SQLLogicTest
 
@@ -70,7 +75,7 @@ tests/
 ### TAP-style
 
 - Покрывает readiness и интеграционные smoke-проверки
-- Использует JSON-описания suite'ов в `tests/tap/`
+- Использует JSON-описания suite-ов в `tests/tap/`
 - Пишет TAP-подобные файлы в `target/snowdrop-testkit/tap/`
 
 ### PostgreSQL-style subset
@@ -107,24 +112,24 @@ cargo run -p snowdrop-testkit -- report
 - `golden`, `sqllogictest` и `tap` можно запускать без PostgreSQL credentials.
 - `differential`, `postgres-style` и `run-all --with-tpch` требуют, чтобы перед запуском был выставлен `PGPASSWORD` или `POSTGRES_PASSWORD`.
 
-## Отчёт
+## Генерируемые артефакты
 
-Основной артефакт для команды:
+Основной human-facing артефакт:
 
-- `docs/test-report.md`
+- `reports/test-report.md`
 
 В нём есть:
 
 - metadata окружения
 - inventory датасетов
-- summary по suite'ам и датасетам
-- таблицы кейсов для golden, differential, sqllogictest, TAP-style и PostgreSQL-style suite'ов
-- skipped/unsupported кейсы
+- summary по suite-ам и датасетам
+- таблицы кейсов для golden, differential, sqllogictest, TAP-style и PostgreSQL-style suite-ов
+- skipped или unsupported кейсы
 - TPC-H benchmark summary, если использовался `--with-tpch`
 
 Raw machine-readable артефакт лежит здесь:
 
-- `target/snowdrop-testkit/results.json`
+- `reports/raw/snowdrop-testkit-results.json`
 
 ## Значения статусов
 
@@ -133,9 +138,16 @@ Raw machine-readable артефакт лежит здесь:
 - `mismatch`: запрос выполнился, но вернул не тот результат
 - `skip`: кейс не считается ошибкой, обычно потому что Snowdrop это поведение пока не поддерживает
 
+## Связанные документы
+
+- [benchmarking.md](/e:/snowdrop-1/docs/benchmarking.md:1)
+- [sql-compatibility-matrix.md](/e:/snowdrop-1/docs/sql-compatibility-matrix.md:1)
+- [postgres-migration-readiness-roadmap.md](/e:/snowdrop-1/docs/postgres-migration-readiness-roadmap.md:1)
+- [reports/README.md](/e:/snowdrop-1/reports/README.md:1)
+
 ## Ограничения
 
 - В v1 поддерживается только Docker-based runtime
 - Нет literal-совместимости с upstream PostgreSQL regression/TAP tests
 - Поддержка `sqllogictest` намеренно частичная
-- Большие production-подобные датасеты пока вне scope этой первой тестовой системы
+- Большие production-like датасеты пока вне scope этой первой тестовой основы

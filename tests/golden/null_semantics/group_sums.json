@@ -1,0 +1,5 @@
+{
+  "name": "group_sums",
+  "sql": "SELECT grp, COUNT(amount), SUM(amount) FROM measurements GROUP BY grp ORDER BY grp;",
+  "expected_rows": [["A", "1", "10"], ["B", "2", "-5"], ["C", "0", "NULL"]]
+}

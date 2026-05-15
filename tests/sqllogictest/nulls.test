@@ -1,0 +1,13 @@
+# dataset: null_semantics
+
+query I
+SELECT COUNT(*) FROM measurements WHERE amount IS NULL;
+----
+2
+
+query TI
+SELECT grp, COUNT(amount) FROM measurements GROUP BY grp ORDER BY grp;
+----
+A 1
+B 2
+C 0
