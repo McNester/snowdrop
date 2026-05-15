@@ -1,0 +1,9 @@
+{
+  "name": "pattern_matching",
+  "database": "pattern_matching",
+  "description": "Phase 5 fixture for LIKE and ILIKE semantics.",
+  "purpose": "Validate richer wildcard handling, ESCAPE support, and case-insensitive ILIKE behavior.",
+  "tables": ["contacts"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

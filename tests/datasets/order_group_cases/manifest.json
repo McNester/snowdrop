@@ -1,0 +1,9 @@
+{
+  "name": "order_group_cases",
+  "database": "order_group_cases",
+  "description": "Grouped ordering fixture with ties and alias-based ORDER BY.",
+  "purpose": "Exercise deterministic ORDER BY behavior after GROUP BY and aggregate aliases.",
+  "tables": ["sales", "categories"],
+  "suites": ["golden", "differential", "sqllogictest", "postgres_style"],
+  "postgres_enabled": true
+}

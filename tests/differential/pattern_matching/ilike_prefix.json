@@ -1,0 +1,4 @@
+{
+  "name": "ilike_prefix",
+  "sql": "SELECT name FROM contacts WHERE name ILIKE 'ali%' ORDER BY id;"
+}

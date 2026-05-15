@@ -1,0 +1,9 @@
+{
+  "name": "schema_constraints",
+  "database": "schema_constraints",
+  "description": "Phase 4 fixture for ALTER TABLE, UNIQUE, and schema-level mutation semantics.",
+  "purpose": "Validate ALTER TABLE expansion, user-facing UNIQUE constraints, and related explicit unsupported boundaries.",
+  "tables": ["users"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

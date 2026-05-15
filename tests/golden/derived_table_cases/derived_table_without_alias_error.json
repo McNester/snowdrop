@@ -1,0 +1,5 @@
+{
+  "name": "derived_table_without_alias_error",
+  "sql": "SELECT customer_id FROM (SELECT customer_id FROM orders);",
+  "expected_error": "derived tables require an alias"
+}

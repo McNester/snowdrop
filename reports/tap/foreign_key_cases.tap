@@ -1,0 +1,4 @@
+1..3
+ok 1 - valid child insert
+ok 2 - missing parent rejected
+ok 3 - parent delete restricted

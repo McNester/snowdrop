@@ -1,0 +1,5 @@
+{
+  "name": "multi_column_unique_roundtrip",
+  "sql": "CREATE TABLE tenant_users (user_id BIGINT PRIMARY KEY, tenant_id BIGINT, email VARCHAR(255), UNIQUE (tenant_id, email)); INSERT INTO tenant_users (user_id, tenant_id, email) VALUES (1, 10, 'shared@example.com'); INSERT INTO tenant_users (user_id, tenant_id, email) VALUES (2, 20, 'shared@example.com'); SELECT tenant_id, email FROM tenant_users ORDER BY user_id;",
+  "expected_rows": [["10", "shared@example.com"], ["20", "shared@example.com"]]
+}

@@ -1,0 +1,21 @@
+# dataset: datetime_semantics
+
+query I
+SELECT id FROM events WHERE event_date <= CAST('2024-01-02' AS DATE) ORDER BY event_date, id;
+----
+4
+1
+2
+
+query IIIII
+SELECT EXTRACT(YEAR FROM event_at), EXTRACT(MONTH FROM event_at), EXTRACT(DAY FROM event_date), EXTRACT(HOUR FROM event_at), EXTRACT(MINUTE FROM reminder_at) FROM events WHERE id = 1;
+----
+2024 1 2 3 30
+
+query II
+SELECT EXTRACT(MINUTE FROM CAST('12:34:56' AS TIME)), EXTRACT(SECOND FROM CAST('12:34:56' AS TIME)) FROM events WHERE id = 1;
+----
+34 56.000000
+
+statement error
+SELECT EXTRACT(TIMEZONE FROM event_at) FROM events;

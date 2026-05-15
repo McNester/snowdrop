@@ -665,11 +665,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
+ "chrono",
  "keys",
  "neo4rs",
  "rand 0.8.5",
  "redis",
  "rocksdb",
+ "rust_decimal",
  "schema",
  "serde",
  "sqlparser",
@@ -1680,6 +1682,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "pgwire",
+ "rust_decimal",
  "schema",
  "serde",
  "sqlparser",
@@ -2203,9 +2206,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.40.0"
+version = "1.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61f703d19852dbf87cbc513643fa81428361eb6940f1ac14fd58155d295a3eb0"
+checksum = "0c5108e3d4d903e21aac27f12ba5377b6b34f9f44b325e4894c7924169d06995"
 dependencies = [
  "arrayvec",
  "borsh",
@@ -2216,6 +2219,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2363,6 +2367,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "neo4rs",
+ "serde",
+ "serde_json",
  "sqlparser",
  "thiserror 2.0.18",
  "tokio",
@@ -2546,6 +2552,19 @@ dependencies = [
  "rustyline",
  "tokio",
  "tokio-postgres",
+]
+
+[[package]]
+name = "snowdrop-testkit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tpch-bench",
 ]
 
 [[package]]
@@ -2861,6 +2880,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 name = "tpch-bench"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -3137,6 +3157,7 @@ dependencies = [
  "cfg-if",
  "once_cell",
  "rustversion",
+ "serde",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
 ]

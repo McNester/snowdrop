@@ -1,0 +1,20 @@
+# dataset: defaults_and_updates
+
+query T
+INSERT INTO tasks (id, note) VALUES (2, 'hello');
+SELECT id, state, priority, note FROM tasks WHERE id = 2;
+----
+2 new 1 hello
+
+query T
+INSERT INTO tasks (id, state, priority, note) VALUES (3, 'hold', 7, 'manual');
+SELECT id, state, priority, note FROM tasks WHERE id = 3;
+----
+3 hold 7 manual
+
+query T
+ALTER TABLE tasks ALTER COLUMN state SET DEFAULT 'queued';
+INSERT INTO tasks (id, note) VALUES (4, 'later');
+SELECT id, state FROM tasks WHERE id = 4;
+----
+4 queued

@@ -1,0 +1,16 @@
+# dataset: cte_cases
+
+query II
+WITH paid_orders AS (SELECT customer_id, total FROM orders WHERE status = 'paid') SELECT customer_id, SUM(total) AS total_spent FROM paid_orders GROUP BY customer_id ORDER BY total_spent DESC, customer_id;
+----
+1	125
+3	40
+
+query TT
+WITH paid_orders AS (SELECT customer_id, total FROM orders WHERE status = 'paid'), summarized AS (SELECT customer_id, SUM(total) AS total_spent FROM paid_orders GROUP BY customer_id) SELECT c.name, s.total_spent FROM customers c INNER JOIN summarized s ON c.id = s.customer_id ORDER BY s.total_spent DESC, c.name;
+----
+Alpha	125
+Gamma	40
+
+statement error
+WITH RECURSIVE paid_orders(customer_id, total) AS (SELECT customer_id, total FROM orders WHERE status = 'paid' UNION ALL SELECT paid_orders.customer_id, paid_orders.total FROM paid_orders), extra(customer_id, total) AS (SELECT customer_id, total FROM paid_orders UNION ALL SELECT extra.customer_id, extra.total FROM extra) SELECT customer_id FROM extra;

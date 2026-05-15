@@ -1,0 +1,4 @@
+1..3
+ok 1 - derived grouped source
+ok 2 - derived join totals
+ok 3 - derived table alias required

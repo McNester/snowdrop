@@ -1,0 +1,9 @@
+{
+  "name": "recursive_cte_cases",
+  "database": "recursive_cte_cases",
+  "description": "Phase 3.5 fixture for the narrow recursive CTE compatibility slice.",
+  "purpose": "Validate UNION ALL recursive hierarchy walks plus explicit unsupported recursive boundaries such as recursion-cap overflow and UNION DISTINCT semantics.",
+  "tables": ["categories"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

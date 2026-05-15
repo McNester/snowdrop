@@ -1,0 +1,4 @@
+{
+  "name": "order_by_group_expression",
+  "sql": "SELECT d.name, SUM(w.hours) AS total_hours, COUNT(*) AS entry_count FROM departments d INNER JOIN worklog w ON d.id = w.dept_id GROUP BY d.name HAVING COUNT(*) >= 2 ORDER BY total_hours DESC, d.name;"
+}

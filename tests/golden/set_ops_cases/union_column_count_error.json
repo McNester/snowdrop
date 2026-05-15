@@ -1,0 +1,5 @@
+{
+  "name": "union_column_count_error",
+  "sql": "SELECT id, value FROM left_values UNION SELECT value FROM right_values;",
+  "expected_error": "UNION requires matching column counts"
+}

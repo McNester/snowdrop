@@ -1,0 +1,4 @@
+{
+  "name": "non_negative_sum",
+  "sql": "SELECT COUNT(*), SUM(amount) FROM measurements WHERE amount >= 0;"
+}

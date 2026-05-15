@@ -1,0 +1,4 @@
+{
+  "name": "delete_row",
+  "sql": "DELETE FROM accounts WHERE id = 2; SELECT COUNT(*) FROM accounts WHERE id = 2;"
+}

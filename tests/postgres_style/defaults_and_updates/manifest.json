@@ -1,0 +1,5 @@
+{
+  "name": "defaults_and_updates",
+  "description": "PostgreSQL-style regression coverage for DEFAULT application and ALTER COLUMN default lifecycle.",
+  "dataset": "defaults_and_updates"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "write_path_smoke",
+  "description": "PostgreSQL-style regression cases for mutation round-trips.",
+  "dataset": "write_path_smoke"
+}

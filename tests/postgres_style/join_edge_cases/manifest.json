@@ -1,0 +1,5 @@
+{
+  "name": "join_edge_cases",
+  "description": "PostgreSQL-style regression subset for Phase 6.5 base JOIN completion.",
+  "dataset": "join_edge_cases"
+}

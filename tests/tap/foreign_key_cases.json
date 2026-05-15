@@ -1,0 +1,24 @@
+{
+  "name": "foreign_key_cases",
+  "dataset": "foreign_key_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "valid child insert",
+      "sql": "INSERT INTO children (id, parent_id, label) VALUES (11, 2, 'linked'); SELECT id, parent_id, label FROM children WHERE id = 11;",
+      "expected_rows": [["11", "2", "linked"]]
+    },
+    {
+      "kind": "sql",
+      "name": "missing parent rejected",
+      "sql": "INSERT INTO children (id, parent_id, label) VALUES (11, 999, 'orphan');",
+      "expected_error": "FOREIGN KEY"
+    },
+    {
+      "kind": "sql",
+      "name": "parent delete restricted",
+      "sql": "DELETE FROM parents WHERE id = 1;",
+      "expected_error": "FOREIGN KEY"
+    }
+  ]
+}

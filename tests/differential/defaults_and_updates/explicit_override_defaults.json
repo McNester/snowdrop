@@ -1,0 +1,4 @@
+{
+  "name": "explicit_override_defaults",
+  "sql": "INSERT INTO tasks (id, state, priority, note) VALUES (3, 'hold', 7, 'manual'); SELECT id, state, priority, note FROM tasks WHERE id = 3;"
+}

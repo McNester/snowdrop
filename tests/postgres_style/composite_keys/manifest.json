@@ -1,0 +1,5 @@
+{
+  "name": "composite_keys",
+  "description": "PostgreSQL-style regression coverage for composite primary keys.",
+  "dataset": "composite_keys"
+}

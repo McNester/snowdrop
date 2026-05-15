@@ -1,0 +1,5 @@
+{
+  "name": "row_number_partition",
+  "sql": "SELECT id, grp, ROW_NUMBER() OVER (PARTITION BY grp ORDER BY score DESC, id) AS rn FROM scores ORDER BY id;",
+  "expected_rows": [["1", "A", "1"], ["2", "A", "2"], ["3", "A", "3"], ["4", "B", "1"], ["5", "B", "2"]]
+}

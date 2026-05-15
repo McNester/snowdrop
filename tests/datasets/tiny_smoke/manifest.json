@@ -1,0 +1,9 @@
+{
+  "name": "tiny_smoke",
+  "database": "tiny_smoke",
+  "description": "Minimal happy-path dataset for CRUD, aggregates, and joins.",
+  "purpose": "Smoke correctness checks with a tiny readable fixture.",
+  "tables": ["sales", "items"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

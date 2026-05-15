@@ -1,0 +1,9 @@
+{
+  "name": "composite_keys",
+  "database": "composite_keys",
+  "description": "Phase 4 fixture for composite primary-key enforcement.",
+  "purpose": "Validate tuple-style PRIMARY KEY semantics and duplicate rejection for multi-column primary keys.",
+  "tables": ["memberships"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

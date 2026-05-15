@@ -1,0 +1,10 @@
+{
+  "name": "scalar_functions",
+  "dataset": "scalar_functions",
+  "checks": [
+    { "kind": "sql", "name": "current_date filter", "sql": "SELECT COUNT(*) FROM profiles WHERE due_date <= CURRENT_DATE;", "expected_rows": [["3"]] },
+    { "kind": "sql", "name": "now filter", "sql": "SELECT COUNT(*) FROM profiles WHERE event_at IS NOT NULL AND event_at <= NOW();", "expected_rows": [["2"]] },
+    { "kind": "sql", "name": "boolean cast", "sql": "SELECT id, CAST(active_text AS BOOLEAN) FROM profiles ORDER BY id;", "expected_rows": [["1", "true"], ["2", "false"], ["3", "true"], ["4", "false"]] },
+    { "kind": "sql", "name": "unsupported cast errors", "sql": "SELECT CAST(display_name AS UUID) FROM profiles;", "expected_error": "*" }
+  ]
+}

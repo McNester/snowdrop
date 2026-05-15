@@ -1,0 +1,25 @@
+# dataset: correlated_subquery_cases
+
+query T
+SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.total >= 30) ORDER BY c.id;
+----
+Beta
+
+query T
+SELECT c.name FROM customers c WHERE c.id IN (SELECT o.customer_id FROM orders o WHERE o.customer_id = c.id AND o.total >= 20) ORDER BY c.id;
+----
+Alpha
+Beta
+
+query TI
+SELECT c.name, (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) AS order_count FROM customers c ORDER BY c.id;
+----
+Alpha	2
+Beta	1
+Gamma	0
+
+query TI
+SELECT c.name, COUNT(o.id) AS order_rows FROM customers c LEFT JOIN orders o ON c.id = o.customer_id GROUP BY c.id, c.name HAVING (SELECT COUNT(*) FROM orders o2 WHERE o2.customer_id = c.id) >= 1 ORDER BY c.id;
+----
+Alpha	2
+Beta	1

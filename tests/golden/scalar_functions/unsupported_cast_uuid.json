@@ -1,0 +1,5 @@
+{
+  "name": "unsupported_cast_uuid",
+  "sql": "SELECT CAST(display_name AS UUID) FROM profiles;",
+  "expected_error": "*"
+}

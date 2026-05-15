@@ -1,0 +1,5 @@
+{
+  "name": "drop_default_error",
+  "sql": "ALTER TABLE users ALTER COLUMN nickname SET DEFAULT 'anon'; ALTER TABLE users ALTER COLUMN nickname SET NOT NULL; ALTER TABLE users ALTER COLUMN nickname DROP DEFAULT; INSERT INTO users (id, email) VALUES (3, 'cara@example.com');",
+  "expected_error": "column 'nickname' cannot be NULL"
+}

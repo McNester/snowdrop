@@ -1,0 +1,5 @@
+{
+  "name": "missing_parent_insert_error",
+  "sql": "INSERT INTO children (id, parent_id, label) VALUES (11, 999, 'orphan');",
+  "expected_error": "FOREIGN KEY"
+}

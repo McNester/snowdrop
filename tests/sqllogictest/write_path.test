@@ -1,0 +1,17 @@
+# dataset: write_path_smoke
+
+statement ok
+INSERT INTO accounts (id, owner, balance, status) VALUES (20, 'Dina', 77, 'active');
+
+query TIII
+SELECT id, owner, balance, status FROM accounts WHERE id = 20;
+----
+20 Dina 77 active
+
+statement ok
+UPDATE accounts SET status = 'vip' WHERE id = 1;
+
+query TT
+SELECT owner, status FROM accounts WHERE id = 1;
+----
+Alice vip

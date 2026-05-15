@@ -1,0 +1,4 @@
+SELECT grp, COUNT(amount), SUM(amount)
+FROM measurements
+GROUP BY grp
+ORDER BY grp;

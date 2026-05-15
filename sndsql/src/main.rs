@@ -67,7 +67,11 @@ async fn main() {
     let mut buffer = String::new();
 
     loop {
-        let prompt = if buffer.is_empty() { "snowdrop> " } else { "       -> " };
+        let prompt = if buffer.is_empty() {
+            "snowdrop> "
+        } else {
+            "       -> "
+        };
 
         match rl.readline(prompt) {
             Ok(line) => {
@@ -114,11 +118,7 @@ async fn execute_query(client: &tokio_postgres::Client, query: &str) {
                 match msg {
                     SimpleQueryMessage::Row(row) => {
                         if columns.is_empty() {
-                            columns = row
-                                .columns()
-                                .iter()
-                                .map(|c| c.name().to_string())
-                                .collect();
+                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
                         }
                         let vals: Vec<String> = (0..row.len())
                             .map(|i| {

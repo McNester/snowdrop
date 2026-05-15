@@ -1,0 +1,4 @@
+1..3
+ok 1 - table constraints introspection
+ok 2 - key column usage introspection
+ok 3 - referential constraints introspection

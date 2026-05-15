@@ -1,0 +1,4 @@
+SELECT id, ROW_NUMBER() OVER w AS rn
+FROM scores
+WINDOW w AS (ORDER BY id)
+ORDER BY id;

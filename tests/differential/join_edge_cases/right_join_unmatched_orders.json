@@ -1,0 +1,4 @@
+{
+  "name": "right_join_unmatched_orders",
+  "sql": "SELECT o.id, c.name, o.amount FROM customers c RIGHT JOIN orders o ON c.id = o.customer_id ORDER BY o.id;"
+}

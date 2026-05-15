@@ -1,0 +1,5 @@
+{
+  "name": "window_in_where_error",
+  "sql": "SELECT id FROM scores WHERE ROW_NUMBER() OVER (ORDER BY id) > 1;",
+  "expected_error": "window functions are not supported in WHERE"
+}

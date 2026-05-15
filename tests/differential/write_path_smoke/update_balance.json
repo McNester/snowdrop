@@ -1,0 +1,4 @@
+{
+  "name": "update_balance",
+  "sql": "UPDATE accounts SET balance = 175 WHERE id = 1; SELECT balance, status FROM accounts WHERE id = 1;"
+}

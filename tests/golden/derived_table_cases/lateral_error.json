@@ -1,0 +1,5 @@
+{
+  "name": "lateral_error",
+  "sql": "SELECT c.name FROM customers c INNER JOIN LATERAL (VALUES (1)) AS recent(total) ON TRUE;",
+  "expected_error": "LATERAL VALUES is not supported yet"
+}

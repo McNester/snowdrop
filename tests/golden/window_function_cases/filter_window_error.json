@@ -1,0 +1,5 @@
+{
+  "name": "filter_window_error",
+  "sql": "SELECT id, COUNT(*) FILTER (WHERE score > 5) OVER (PARTITION BY grp) AS filtered_count FROM scores;",
+  "expected_error": "FILTER on window functions is not supported yet"
+}

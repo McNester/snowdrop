@@ -1,0 +1,5 @@
+{
+  "name": "insert_select_type_mismatch_error",
+  "sql": "INSERT INTO customer_totals (customer, total) SELECT customer, status FROM live_orders;",
+  "expected_error": "INSERT ... SELECT value for target column 'total' is not compatible with type FLOAT"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "foreign_key_cases",
+  "description": "PostgreSQL-style regression coverage for immediate foreign-key enforcement.",
+  "dataset": "foreign_key_cases"
+}

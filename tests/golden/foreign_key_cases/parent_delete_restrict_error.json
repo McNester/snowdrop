@@ -1,0 +1,5 @@
+{
+  "name": "parent_delete_restrict_error",
+  "sql": "DELETE FROM parents WHERE id = 1;",
+  "expected_error": "FOREIGN KEY"
+}

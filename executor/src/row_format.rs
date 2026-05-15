@@ -65,7 +65,11 @@ impl<'a> RowView<'a> {
         if data.len() < data_offset {
             return None;
         }
-        Some(Self { data, num_cols, data_offset })
+        Some(Self {
+            data,
+            num_cols,
+            data_offset,
+        })
     }
 
     pub fn num_cols(&self) -> u16 {
@@ -115,12 +119,17 @@ impl<'a> RowView<'a> {
 
     /// Iterate over all (col_id, value_bytes) pairs without allocation.
     pub fn iter(&'a self) -> RowViewIter<'a> {
-        RowViewIter { view: self, index: 0 }
+        RowViewIter {
+            view: self,
+            index: 0,
+        }
     }
 
     /// Convert to owned Vec for write-path read-modify-write operations.
     pub fn to_owned_columns(&self) -> Vec<(u32, Vec<u8>)> {
-        self.iter().map(|(id, bytes)| (id, bytes.to_vec())).collect()
+        self.iter()
+            .map(|(id, bytes)| (id, bytes.to_vec()))
+            .collect()
     }
 }
 
@@ -149,11 +158,7 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let columns: Vec<(u32, &[u8])> = vec![
-            (1, b"hello"),
-            (2, b"world"),
-            (3, b"!"),
-        ];
+        let columns: Vec<(u32, &[u8])> = vec![(1, b"hello"), (2, b"world"), (3, b"!")];
         let encoded = encode_row(&columns);
         let view = RowView::new(&encoded).expect("should parse new format");
 

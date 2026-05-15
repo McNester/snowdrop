@@ -1,0 +1,5 @@
+{
+  "name": "exact_decimal_arithmetic",
+  "sql": "SELECT amount + 0.20 FROM ledger WHERE id = 1;",
+  "expected_rows": [["0.30"]]
+}

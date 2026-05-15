@@ -1,0 +1,5 @@
+1..4
+ok 1 - health endpoint
+ok 2 - metrics endpoint
+ok 3 - count items
+ok 4 - invalid query errors

@@ -1,0 +1,24 @@
+{
+  "name": "defaults_and_updates",
+  "dataset": "defaults_and_updates",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "omitted defaults",
+      "sql": "INSERT INTO tasks (id, note) VALUES (2, 'hello'); SELECT id, state, priority, note FROM tasks WHERE id = 2;",
+      "expected_rows": [["2", "new", "1", "hello"]]
+    },
+    {
+      "kind": "sql",
+      "name": "explicit override defaults",
+      "sql": "INSERT INTO tasks (id, state, priority, note) VALUES (3, 'hold', 7, 'manual'); SELECT id, state, priority, note FROM tasks WHERE id = 3;",
+      "expected_rows": [["3", "hold", "7", "manual"]]
+    },
+    {
+      "kind": "sql",
+      "name": "alter default roundtrip",
+      "sql": "ALTER TABLE tasks ALTER COLUMN state SET DEFAULT 'queued'; INSERT INTO tasks (id, note) VALUES (4, 'later'); SELECT id, state FROM tasks WHERE id = 4;",
+      "expected_rows": [["4", "queued"]]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "negative_frame_offset_error",
+  "sql": "SELECT id, SUM(score) OVER (ORDER BY id ROWS BETWEEN -1 PRECEDING AND CURRENT ROW) AS running_sum FROM scores;",
+  "expected_error": "window frame offsets must be non-negative integers"
+}

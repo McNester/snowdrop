@@ -1,0 +1,5 @@
+{
+  "name": "except_error",
+  "sql": "SELECT value FROM left_values EXCEPT ALL SELECT value FROM right_values;",
+  "expected_error": "EXCEPT ALL is not supported yet"
+}

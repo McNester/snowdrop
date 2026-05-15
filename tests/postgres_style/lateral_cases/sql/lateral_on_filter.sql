@@ -1,0 +1,8 @@
+SELECT c.name, recent.total
+FROM customers c
+INNER JOIN LATERAL (
+  SELECT o.total, o.status
+  FROM orders o
+  WHERE o.customer_id = c.id
+) AS recent ON recent.status = 'paid'
+ORDER BY c.name, recent.total;

@@ -1,0 +1,12 @@
+# dataset: composite_keys
+
+query T
+INSERT INTO memberships (tenant_id, user_id, role) VALUES (1, 12, 'editor');
+SELECT tenant_id, user_id, role FROM memberships WHERE tenant_id = 1 ORDER BY user_id;
+----
+1 10 admin
+1 11 viewer
+1 12 editor
+
+statement error
+INSERT INTO memberships (tenant_id, user_id, role) VALUES (1, 10, 'duplicate');

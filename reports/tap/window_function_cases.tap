@@ -1,0 +1,7 @@
+1..6
+ok 1 - row number per partition
+ok 2 - lag lead defaults
+ok 3 - named window reference
+ok 4 - running rows frame
+ok 5 - grouped rows plus window
+ok 6 - range frame unsupported

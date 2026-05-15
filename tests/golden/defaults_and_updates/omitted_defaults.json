@@ -1,0 +1,5 @@
+{
+  "name": "omitted_defaults",
+  "sql": "INSERT INTO tasks (id, note) VALUES (2, 'hello'); SELECT id, state, priority, note FROM tasks WHERE id = 2;",
+  "expected_rows": [["2", "new", "1", "hello"]]
+}

@@ -1,0 +1,4 @@
+1..3
+ok 1 - cross join ticket classes
+ok 2 - right join unmatched orders
+not ok 3 - full outer grouped counts

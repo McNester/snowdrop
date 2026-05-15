@@ -1,0 +1,9 @@
+{
+  "name": "derived_table_cases",
+  "database": "derived_table_cases",
+  "description": "Derived-table fixture for FROM/JOIN subqueries with alias-bound column resolution.",
+  "purpose": "Exercise derived tables as first-class relations and keep alias requirements explicit.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

@@ -1,0 +1,30 @@
+{
+  "name": "catalog_introspection_pg_catalog",
+  "dataset": "catalog_introspection",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "pg tables",
+      "sql": "SELECT schemaname, tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename;",
+      "expected_rows": [["public", "accounts"], ["public", "parent_accounts"]]
+    },
+    {
+      "kind": "sql",
+      "name": "pg class",
+      "sql": "SELECT n.nspname, c.relname, c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY c.relname;",
+      "expected_rows": [["public", "accounts", "r"], ["public", "parent_accounts", "r"]]
+    },
+    {
+      "kind": "sql",
+      "name": "pg attribute",
+      "sql": "SELECT a.attname, t.typname FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE n.nspname = 'public' AND c.relname = 'accounts' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum;",
+      "expected_rows": [["id", "int8"], ["tenant_id", "int8"], ["email", "varchar"], ["parent_id", "int8"], ["balance", "int8"]]
+    },
+    {
+      "kind": "sql",
+      "name": "pg constraint",
+      "sql": "SELECT con.conname, con.contype FROM pg_catalog.pg_constraint con LEFT JOIN pg_catalog.pg_class c ON c.oid = con.conrelid LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND con.conrelid <> 0 ORDER BY con.conname;",
+      "expected_rows": [["accounts_balance_check", "c"], ["accounts_parent_fkey", "f"], ["accounts_pkey", "p"], ["accounts_tenant_email_key", "u"], ["parent_accounts_pkey", "p"]]
+    }
+  ]
+}

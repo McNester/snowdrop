@@ -1,7 +1,11 @@
 use crate::row_format::RowView;
 use crate::typed_value::TypedValue;
+use chrono::{Datelike, Timelike, Utc};
 use schema::ColumnInfo;
-use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
+use sqlparser::ast::{
+    BinaryOperator, DateTimeField, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments,
+    TrimWhereField, UnaryOperator, Value,
+};
 use std::collections::HashMap;
 
 /// A deserialized row: col_name -> TypedValue.
@@ -10,41 +14,77 @@ pub type Row = HashMap<String, TypedValue>;
 /// Evaluate a WHERE expression against a row. Returns true if the row matches.
 pub fn evaluate_predicate(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> bool {
     match expr {
+        Expr::Value(Value::Boolean(value)) => *value,
         Expr::BinaryOp { left, op, right } => eval_binary_op(left, op, right, row, schema_cols),
-        Expr::UnaryOp { op: UnaryOperator::Not, expr } => {
-            !evaluate_predicate(expr, row, schema_cols)
-        }
-        Expr::IsNull(inner) => {
-            resolve_value(inner, row, schema_cols).is_null()
-        }
-        Expr::IsNotNull(inner) => {
-            !resolve_value(inner, row, schema_cols).is_null()
-        }
-        Expr::Between { expr: col, low, high, negated } => {
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => !evaluate_predicate(expr, row, schema_cols),
+        Expr::IsNull(inner) => resolve_value(inner, row, schema_cols).is_null(),
+        Expr::IsNotNull(inner) => !resolve_value(inner, row, schema_cols).is_null(),
+        Expr::Between {
+            expr: col,
+            low,
+            high,
+            negated,
+        } => {
             let val = resolve_value(col, row, schema_cols);
             let lo = resolve_value(low, row, schema_cols);
             let hi = resolve_value(high, row, schema_cols);
-            let in_range = (val.sql_eq(&lo) || val.sql_gt(&lo))
-                && (val.sql_eq(&hi) || val.sql_lt(&hi));
-            if *negated { !in_range } else { in_range }
+            let in_range =
+                (val.sql_eq(&lo) || val.sql_gt(&lo)) && (val.sql_eq(&hi) || val.sql_lt(&hi));
+            if *negated {
+                !in_range
+            } else {
+                in_range
+            }
         }
-        Expr::InList { expr: col, list, negated } => {
+        Expr::InList {
+            expr: col,
+            list,
+            negated,
+        } => {
             let val = resolve_value(col, row, schema_cols);
             let found = list.iter().any(|item| {
                 let item_val = resolve_value(item, row, schema_cols);
                 val.sql_eq(&item_val)
             });
-            if *negated { !found } else { found }
+            if *negated {
+                !found
+            } else {
+                found
+            }
         }
-        Expr::Like { expr: col_expr, pattern, negated, .. } => {
-            let val = resolve_value(col_expr, row, schema_cols);
+        full_expr @ Expr::Like {
+            expr: value_expr,
+            pattern,
+            negated,
+            escape_char,
+            ..
+        }
+        | full_expr @ Expr::ILike {
+            expr: value_expr,
+            pattern,
+            negated,
+            escape_char,
+            ..
+        } => {
+            let val = resolve_value(value_expr, row, schema_cols);
             let pat = resolve_value(pattern, row, schema_cols);
             let matches = if let TypedValue::Text(p) = &pat {
-                val.sql_like(p)
+                if matches!(full_expr, Expr::ILike { .. }) {
+                    val.sql_like_with_options(p, escape_char.as_deref(), true)
+                } else {
+                    val.sql_like_with_options(p, escape_char.as_deref(), false)
+                }
             } else {
                 false
             };
-            if *negated { !matches } else { matches }
+            if *negated {
+                !matches
+            } else {
+                matches
+            }
         }
         Expr::Nested(inner) => evaluate_predicate(inner, row, schema_cols),
         _ => false,
@@ -91,18 +131,29 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
             let col_name = ident.value.to_lowercase();
             // Try exact match first, then search for any key ending with .col_name (for JOIN rows)
             row.get(&col_name)
-                .or_else(|| row.iter().find(|(k, _)| k.ends_with(&format!(".{}", col_name))).map(|(_, v)| v))
+                .or_else(|| {
+                    row.iter()
+                        .find(|(k, _)| k.ends_with(&format!(".{}", col_name)))
+                        .map(|(_, v)| v)
+                })
                 .cloned()
                 .unwrap_or(TypedValue::Null)
         }
         Expr::CompoundIdentifier(parts) => {
             // Try fully qualified alias.column first (for JOIN rows)
-            let qualified = parts.iter().map(|p| p.value.to_lowercase()).collect::<Vec<_>>().join(".");
+            let qualified = parts
+                .iter()
+                .map(|p| p.value.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(".");
             if let Some(val) = row.get(&qualified) {
                 return val.clone();
             }
             // Fall back to last part only
-            let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
+            let col_name = parts
+                .last()
+                .map(|p| p.value.to_lowercase())
+                .unwrap_or_default();
             row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
         }
         Expr::Value(val) => literal_to_typed(val),
@@ -116,12 +167,44 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
                 _ => TypedValue::Null,
             }
         }
-        Expr::BinaryOp { left, op, right } => {
-            eval_arithmetic(left, op, right, row, schema_cols)
+        Expr::Extract { field, expr, .. } => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_extract_expr(field, expr, &mut resolver)
         }
-        Expr::Nested(inner) => resolve_value(inner, row, schema_cols),
-        Expr::Case { operand, conditions, results, else_result, .. } => {
-            eval_case(operand.as_deref(), conditions, results, else_result.as_deref(), row, schema_cols)
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
+            let val = resolve_value(expr, row, schema_cols);
+            val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
+        }
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_substring_expr(
+                expr,
+                substring_from.as_deref(),
+                substring_for.as_deref(),
+                &mut resolver,
+            )
+        }
+        Expr::Trim {
+            expr,
+            trim_where,
+            trim_what,
+            trim_characters,
+        } => {
+            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
+            eval_trim_expr(
+                expr,
+                trim_where.as_ref(),
+                trim_what.as_deref(),
+                trim_characters.as_deref(),
+                &mut resolver,
+            )
         }
         _ => TypedValue::Null,
     }
@@ -142,42 +225,7 @@ fn eval_arithmetic(
         return TypedValue::Null;
     }
 
-    let lf = lval.as_f64();
-    let rf = rval.as_f64();
-
-    match (lf, rf) {
-        (Some(l), Some(r)) => {
-            let result = match op {
-                BinaryOperator::Plus => l + r,
-                BinaryOperator::Minus => l - r,
-                BinaryOperator::Multiply => l * r,
-                BinaryOperator::Divide => {
-                    if r == 0.0 {
-                        return TypedValue::Null;
-                    }
-                    l / r
-                }
-                BinaryOperator::Modulo => {
-                    if r == 0.0 {
-                        return TypedValue::Null;
-                    }
-                    l % r
-                }
-                _ => return TypedValue::Null,
-            };
-            // Preserve integer type when both inputs are integers and result is whole
-            if matches!(lval, TypedValue::Int(_))
-                && matches!(rval, TypedValue::Int(_))
-                && result == (result as i64) as f64
-                && !matches!(op, BinaryOperator::Divide)
-            {
-                TypedValue::Int(result as i64)
-            } else {
-                TypedValue::Float(result)
-            }
-        }
-        _ => TypedValue::Null,
-    }
+    lval.apply_arithmetic(op, &rval)
 }
 
 /// Evaluate a CASE WHEN expression.
@@ -224,13 +272,320 @@ fn literal_to_typed(val: &Value) -> TypedValue {
                 TypedValue::Text(n.clone())
             }
         }
-        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-            TypedValue::Text(s.clone())
-        }
+        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => TypedValue::Text(s.clone()),
         Value::Boolean(b) => TypedValue::Boolean(*b),
         Value::Null => TypedValue::Null,
         _ => TypedValue::Null,
     }
+}
+
+fn eval_function<F>(f: &Function, resolve_expr: &mut F) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let name = f.name.to_string().to_uppercase();
+    let args = match resolve_function_args(&f.args, resolve_expr) {
+        Some(args) => args,
+        None => return TypedValue::Null,
+    };
+
+    match name.as_str() {
+        "COALESCE" => args
+            .into_iter()
+            .find(|value| !value.is_null())
+            .unwrap_or(TypedValue::Null),
+        "NULLIF" => {
+            if args.len() != 2 {
+                return TypedValue::Null;
+            }
+            if args[0].sql_eq(&args[1]) {
+                TypedValue::Null
+            } else {
+                args[0].clone()
+            }
+        }
+        "LOWER" => unary_text_function(&args, |value| value.to_lowercase()),
+        "UPPER" => unary_text_function(&args, |value| value.to_uppercase()),
+        "LENGTH" => {
+            if args.len() != 1 {
+                return TypedValue::Null;
+            }
+            match &args[0] {
+                TypedValue::Null => TypedValue::Null,
+                TypedValue::Text(text) => TypedValue::Int(text.chars().count() as i64),
+                _ => TypedValue::Null,
+            }
+        }
+        "CONCAT" => {
+            let mut out = String::new();
+            for arg in args {
+                if !arg.is_null() {
+                    out.push_str(&arg.to_string());
+                }
+            }
+            TypedValue::Text(out)
+        }
+        "NOW" | "CURRENT_TIMESTAMP" | "LOCALTIMESTAMP" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Timestamp(Utc::now().naive_utc())
+        }
+        "CURRENT_DATE" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Date(Utc::now().date_naive())
+        }
+        "CURRENT_TIME" | "LOCALTIME" => {
+            if !args.is_empty() {
+                return TypedValue::Null;
+            }
+            TypedValue::Time(Utc::now().time())
+        }
+        _ => TypedValue::Null,
+    }
+}
+
+fn eval_extract_expr<F>(field: &DateTimeField, expr: &Expr, resolve_expr: &mut F) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let value = resolve_expr(expr);
+    if value.is_null() {
+        return TypedValue::Null;
+    }
+
+    match field {
+        DateTimeField::Year => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.year() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.year() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Month => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.month() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.month() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Day => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.day() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.day() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Hour => value
+            .as_timestamp()
+            .map(|ts| TypedValue::Int(ts.hour() as i64))
+            .or_else(|| {
+                value
+                    .as_time()
+                    .map(|time| TypedValue::Int(time.hour() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Minute => value
+            .as_timestamp()
+            .map(|ts| TypedValue::Int(ts.minute() as i64))
+            .or_else(|| {
+                value
+                    .as_time()
+                    .map(|time| TypedValue::Int(time.minute() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Second => value
+            .as_timestamp()
+            .map(|ts| TypedValue::Text(format_extract_second(ts.second(), ts.nanosecond())))
+            .or_else(|| {
+                value.as_time().map(|time| {
+                    TypedValue::Text(format_extract_second(time.second(), time.nanosecond()))
+                })
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Dow | DateTimeField::DayOfWeek => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.weekday().num_days_from_sunday() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.weekday().num_days_from_sunday() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Isodow => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.weekday().number_from_monday() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.weekday().number_from_monday() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Doy | DateTimeField::DayOfYear => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.ordinal() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.ordinal() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Quarter => value
+            .as_date()
+            .map(|date| TypedValue::Int(((date.month0() / 3) + 1) as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(((ts.month0() / 3) + 1) as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        DateTimeField::Week(None) | DateTimeField::IsoWeek => value
+            .as_date()
+            .map(|date| TypedValue::Int(date.iso_week().week() as i64))
+            .or_else(|| {
+                value
+                    .as_timestamp()
+                    .map(|ts| TypedValue::Int(ts.iso_week().week() as i64))
+            })
+            .unwrap_or(TypedValue::Null),
+        _ => TypedValue::Null,
+    }
+}
+
+fn format_extract_second(second: u32, nanos: u32) -> String {
+    format!("{second}.{:06}", nanos / 1_000)
+}
+
+fn resolve_function_args<F>(
+    args: &FunctionArguments,
+    resolve_expr: &mut F,
+) -> Option<Vec<TypedValue>>
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    match args {
+        FunctionArguments::None => Some(Vec::new()),
+        FunctionArguments::List(list) => {
+            let mut values = Vec::with_capacity(list.args.len());
+            for arg in &list.args {
+                match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
+                        values.push(resolve_expr(expr));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(values)
+        }
+        FunctionArguments::Subquery(_) => None,
+    }
+}
+
+fn unary_text_function(args: &[TypedValue], mapper: impl FnOnce(&str) -> String) -> TypedValue {
+    if args.len() != 1 {
+        return TypedValue::Null;
+    }
+
+    match &args[0] {
+        TypedValue::Null => TypedValue::Null,
+        TypedValue::Text(text) => TypedValue::Text(mapper(text)),
+        _ => TypedValue::Null,
+    }
+}
+
+fn eval_substring_expr<F>(
+    expr: &Expr,
+    substring_from: Option<&Expr>,
+    substring_for: Option<&Expr>,
+    resolve_expr: &mut F,
+) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let value = resolve_expr(expr);
+    let text = match value {
+        TypedValue::Null => return TypedValue::Null,
+        TypedValue::Text(text) => text,
+        _ => return TypedValue::Null,
+    };
+
+    let start = substring_from
+        .map(|expr| resolve_expr(expr))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(1)
+        .max(1) as usize;
+    let length = substring_for
+        .map(|expr| resolve_expr(expr))
+        .and_then(|value| value.as_i64())
+        .map(|value| value.max(0) as usize);
+
+    let chars: Vec<char> = text.chars().collect();
+    let begin = start.saturating_sub(1);
+    if begin >= chars.len() {
+        return TypedValue::Text(String::new());
+    }
+
+    let end = length
+        .map(|len| begin.saturating_add(len).min(chars.len()))
+        .unwrap_or(chars.len());
+
+    TypedValue::Text(chars[begin..end].iter().collect())
+}
+
+fn eval_trim_expr<F>(
+    expr: &Expr,
+    trim_where: Option<&TrimWhereField>,
+    trim_what: Option<&Expr>,
+    trim_characters: Option<&[Expr]>,
+    resolve_expr: &mut F,
+) -> TypedValue
+where
+    F: FnMut(&Expr) -> TypedValue,
+{
+    let value = resolve_expr(expr);
+    let text = match value {
+        TypedValue::Null => return TypedValue::Null,
+        TypedValue::Text(text) => text,
+        _ => return TypedValue::Null,
+    };
+
+    let trim_chars = if let Some(chars) = trim_characters {
+        chars
+            .first()
+            .map(resolve_expr)
+            .and_then(|value| match value {
+                TypedValue::Text(text) => Some(text),
+                _ => None,
+            })
+            .unwrap_or_else(|| " ".to_string())
+    } else if let Some(trim_expr) = trim_what {
+        match resolve_expr(trim_expr) {
+            TypedValue::Text(text) => text,
+            TypedValue::Null => return TypedValue::Null,
+            _ => return TypedValue::Null,
+        }
+    } else {
+        " ".to_string()
+    };
+
+    let char_set: Vec<char> = trim_chars.chars().collect();
+    let trimmed = match trim_where.unwrap_or(&TrimWhereField::Both) {
+        TrimWhereField::Both => text.trim_matches(|c| char_set.contains(&c)).to_string(),
+        TrimWhereField::Leading => text
+            .trim_start_matches(|c| char_set.contains(&c))
+            .to_string(),
+        TrimWhereField::Trailing => text.trim_end_matches(|c| char_set.contains(&c)).to_string(),
+    };
+
+    TypedValue::Text(trimmed)
 }
 
 /// Deserialize raw bytes into a Row (owned version).
@@ -264,37 +619,78 @@ pub fn bytes_to_row_ref(col_values: &[(&ColumnInfo, Option<&[u8]>)]) -> Row {
 /// to skip parsing columns for rows that fail early predicates.
 pub fn evaluate_predicate_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -> bool {
     match expr {
-        Expr::BinaryOp { left, op, right } => eval_binary_op_view(left, op, right, view, schema_cols),
-        Expr::UnaryOp { op: UnaryOperator::Not, expr } => {
-            !evaluate_predicate_view(expr, view, schema_cols)
+        Expr::BinaryOp { left, op, right } => {
+            eval_binary_op_view(left, op, right, view, schema_cols)
         }
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr,
+        } => !evaluate_predicate_view(expr, view, schema_cols),
         Expr::IsNull(inner) => resolve_value_view(inner, view, schema_cols).is_null(),
         Expr::IsNotNull(inner) => !resolve_value_view(inner, view, schema_cols).is_null(),
-        Expr::Between { expr: col, low, high, negated } => {
+        Expr::Between {
+            expr: col,
+            low,
+            high,
+            negated,
+        } => {
             let val = resolve_value_view(col, view, schema_cols);
             let lo = resolve_value_view(low, view, schema_cols);
             let hi = resolve_value_view(high, view, schema_cols);
-            let in_range = (val.sql_eq(&lo) || val.sql_gt(&lo))
-                && (val.sql_eq(&hi) || val.sql_lt(&hi));
-            if *negated { !in_range } else { in_range }
+            let in_range =
+                (val.sql_eq(&lo) || val.sql_gt(&lo)) && (val.sql_eq(&hi) || val.sql_lt(&hi));
+            if *negated {
+                !in_range
+            } else {
+                in_range
+            }
         }
-        Expr::InList { expr: col, list, negated } => {
+        Expr::InList {
+            expr: col,
+            list,
+            negated,
+        } => {
             let val = resolve_value_view(col, view, schema_cols);
             let found = list.iter().any(|item| {
                 let item_val = resolve_value_view(item, view, schema_cols);
                 val.sql_eq(&item_val)
             });
-            if *negated { !found } else { found }
+            if *negated {
+                !found
+            } else {
+                found
+            }
         }
-        Expr::Like { expr: col_expr, pattern, negated, .. } => {
-            let val = resolve_value_view(col_expr, view, schema_cols);
+        full_expr @ Expr::Like {
+            expr: value_expr,
+            pattern,
+            negated,
+            escape_char,
+            ..
+        }
+        | full_expr @ Expr::ILike {
+            expr: value_expr,
+            pattern,
+            negated,
+            escape_char,
+            ..
+        } => {
+            let val = resolve_value_view(value_expr, view, schema_cols);
             let pat = resolve_value_view(pattern, view, schema_cols);
             let matches = if let TypedValue::Text(p) = &pat {
-                val.sql_like(p)
+                if matches!(full_expr, Expr::ILike { .. }) {
+                    val.sql_like_with_options(p, escape_char.as_deref(), true)
+                } else {
+                    val.sql_like_with_options(p, escape_char.as_deref(), false)
+                }
             } else {
                 false
             };
-            if *negated { !matches } else { matches }
+            if *negated {
+                !matches
+            } else {
+                matches
+            }
         }
         Expr::Nested(inner) => evaluate_predicate_view(inner, view, schema_cols),
         _ => false,
@@ -338,7 +734,10 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
     match expr {
         Expr::Identifier(ident) => {
             let col_name = ident.value.to_lowercase();
-            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+            if let Some(col) = schema_cols
+                .iter()
+                .find(|c| c.name.to_lowercase() == col_name)
+            {
                 view.find_col(col.id)
                     .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
                     .unwrap_or(TypedValue::Null)
@@ -347,8 +746,14 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             }
         }
         Expr::CompoundIdentifier(parts) => {
-            let col_name = parts.last().map(|p| p.value.to_lowercase()).unwrap_or_default();
-            if let Some(col) = schema_cols.iter().find(|c| c.name.to_lowercase() == col_name) {
+            let col_name = parts
+                .last()
+                .map(|p| p.value.to_lowercase())
+                .unwrap_or_default();
+            if let Some(col) = schema_cols
+                .iter()
+                .find(|c| c.name.to_lowercase() == col_name)
+            {
                 view.find_col(col.id)
                     .map(|bytes| TypedValue::from_bytes(bytes, &col.data_type))
                     .unwrap_or(TypedValue::Null)
@@ -373,8 +778,94 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             eval_arithmetic_typed(&lval, op, &rval)
         }
         Expr::Nested(inner) => resolve_value_view(inner, view, schema_cols),
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => eval_case_view(
+            operand.as_deref(),
+            conditions,
+            results,
+            else_result.as_deref(),
+            view,
+            schema_cols,
+        ),
+        Expr::Function(f) => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_function(f, &mut resolver)
+        }
+        Expr::Extract { field, expr, .. } => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_extract_expr(field, expr, &mut resolver)
+        }
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
+            let val = resolve_value_view(expr, view, schema_cols);
+            val.cast_to_data_type(data_type).unwrap_or(TypedValue::Null)
+        }
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_substring_expr(
+                expr,
+                substring_from.as_deref(),
+                substring_for.as_deref(),
+                &mut resolver,
+            )
+        }
+        Expr::Trim {
+            expr,
+            trim_where,
+            trim_what,
+            trim_characters,
+        } => {
+            let mut resolver = |inner: &Expr| resolve_value_view(inner, view, schema_cols);
+            eval_trim_expr(
+                expr,
+                trim_where.as_ref(),
+                trim_what.as_deref(),
+                trim_characters.as_deref(),
+                &mut resolver,
+            )
+        }
         _ => TypedValue::Null,
     }
+}
+
+fn eval_case_view(
+    operand: Option<&Expr>,
+    conditions: &[Expr],
+    results: &[Expr],
+    else_result: Option<&Expr>,
+    view: &RowView,
+    schema_cols: &[ColumnInfo],
+) -> TypedValue {
+    if let Some(op) = operand {
+        let op_val = resolve_value_view(op, view, schema_cols);
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            let cond_val = resolve_value_view(cond, view, schema_cols);
+            if op_val.sql_eq(&cond_val) {
+                return resolve_value_view(res, view, schema_cols);
+            }
+        }
+    } else {
+        for (cond, res) in conditions.iter().zip(results.iter()) {
+            if evaluate_predicate_view(cond, view, schema_cols) {
+                return resolve_value_view(res, view, schema_cols);
+            }
+        }
+    }
+
+    else_result
+        .map(|expr| resolve_value_view(expr, view, schema_cols))
+        .unwrap_or(TypedValue::Null)
 }
 
 /// Arithmetic on already-resolved TypedValues (shared between Row and RowView paths).
@@ -382,34 +873,7 @@ fn eval_arithmetic_typed(lval: &TypedValue, op: &BinaryOperator, rval: &TypedVal
     if lval.is_null() || rval.is_null() {
         return TypedValue::Null;
     }
-    match (lval.as_f64(), rval.as_f64()) {
-        (Some(l), Some(r)) => {
-            let result = match op {
-                BinaryOperator::Plus => l + r,
-                BinaryOperator::Minus => l - r,
-                BinaryOperator::Multiply => l * r,
-                BinaryOperator::Divide => {
-                    if r == 0.0 { return TypedValue::Null; }
-                    l / r
-                }
-                BinaryOperator::Modulo => {
-                    if r == 0.0 { return TypedValue::Null; }
-                    l % r
-                }
-                _ => return TypedValue::Null,
-            };
-            if matches!(lval, TypedValue::Int(_))
-                && matches!(rval, TypedValue::Int(_))
-                && result == (result as i64) as f64
-                && !matches!(op, BinaryOperator::Divide)
-            {
-                TypedValue::Int(result as i64)
-            } else {
-                TypedValue::Float(result)
-            }
-        }
-        _ => TypedValue::Null,
-    }
+    lval.apply_arithmetic(op, rval)
 }
 
 #[cfg(test)]
@@ -430,11 +894,51 @@ mod tests {
         panic!("failed to parse WHERE clause");
     }
 
+    fn parse_select_expr(sql: &str) -> Expr {
+        let full = format!("SELECT {sql} FROM t");
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &full).unwrap();
+        if let sqlparser::ast::Statement::Query(q) = &stmts[0] {
+            if let sqlparser::ast::SetExpr::Select(sel) = q.body.as_ref() {
+                if let SelectItem::UnnamedExpr(expr) = &sel.projection[0] {
+                    return expr.clone();
+                }
+            }
+        }
+        panic!("failed to parse SELECT expression");
+    }
+
     fn test_schema() -> Vec<ColumnInfo> {
         vec![
-            ColumnInfo { id: 1, name: "id".into(), data_type: "BIGINT".into(), nullable: false, is_pk: true, table_id: 1, indexed: false, index_name: None },
-            ColumnInfo { id: 2, name: "name".into(), data_type: "VARCHAR(255)".into(), nullable: false, is_pk: false, table_id: 1, indexed: false, index_name: None },
-            ColumnInfo { id: 3, name: "age".into(), data_type: "INT".into(), nullable: true, is_pk: false, table_id: 1, indexed: false, index_name: None },
+            ColumnInfo {
+                id: 1,
+                name: "id".into(),
+                data_type: "BIGINT".into(),
+                nullable: false,
+                is_pk: true,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
+            ColumnInfo {
+                id: 2,
+                name: "name".into(),
+                data_type: "VARCHAR(255)".into(),
+                nullable: false,
+                is_pk: false,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
+            ColumnInfo {
+                id: 3,
+                name: "age".into(),
+                data_type: "INT".into(),
+                nullable: true,
+                is_pk: false,
+                table_id: 1,
+                indexed: false,
+                index_name: None,
+            },
         ]
     }
 
@@ -527,6 +1031,22 @@ mod tests {
     }
 
     #[test]
+    fn like_single_wildcard_predicate() {
+        let mut row = test_row();
+        row.insert("name".into(), TypedValue::Text("Alice".into()));
+        let expr = parse_where("name LIKE 'A_i_e'");
+        assert!(evaluate_predicate(&expr, &row, &test_schema()));
+    }
+
+    #[test]
+    fn ilike_predicate() {
+        let mut row = test_row();
+        row.insert("name".into(), TypedValue::Text("Alice".into()));
+        let expr = parse_where("name ILIKE 'ali%'");
+        assert!(evaluate_predicate(&expr, &row, &test_schema()));
+    }
+
+    #[test]
     fn not_like_predicate() {
         let expr = parse_where("name NOT LIKE 'bob%'");
         assert!(evaluate_predicate(&expr, &test_row(), &test_schema()));
@@ -591,5 +1111,84 @@ mod tests {
     fn arithmetic_division_by_zero() {
         let expr = parse_where("age / 0 = 1");
         assert!(!evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn boolean_literal_predicate() {
+        assert!(evaluate_predicate(
+            &Expr::Value(Value::Boolean(true)),
+            &test_row(),
+            &test_schema()
+        ));
+        assert!(!evaluate_predicate(
+            &Expr::Value(Value::Boolean(false)),
+            &test_row(),
+            &test_schema()
+        ));
+    }
+
+    #[test]
+    fn coalesce_prefers_first_non_null_value() {
+        let mut row = test_row();
+        row.insert("name".into(), TypedValue::Null);
+        let expr = parse_select_expr("COALESCE(name, 'fallback')");
+        assert_eq!(
+            resolve_value(&expr, &row, &test_schema()),
+            TypedValue::Text("fallback".into())
+        );
+    }
+
+    #[test]
+    fn nullif_returns_null_for_equal_values() {
+        let expr = parse_select_expr("NULLIF(name, 'alice')");
+        assert_eq!(
+            resolve_value(&expr, &test_row(), &test_schema()),
+            TypedValue::Null
+        );
+    }
+
+    #[test]
+    fn text_functions_and_substring_work() {
+        let expr = parse_select_expr("SUBSTRING(UPPER(TRIM(name)) FROM 2 FOR 3)");
+        assert_eq!(
+            resolve_value(&expr, &test_row(), &test_schema()),
+            TypedValue::Text("LIC".into())
+        );
+    }
+
+    #[test]
+    fn cast_and_current_date_expressions_work() {
+        let cast_expr = parse_select_expr("CAST(age AS TEXT)");
+        assert_eq!(
+            resolve_value(&cast_expr, &test_row(), &test_schema()),
+            TypedValue::Text("30".into())
+        );
+
+        let date_expr = parse_select_expr("CURRENT_DATE");
+        match resolve_value(&date_expr, &test_row(), &test_schema()) {
+            TypedValue::Date(date) => assert_eq!(date.format("%Y-%m-%d").to_string().len(), 10),
+            other => panic!("expected CURRENT_DATE date, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extract_expressions_work() {
+        let expr = parse_select_expr("EXTRACT(YEAR FROM CAST('2024-01-15 10:11:12' AS TIMESTAMP))");
+        assert_eq!(
+            resolve_value(&expr, &test_row(), &test_schema()),
+            TypedValue::Int(2024)
+        );
+
+        let time_expr = parse_select_expr("EXTRACT(MINUTE FROM CAST('10:11:12' AS TIME))");
+        assert_eq!(
+            resolve_value(&time_expr, &test_row(), &test_schema()),
+            TypedValue::Int(11)
+        );
+
+        let second_expr = parse_select_expr("EXTRACT(SECOND FROM CAST('10:11:12' AS TIME))");
+        assert_eq!(
+            resolve_value(&second_expr, &test_row(), &test_schema()),
+            TypedValue::Text("12.000000".into())
+        );
     }
 }

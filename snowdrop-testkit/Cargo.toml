@@ -1,0 +1,17 @@
+[package]
+name = "snowdrop-testkit"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "snowdrop-testkit"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tpch-bench.path = "../tpch-bench"

@@ -1,0 +1,4 @@
+{
+  "name": "bucket_totals",
+  "sql": "SELECT bucket, SUM(amount) FROM events GROUP BY bucket ORDER BY bucket;"
+}

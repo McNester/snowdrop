@@ -1,0 +1,5 @@
+{
+  "name": "cascade_ddl_error",
+  "sql": "CREATE TABLE bad_children (id BIGINT PRIMARY KEY, parent_id BIGINT, FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE);",
+  "expected_error": "ON DELETE CASCADE is not supported"
+}

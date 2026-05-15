@@ -1,0 +1,9 @@
+{
+  "name": "lateral_cases",
+  "database": "lateral_cases",
+  "description": "Phase 3.5 fixture for the narrow JOIN LATERAL compatibility slice.",
+  "purpose": "Validate INNER/LEFT JOIN LATERAL over derived SELECT subqueries and keep narrower unsupported LATERAL forms explicit.",
+  "tables": ["customers", "orders"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

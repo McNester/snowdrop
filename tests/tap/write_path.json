@@ -1,0 +1,9 @@
+{
+  "name": "write_path",
+  "dataset": "write_path_smoke",
+  "checks": [
+    { "kind": "sql", "name": "insert roundtrip", "sql": "INSERT INTO accounts (id, owner, balance, status) VALUES (10, 'Cara', 99, 'active'); SELECT id, owner, balance, status FROM accounts WHERE id = 10;", "expected_rows": [["10", "Cara", "99", "active"]] },
+    { "kind": "sql", "name": "update balance", "sql": "UPDATE accounts SET balance = 175 WHERE id = 1; SELECT balance, status FROM accounts WHERE id = 1;", "expected_rows": [["175", "active"]] },
+    { "kind": "sql", "name": "delete row", "sql": "DELETE FROM accounts WHERE id = 2; SELECT COUNT(*) FROM accounts WHERE id = 2;", "expected_rows": [["0"]] }
+  ]
+}

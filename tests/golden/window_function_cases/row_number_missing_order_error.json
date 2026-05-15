@@ -1,0 +1,5 @@
+{
+  "name": "row_number_missing_order_error",
+  "sql": "SELECT ROW_NUMBER() OVER (PARTITION BY grp) FROM scores;",
+  "expected_error": "ROW_NUMBER requires ORDER BY in OVER (...)"
+}

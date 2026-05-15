@@ -1,0 +1,5 @@
+{
+  "name": "order_group_cases",
+  "description": "PostgreSQL-style regression cases for grouped ordering and tie-breaking.",
+  "dataset": "order_group_cases"
+}

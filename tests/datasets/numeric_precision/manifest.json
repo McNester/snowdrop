@@ -1,0 +1,9 @@
+{
+  "name": "numeric_precision",
+  "database": "numeric_precision",
+  "description": "Phase 5 fixture for exact DECIMAL/NUMERIC semantics and regression coverage.",
+  "purpose": "Validate exact decimal arithmetic, predicates, ordering, and aggregate behavior without float-style drift.",
+  "tables": ["ledger"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

@@ -54,7 +54,9 @@ impl ColumnType {
                 let n = extract_char_length(len);
                 Ok(Self::Char(n))
             }
-            DataType::Varchar(len) | DataType::CharVarying(len) | DataType::CharacterVarying(len) => {
+            DataType::Varchar(len)
+            | DataType::CharVarying(len)
+            | DataType::CharacterVarying(len) => {
                 let n = extract_char_length(len);
                 Ok(Self::Varchar(n))
             }
@@ -142,62 +144,102 @@ mod tests {
     use sqlparser::parser::Parser;
 
     fn parse_type(sql: &str) -> DataType {
-        let stmts = Parser::parse_sql(
-            &PostgreSqlDialect {},
-            &format!("CREATE TABLE t (c {sql})"),
-        )
-        .unwrap();
+        let stmts =
+            Parser::parse_sql(&PostgreSqlDialect {}, &format!("CREATE TABLE t (c {sql})")).unwrap();
         match &stmts[0] {
-            sqlparser::ast::Statement::CreateTable(ct) => {
-                ct.columns[0].data_type.clone()
-            }
+            sqlparser::ast::Statement::CreateTable(ct) => ct.columns[0].data_type.clone(),
             _ => panic!("expected CREATE TABLE"),
         }
     }
 
     #[test]
     fn parse_integer_types() {
-        assert_eq!(ColumnType::from_sql_type(&parse_type("TINYINT")).unwrap(), ColumnType::TinyInt);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("SMALLINT")).unwrap(), ColumnType::SmallInt);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("INT")).unwrap(), ColumnType::Int);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("INTEGER")).unwrap(), ColumnType::Int);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("BIGINT")).unwrap(), ColumnType::BigInt);
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("TINYINT")).unwrap(),
+            ColumnType::TinyInt
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("SMALLINT")).unwrap(),
+            ColumnType::SmallInt
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("INT")).unwrap(),
+            ColumnType::Int
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("INTEGER")).unwrap(),
+            ColumnType::Int
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("BIGINT")).unwrap(),
+            ColumnType::BigInt
+        );
     }
 
     #[test]
     fn parse_float_types() {
-        assert_eq!(ColumnType::from_sql_type(&parse_type("FLOAT")).unwrap(), ColumnType::Float);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("DOUBLE PRECISION")).unwrap(), ColumnType::Double);
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("FLOAT")).unwrap(),
+            ColumnType::Float
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("DOUBLE PRECISION")).unwrap(),
+            ColumnType::Double
+        );
     }
 
     #[test]
     fn parse_decimal_types() {
         assert_eq!(
             ColumnType::from_sql_type(&parse_type("DECIMAL(10,2)")).unwrap(),
-            ColumnType::Decimal { precision: 10, scale: 2 }
+            ColumnType::Decimal {
+                precision: 10,
+                scale: 2
+            }
         );
         assert_eq!(
             ColumnType::from_sql_type(&parse_type("NUMERIC(5,3)")).unwrap(),
-            ColumnType::Numeric { precision: 5, scale: 3 }
+            ColumnType::Numeric {
+                precision: 5,
+                scale: 3
+            }
         );
     }
 
     #[test]
     fn parse_string_types() {
-        assert_eq!(ColumnType::from_sql_type(&parse_type("CHAR(10)")).unwrap(), ColumnType::Char(10));
-        assert_eq!(ColumnType::from_sql_type(&parse_type("VARCHAR(255)")).unwrap(), ColumnType::Varchar(255));
-        assert_eq!(ColumnType::from_sql_type(&parse_type("TEXT")).unwrap(), ColumnType::Text);
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("CHAR(10)")).unwrap(),
+            ColumnType::Char(10)
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("VARCHAR(255)")).unwrap(),
+            ColumnType::Varchar(255)
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("TEXT")).unwrap(),
+            ColumnType::Text
+        );
     }
 
     #[test]
     fn parse_date_types() {
-        assert_eq!(ColumnType::from_sql_type(&parse_type("DATE")).unwrap(), ColumnType::Date);
-        assert_eq!(ColumnType::from_sql_type(&parse_type("TIMESTAMP")).unwrap(), ColumnType::Timestamp);
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("DATE")).unwrap(),
+            ColumnType::Date
+        );
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("TIMESTAMP")).unwrap(),
+            ColumnType::Timestamp
+        );
     }
 
     #[test]
     fn parse_boolean() {
-        assert_eq!(ColumnType::from_sql_type(&parse_type("BOOLEAN")).unwrap(), ColumnType::Boolean);
+        assert_eq!(
+            ColumnType::from_sql_type(&parse_type("BOOLEAN")).unwrap(),
+            ColumnType::Boolean
+        );
     }
 
     #[test]
@@ -211,7 +253,11 @@ mod tests {
         assert_eq!(ColumnType::BigInt.as_str(), "BIGINT");
         assert_eq!(ColumnType::Varchar(255).as_str(), "VARCHAR(255)");
         assert_eq!(
-            ColumnType::Decimal { precision: 10, scale: 2 }.as_str(),
+            ColumnType::Decimal {
+                precision: 10,
+                scale: 2
+            }
+            .as_str(),
             "DECIMAL(10,2)"
         );
     }

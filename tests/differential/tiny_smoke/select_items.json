@@ -1,0 +1,4 @@
+{
+  "name": "select_items",
+  "sql": "SELECT id, name FROM items ORDER BY id;"
+}

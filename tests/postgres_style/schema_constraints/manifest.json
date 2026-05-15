@@ -1,0 +1,5 @@
+{
+  "name": "schema_constraints",
+  "description": "PostgreSQL-style regression coverage for Phase 4 ALTER TABLE and UNIQUE semantics.",
+  "dataset": "schema_constraints"
+}

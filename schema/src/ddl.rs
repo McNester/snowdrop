@@ -2,6 +2,12 @@ use crate::neo4j::Neo4jConnection;
 use crate::types::ColumnType;
 use anyhow::{bail, Context, Result};
 use neo4rs::query;
+use serde::{Deserialize, Serialize};
+use sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, SetExpr, WindowType,
+};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -27,6 +33,159 @@ pub struct ColumnInfo {
     pub table_id: u32,
     pub indexed: bool,
     pub index_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ColumnDefinition {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub is_pk: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UniqueConstraintInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForeignKeyConstraintInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_db_name: Option<String>,
+    pub ref_table_name: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: String,
+    pub on_update: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckConstraintInfo {
+    pub name: String,
+    pub expr_sql: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TableConstraintsInfo {
+    pub primary_key_columns: Vec<String>,
+    pub defaults: std::collections::HashMap<String, String>,
+    pub unique_constraints: Vec<UniqueConstraintInfo>,
+    pub foreign_keys: Vec<ForeignKeyConstraintInfo>,
+    pub check_constraints: Vec<CheckConstraintInfo>,
+}
+
+fn check_constraint_references_column(expr_sql: &str, column_name: &str) -> Result<bool> {
+    let sql = format!("SELECT {expr_sql}");
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, &sql)
+        .with_context(|| format!("failed to parse CHECK expression '{expr_sql}'"))?;
+    let projection_expr = statements
+        .first()
+        .and_then(|statement| match statement {
+            sqlparser::ast::Statement::Query(query) => match query.body.as_ref() {
+                SetExpr::Select(select) => select.projection.first(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .and_then(|item| match item {
+            SelectItem::UnnamedExpr(expr) => Some(expr),
+            SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+            _ => None,
+        })
+        .context("failed to extract parsed CHECK expression")?;
+
+    let mut identifiers = Vec::new();
+    collect_expr_identifiers(projection_expr, &mut identifiers);
+    Ok(identifiers
+        .iter()
+        .any(|identifier| identifier.eq_ignore_ascii_case(column_name)))
+}
+
+fn collect_expr_identifiers(expr: &Expr, identifiers: &mut Vec<String>) {
+    match expr {
+        Expr::Identifier(identifier) => identifiers.push(identifier.value.clone()),
+        Expr::CompoundIdentifier(parts) => {
+            if let Some(identifier) = parts.last() {
+                identifiers.push(identifier.value.clone());
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_expr_identifiers(left, identifiers);
+            collect_expr_identifiers(right, identifiers);
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => collect_expr_identifiers(expr, identifiers),
+        Expr::Extract { expr, .. } => collect_expr_identifiers(expr, identifiers),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_expr_identifiers(expr, identifiers);
+            collect_expr_identifiers(low, identifiers);
+            collect_expr_identifiers(high, identifiers);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_expr_identifiers(expr, identifiers);
+            for item in list {
+                collect_expr_identifiers(item, identifiers);
+            }
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(operand) = operand {
+                collect_expr_identifiers(operand, identifiers);
+            }
+            for condition in conditions {
+                collect_expr_identifiers(condition, identifiers);
+            }
+            for result in results {
+                collect_expr_identifiers(result, identifiers);
+            }
+            if let Some(else_result) = else_result {
+                collect_expr_identifiers(else_result, identifiers);
+            }
+        }
+        Expr::Function(function) => {
+            if let FunctionArguments::List(argument_list) = &function.args {
+                for arg in &argument_list.args {
+                    match arg {
+                        FunctionArg::Named { arg, .. } | FunctionArg::Unnamed(arg) => match arg {
+                            FunctionArgExpr::Expr(expr) => {
+                                collect_expr_identifiers(expr, identifiers)
+                            }
+                            FunctionArgExpr::QualifiedWildcard(_) | FunctionArgExpr::Wildcard => {}
+                        },
+                        FunctionArg::ExprNamed { name, arg, .. } => {
+                            collect_expr_identifiers(name, identifiers);
+                            match arg {
+                                FunctionArgExpr::Expr(expr) => {
+                                    collect_expr_identifiers(expr, identifiers)
+                                }
+                                FunctionArgExpr::QualifiedWildcard(_)
+                                | FunctionArgExpr::Wildcard => {}
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(WindowType::WindowSpec(over)) = &function.over {
+                for expr in &over.partition_by {
+                    collect_expr_identifiers(expr, identifiers);
+                }
+                for order_by in &over.order_by {
+                    collect_expr_identifiers(&order_by.expr, identifiers);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Neo4jConnection {
@@ -75,21 +234,72 @@ impl Neo4jConnection {
     async fn next_id(&self, counter_key: &str) -> Result<u32> {
         let mut result = self
             .graph()
-            .execute(query(
-                "MATCH (m:Meta {key: $key}) \
+            .execute(
+                query(
+                    "MATCH (m:Meta {key: $key}) \
                  SET m.value = m.value + 1 \
                  RETURN m.value AS id",
-            ).param("key", counter_key))
+                )
+                .param("key", counter_key),
+            )
             .await
             .context("failed to increment counter")?;
 
-        let row = result
-            .next()
-            .await?
-            .context("counter returned no result")?;
+        let row = result.next().await?.context("counter returned no result")?;
 
         let id: i64 = row.get("id").context("missing id field")?;
         Ok(id as u32)
+    }
+
+    fn serialize_constraints(
+        constraints: &TableConstraintsInfo,
+    ) -> Result<(String, String, String, String)> {
+        Ok((
+            serde_json::to_string(&constraints.primary_key_columns)?,
+            serde_json::to_string(&constraints.defaults)?,
+            serde_json::to_string(&constraints.unique_constraints)?,
+            serde_json::to_string(&constraints.foreign_keys)?,
+        ))
+    }
+
+    fn serialize_check_constraints(constraints: &TableConstraintsInfo) -> Result<String> {
+        Ok(serde_json::to_string(&constraints.check_constraints)?)
+    }
+
+    fn deserialize_constraints(
+        pk_json: Option<String>,
+        defaults_json: Option<String>,
+        unique_json: Option<String>,
+        foreign_keys_json: Option<String>,
+        checks_json: Option<String>,
+    ) -> Result<TableConstraintsInfo> {
+        Ok(TableConstraintsInfo {
+            primary_key_columns: pk_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            defaults: defaults_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            unique_constraints: unique_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            foreign_keys: foreign_keys_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            check_constraints: checks_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+        })
     }
 
     // ── CREATE DATABASE ──
@@ -148,10 +358,7 @@ impl Neo4jConnection {
             .await?;
 
         self.graph()
-            .run(
-                query("MATCH (db:Database {name: $name}) DETACH DELETE db")
-                    .param("name", name),
-            )
+            .run(query("MATCH (db:Database {name: $name}) DETACH DELETE db").param("name", name))
             .await?;
 
         info!(name, id = db.id, "database dropped");
@@ -210,47 +417,63 @@ impl Neo4jConnection {
         &self,
         db_name: &str,
         table_name: &str,
-        columns: Vec<(String, ColumnType, bool, bool)>, // (name, type, nullable, is_pk)
+        columns: Vec<ColumnDefinition>,
+        constraints: TableConstraintsInfo,
     ) -> Result<TableInfo> {
         let db = self
             .get_database(db_name)
             .await?
             .context(format!("database '{}' does not exist", db_name))?;
 
-        // Validate exactly one PK
-        let pk_count = columns.iter().filter(|(_, _, _, is_pk)| *is_pk).count();
-        if pk_count == 0 {
-            bail!("table must have exactly one PRIMARY KEY column");
-        }
-        if pk_count > 1 {
-            bail!("table must have exactly one PRIMARY KEY column, found {pk_count}");
+        if constraints.primary_key_columns.is_empty() {
+            bail!("table must have at least one PRIMARY KEY column");
         }
 
         // Check table doesn't already exist
         let existing = self.get_table(db_name, table_name).await?;
         if existing.is_some() {
-            bail!("table '{}' already exists in database '{}'", table_name, db_name);
+            bail!(
+                "table '{}' already exists in database '{}'",
+                table_name,
+                db_name
+            );
         }
 
         let table_id = self.next_id("table_counter").await?;
 
         // Create Table node with relationship to Database
+        let (pk_json, defaults_json, unique_json, foreign_keys_json) =
+            Self::serialize_constraints(&constraints)?;
+        let checks_json = Self::serialize_check_constraints(&constraints)?;
+
         self.graph()
             .run(
                 query(
                     "MATCH (db:Database {name: $db_name}) \
-                     CREATE (db)-[:HAS_TABLE]->(t:Table {id: $id, name: $name, db_id: $db_id})",
+                     CREATE (db)-[:HAS_TABLE]->(t:Table { \
+                        id: $id, name: $name, db_id: $db_id, \
+                        pk_columns_json: $pk_columns_json, \
+                        defaults_json: $defaults_json, \
+                        unique_constraints_json: $unique_constraints_json, \
+                        foreign_keys_json: $foreign_keys_json, \
+                        check_constraints_json: $check_constraints_json \
+                     })",
                 )
                 .param("db_name", db_name)
                 .param("id", table_id as i64)
                 .param("name", table_name)
-                .param("db_id", db.id as i64),
+                .param("db_id", db.id as i64)
+                .param("pk_columns_json", pk_json)
+                .param("defaults_json", defaults_json)
+                .param("unique_constraints_json", unique_json)
+                .param("foreign_keys_json", foreign_keys_json)
+                .param("check_constraints_json", checks_json),
             )
             .await
             .context("failed to create Table node")?;
 
         // Create Column nodes
-        for (col_name, col_type, nullable, is_pk) in &columns {
+        for col in &columns {
             let col_id = self.next_id("col_counter").await?;
 
             self.graph()
@@ -264,16 +487,22 @@ impl Neo4jConnection {
                     )
                     .param("table_id", table_id as i64)
                     .param("id", col_id as i64)
-                    .param("name", col_name.as_str())
-                    .param("data_type", col_type.as_str())
-                    .param("nullable", *nullable)
-                    .param("is_pk", *is_pk),
+                    .param("name", col.name.as_str())
+                    .param("data_type", col.data_type.as_str())
+                    .param("nullable", col.nullable)
+                    .param("is_pk", col.is_pk),
                 )
                 .await
                 .context("failed to create Column node")?;
         }
 
-        info!(db_name, table_name, table_id, cols = columns.len(), "table created");
+        info!(
+            db_name,
+            table_name,
+            table_id,
+            cols = columns.len(),
+            "table created"
+        );
         Ok(TableInfo {
             id: table_id,
             name: table_name.to_string(),
@@ -284,13 +513,10 @@ impl Neo4jConnection {
     // ── DROP TABLE ──
 
     pub async fn drop_table(&self, db_name: &str, table_name: &str) -> Result<()> {
-        let _table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+        let _table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         // Delete IndexEntry nodes first
         self.graph()
@@ -395,18 +621,11 @@ impl Neo4jConnection {
 
     // ── DESCRIBE TABLE ──
 
-    pub async fn describe_table(
-        &self,
-        db_name: &str,
-        table_name: &str,
-    ) -> Result<Vec<ColumnInfo>> {
-        let _table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+    pub async fn describe_table(&self, db_name: &str, table_name: &str) -> Result<Vec<ColumnInfo>> {
+        let _table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         let mut result = self
             .graph()
@@ -448,6 +667,80 @@ impl Neo4jConnection {
         Ok(columns)
     }
 
+    pub async fn get_table_constraints(
+        &self,
+        db_name: &str,
+        table_name: &str,
+    ) -> Result<TableConstraintsInfo> {
+        let mut result = self
+            .graph()
+            .execute(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     RETURN t.pk_columns_json AS pk_columns_json, \
+                            t.defaults_json AS defaults_json, \
+                            t.unique_constraints_json AS unique_constraints_json, \
+                            t.foreign_keys_json AS foreign_keys_json, \
+                            t.check_constraints_json AS check_constraints_json",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name),
+            )
+            .await?;
+
+        let row = result.next().await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
+
+        let pk_json: Option<String> = row.get("pk_columns_json").ok();
+        let defaults_json: Option<String> = row.get("defaults_json").ok();
+        let unique_json: Option<String> = row.get("unique_constraints_json").ok();
+        let foreign_keys_json: Option<String> = row.get("foreign_keys_json").ok();
+        let checks_json: Option<String> = row.get("check_constraints_json").ok();
+        Self::deserialize_constraints(
+            pk_json,
+            defaults_json,
+            unique_json,
+            foreign_keys_json,
+            checks_json,
+        )
+    }
+
+    async fn set_table_constraints(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        constraints: &TableConstraintsInfo,
+    ) -> Result<()> {
+        let (pk_json, defaults_json, unique_json, foreign_keys_json) =
+            Self::serialize_constraints(constraints)?;
+        let checks_json = Self::serialize_check_constraints(constraints)?;
+
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     SET t.pk_columns_json = $pk_columns_json, \
+                         t.defaults_json = $defaults_json, \
+                         t.unique_constraints_json = $unique_constraints_json, \
+                         t.foreign_keys_json = $foreign_keys_json, \
+                         t.check_constraints_json = $check_constraints_json",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("pk_columns_json", pk_json)
+                .param("defaults_json", defaults_json)
+                .param("unique_constraints_json", unique_json)
+                .param("foreign_keys_json", foreign_keys_json)
+                .param("check_constraints_json", checks_json),
+            )
+            .await
+            .context("failed to update table constraints")?;
+
+        Ok(())
+    }
+
     // ── ALTER TABLE ADD COLUMN ──
 
     pub async fn add_column(
@@ -458,18 +751,19 @@ impl Neo4jConnection {
         col_type: &ColumnType,
         nullable: bool,
     ) -> Result<ColumnInfo> {
-        let table = self
-            .get_table(db_name, table_name)
-            .await?
-            .context(format!(
-                "table '{}' does not exist in database '{}'",
-                table_name, db_name
-            ))?;
+        let table = self.get_table(db_name, table_name).await?.context(format!(
+            "table '{}' does not exist in database '{}'",
+            table_name, db_name
+        ))?;
 
         // Check column doesn't already exist
         let cols = self.describe_table(db_name, table_name).await?;
         if cols.iter().any(|c| c.name == col_name) {
-            bail!("column '{}' already exists in table '{}'", col_name, table_name);
+            bail!(
+                "column '{}' already exists in table '{}'",
+                col_name,
+                table_name
+            );
         }
 
         let col_id = self.next_id("col_counter").await?;
@@ -505,9 +799,218 @@ impl Neo4jConnection {
         })
     }
 
+    pub async fn rename_column(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        if cols.iter().all(|c| c.name != old_name) {
+            bail!(
+                "column '{}' does not exist in table '{}'",
+                old_name,
+                table_name
+            );
+        }
+        if cols.iter().any(|c| c.name == new_name) {
+            bail!(
+                "column '{}' already exists in table '{}'",
+                new_name,
+                table_name
+            );
+        }
+
+        let mut constraints = self.get_table_constraints(db_name, table_name).await?;
+        for check in &constraints.check_constraints {
+            if check_constraint_references_column(&check.expr_sql, old_name)? {
+                bail!(
+                    "cannot rename column '{}' because check constraint '{}' must be rewritten manually",
+                    old_name,
+                    check.name
+                );
+            }
+        }
+
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     -[:HAS_COLUMN]->(c:Column {name: $old_name}) \
+                     SET c.name = $new_name",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("old_name", old_name)
+                .param("new_name", new_name),
+            )
+            .await
+            .context("failed to rename column")?;
+
+        if let Some(default_expr) = constraints.defaults.remove(old_name) {
+            constraints
+                .defaults
+                .insert(new_name.to_string(), default_expr);
+        }
+        for column in &mut constraints.primary_key_columns {
+            if column == old_name {
+                *column = new_name.to_string();
+            }
+        }
+        for unique in &mut constraints.unique_constraints {
+            for column in &mut unique.columns {
+                if column == old_name {
+                    *column = new_name.to_string();
+                }
+            }
+        }
+        for foreign_key in &mut constraints.foreign_keys {
+            for column in &mut foreign_key.columns {
+                if column == old_name {
+                    *column = new_name.to_string();
+                }
+            }
+            if foreign_key.ref_db_name.as_deref() == Some(db_name)
+                && foreign_key.ref_table_name == table_name
+            {
+                for column in &mut foreign_key.ref_columns {
+                    if column == old_name {
+                        *column = new_name.to_string();
+                    }
+                }
+            }
+        }
+        self.set_table_constraints(db_name, table_name, &constraints)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn drop_column(&self, db_name: &str, table_name: &str, col_name: &str) -> Result<()> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        if cols.iter().all(|c| c.name != col_name) {
+            bail!(
+                "column '{}' does not exist in table '{}'",
+                col_name,
+                table_name
+            );
+        }
+
+        let mut constraints = self.get_table_constraints(db_name, table_name).await?;
+        if constraints
+            .primary_key_columns
+            .iter()
+            .any(|c| c == col_name)
+        {
+            bail!(
+                "cannot drop column '{}' because it is part of the primary key",
+                col_name
+            );
+        }
+        if constraints
+            .unique_constraints
+            .iter()
+            .any(|uq| uq.columns.iter().any(|c| c == col_name))
+        {
+            bail!(
+                "cannot drop column '{}' because it is part of a UNIQUE constraint",
+                col_name
+            );
+        }
+        if constraints.foreign_keys.iter().any(|fk| {
+            fk.columns.iter().any(|c| c == col_name) || fk.ref_columns.iter().any(|c| c == col_name)
+        }) {
+            bail!(
+                "cannot drop column '{}' because it participates in a FOREIGN KEY constraint",
+                col_name
+            );
+        }
+        for check in &constraints.check_constraints {
+            if check_constraint_references_column(&check.expr_sql, col_name)? {
+                bail!(
+                    "cannot drop column '{}' because it is referenced by a CHECK constraint",
+                    col_name
+                );
+            }
+        }
+        constraints.defaults.remove(col_name);
+        self.set_table_constraints(db_name, table_name, &constraints)
+            .await?;
+
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     -[:HAS_COLUMN]->(c:Column {name: $col_name}) \
+                     DETACH DELETE c",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("col_name", col_name),
+            )
+            .await
+            .context("failed to drop column")?;
+        Ok(())
+    }
+
+    pub async fn set_column_default(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        col_name: &str,
+        default_expr: Option<String>,
+    ) -> Result<()> {
+        let cols = self.describe_table(db_name, table_name).await?;
+        if cols.iter().all(|c| c.name != col_name) {
+            bail!(
+                "column '{}' does not exist in table '{}'",
+                col_name,
+                table_name
+            );
+        }
+        let mut constraints = self.get_table_constraints(db_name, table_name).await?;
+        match default_expr {
+            Some(expr) => {
+                constraints.defaults.insert(col_name.to_string(), expr);
+            }
+            None => {
+                constraints.defaults.remove(col_name);
+            }
+        }
+        self.set_table_constraints(db_name, table_name, &constraints)
+            .await
+    }
+
+    pub async fn set_column_nullability(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        col_name: &str,
+        nullable: bool,
+    ) -> Result<()> {
+        self.graph()
+            .run(
+                query(
+                    "MATCH (db:Database {name: $db_name})-[:HAS_TABLE]->(t:Table {name: $table_name}) \
+                     -[:HAS_COLUMN]->(c:Column {name: $col_name}) \
+                     SET c.nullable = $nullable",
+                )
+                .param("db_name", db_name)
+                .param("table_name", table_name)
+                .param("col_name", col_name)
+                .param("nullable", nullable),
+            )
+            .await
+            .context("failed to update column nullability")?;
+        Ok(())
+    }
+
     // ── INFORMATION_SCHEMA ──
 
-    pub async fn information_schema_tables(&self, db_name: &str) -> Result<Vec<(String, String, String)>> {
+    pub async fn information_schema_tables(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String)>> {
         // Returns (table_catalog, table_schema, table_name)
         let tables = self.show_tables(db_name).await?;
         Ok(tables
@@ -532,10 +1035,172 @@ impl Neo4jConnection {
                     table.name.clone(),
                     col.name,
                     col.data_type,
-                    if col.nullable { "YES".to_string() } else { "NO".to_string() },
+                    if col.nullable {
+                        "YES".to_string()
+                    } else {
+                        "NO".to_string()
+                    },
                 ));
             }
         }
+        Ok(rows)
+    }
+
+    pub async fn information_schema_table_constraints(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String, String, String)>> {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            if !constraints.primary_key_columns.is_empty() {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    format!("{}_pkey", table.name),
+                    "PRIMARY KEY".to_string(),
+                ));
+            }
+            for unique in constraints.unique_constraints {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    unique.name,
+                    "UNIQUE".to_string(),
+                ));
+            }
+            for foreign_key in constraints.foreign_keys {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    foreign_key.name,
+                    "FOREIGN KEY".to_string(),
+                ));
+            }
+            for check in constraints.check_constraints {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    check.name,
+                    "CHECK".to_string(),
+                ));
+            }
+        }
+        rows.sort();
+        Ok(rows)
+    }
+
+    pub async fn information_schema_key_column_usage(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String, String, i64, String)>> {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            if !constraints.primary_key_columns.is_empty() {
+                let constraint_name = format!("{}_pkey", table.name);
+                for (idx, column) in constraints.primary_key_columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        constraint_name.clone(),
+                    ));
+                }
+            }
+            for unique in &constraints.unique_constraints {
+                for (idx, column) in unique.columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        unique.name.clone(),
+                    ));
+                }
+            }
+            for foreign_key in &constraints.foreign_keys {
+                for (idx, column) in foreign_key.columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        foreign_key.name.clone(),
+                    ));
+                }
+            }
+        }
+        rows.sort_by(|left, right| {
+            left.2
+                .cmp(&right.2)
+                .then(left.5.cmp(&right.5))
+                .then(left.4.cmp(&right.4))
+                .then(left.3.cmp(&right.3))
+        });
+        Ok(rows)
+    }
+
+    pub async fn information_schema_referential_constraints(
+        &self,
+        db_name: &str,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+    > {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            for foreign_key in &constraints.foreign_keys {
+                let ref_db_name = foreign_key.ref_db_name.as_deref().unwrap_or(db_name);
+                let ref_constraints = self
+                    .get_table_constraints(ref_db_name, &foreign_key.ref_table_name)
+                    .await?;
+                let unique_constraint_name =
+                    if ref_constraints.primary_key_columns == foreign_key.ref_columns {
+                        format!("{}_pkey", foreign_key.ref_table_name)
+                    } else if let Some(unique) = ref_constraints
+                        .unique_constraints
+                        .iter()
+                        .find(|unique| unique.columns == foreign_key.ref_columns)
+                    {
+                        unique.name.clone()
+                    } else {
+                        format!("{}_key", foreign_key.ref_table_name)
+                    };
+
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    foreign_key.name.clone(),
+                    ref_db_name.to_string(),
+                    "public".to_string(),
+                    unique_constraint_name,
+                    foreign_key.on_update.clone(),
+                    foreign_key.on_delete.clone(),
+                ));
+            }
+        }
+        rows.sort();
         Ok(rows)
     }
 
@@ -551,16 +1216,28 @@ impl Neo4jConnection {
         column_name: &str,
     ) -> Result<ColumnInfo> {
         let cols = self.describe_table(db_name, table_name).await?;
-        let col = cols.iter().find(|c| c.name == column_name)
-            .context(format!("column '{}' not found in table '{}'", column_name, table_name))?;
+        let col = cols
+            .iter()
+            .find(|c| c.name == column_name)
+            .context(format!(
+                "column '{}' not found in table '{}'",
+                column_name, table_name
+            ))?;
 
         if col.indexed {
             bail!("column '{}' is already indexed", column_name);
         }
 
         // Check index name uniqueness across this table
-        if cols.iter().any(|c| c.index_name.as_deref() == Some(index_name)) {
-            bail!("index '{}' already exists on table '{}'", index_name, table_name);
+        if cols
+            .iter()
+            .any(|c| c.index_name.as_deref() == Some(index_name))
+        {
+            bail!(
+                "index '{}' already exists on table '{}'",
+                index_name,
+                table_name
+            );
         }
 
         self.graph()
@@ -578,7 +1255,10 @@ impl Neo4jConnection {
             .await
             .context("failed to mark column as indexed")?;
 
-        info!(db_name, table_name, column_name, index_name, "index created");
+        info!(
+            db_name,
+            table_name, column_name, index_name, "index created"
+        );
         Ok(col.clone())
     }
 
@@ -593,9 +1273,13 @@ impl Neo4jConnection {
         index_name: &str,
     ) -> Result<ColumnInfo> {
         let cols = self.describe_table(db_name, table_name).await?;
-        let col = cols.iter()
+        let col = cols
+            .iter()
             .find(|c| c.index_name.as_deref() == Some(index_name))
-            .context(format!("index '{}' not found on table '{}'", index_name, table_name))?
+            .context(format!(
+                "index '{}' not found on table '{}'",
+                index_name, table_name
+            ))?
             .clone();
 
         self.graph()
@@ -613,7 +1297,13 @@ impl Neo4jConnection {
             .await
             .context("failed to remove index metadata")?;
 
-        info!(db_name, table_name, index_name, col_name = col.name, "index dropped");
+        info!(
+            db_name,
+            table_name,
+            index_name,
+            col_name = col.name,
+            "index dropped"
+        );
         Ok(col)
     }
 
@@ -626,7 +1316,8 @@ impl Neo4jConnection {
         table_name: &str,
     ) -> Result<Vec<(String, String)>> {
         let cols = self.describe_table(db_name, table_name).await?;
-        Ok(cols.into_iter()
+        Ok(cols
+            .into_iter()
             .filter_map(|c| {
                 if c.indexed {
                     Some((c.index_name.unwrap_or_default(), c.name))

@@ -1,0 +1,5 @@
+{
+  "name": "partition_aggregates",
+  "sql": "SELECT id, grp, COUNT(*) OVER (PARTITION BY grp) AS grp_count, SUM(score) OVER (PARTITION BY grp) AS grp_sum FROM scores ORDER BY id;",
+  "expected_rows": [["1", "A", "3", "27"], ["2", "A", "3", "27"], ["3", "A", "3", "27"], ["4", "B", "2", "7"], ["5", "B", "2", "7"]]
+}

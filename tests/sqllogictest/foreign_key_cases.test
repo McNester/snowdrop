@@ -1,0 +1,13 @@
+# dataset: foreign_key_cases
+
+query T
+INSERT INTO children (id, parent_id, label) VALUES (11, 2, 'linked');
+SELECT id, parent_id, label FROM children WHERE id = 11;
+----
+11 2 linked
+
+statement error
+INSERT INTO children (id, parent_id, label) VALUES (11, 999, 'orphan');
+
+statement error
+DELETE FROM parents WHERE id = 1;

@@ -1,0 +1,9 @@
+{
+  "name": "scalar_functions",
+  "database": "scalar_functions",
+  "description": "Phase 2 fixture for scalar functions, casts, and basic date/time helpers.",
+  "purpose": "Validate COALESCE/NULLIF, text helpers, CAST, CURRENT_DATE, and NOW on a small readable dataset.",
+  "tables": ["profiles"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

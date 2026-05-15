@@ -1,0 +1,5 @@
+id|int8
+tenant_id|int8
+email|varchar
+parent_id|int8
+balance|int8

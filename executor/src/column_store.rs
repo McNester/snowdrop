@@ -4,11 +4,9 @@
 /// On first scan of a table, columns are extracted into contiguous typed arrays.
 /// Predicates are evaluated column-at-a-time using auto-vectorizable loops that
 /// produce u64 bitmasks. Only matching rows are materialized into Row objects.
-
 use crate::row_format::RowView;
-use crate::storage::StorageBackend;
-use crate::typed_value::TypedValue;
-use anyhow::Result;
+use crate::typed_value::{TypedValue, EMPTY_TEXT_SENTINEL};
+use rust_decimal::Decimal;
 use schema::ColumnInfo;
 use std::collections::HashMap;
 
@@ -20,6 +18,7 @@ use std::collections::HashMap;
 pub enum TypedColumn {
     Int64(Vec<i64>),
     Float64(Vec<f64>),
+    Decimal(Vec<String>),
     /// Days since Unix epoch (1970-01-01). Enables i32 SIMD comparisons on dates.
     DateDays(Vec<i32>),
     Text(Vec<String>),
@@ -30,13 +29,14 @@ pub enum TypedColumn {
 #[derive(Debug, Clone)]
 pub struct NullBitmap {
     words: Vec<u64>,
-    len: usize,
 }
 
 impl NullBitmap {
     pub fn new(len: usize) -> Self {
         let num_words = (len + 63) / 64;
-        Self { words: vec![0u64; num_words], len }
+        Self {
+            words: vec![0u64; num_words],
+        }
     }
 
     #[inline]
@@ -63,6 +63,7 @@ pub struct TableColumns {
 enum ColumnKind {
     Int64,
     Float64,
+    Decimal,
     DateDays,
     Text,
     Boolean,
@@ -75,7 +76,7 @@ fn classify_column(data_type: &str) -> ColumnKind {
         "FLOAT" | "DOUBLE" | "REAL" => ColumnKind::Float64,
         "BOOLEAN" | "BOOL" => ColumnKind::Boolean,
         "DATE" => ColumnKind::DateDays,
-        dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => ColumnKind::Float64,
+        dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => ColumnKind::Decimal,
         _ => ColumnKind::Text,
     }
 }
@@ -128,10 +129,7 @@ fn civil_from_days(days: i32) -> (i32, u32, u32) {
 
 impl TableColumns {
     /// Build columnar arrays from a RocksDB prefix scan result.
-    pub fn build(
-        all_kv: &[(String, Vec<u8>)],
-        schema_cols: &[ColumnInfo],
-    ) -> Self {
+    pub fn build(all_kv: &[(String, Vec<u8>)], schema_cols: &[ColumnInfo]) -> Self {
         let capacity = all_kv.len();
         let mut row_keys = Vec::with_capacity(capacity);
 
@@ -175,7 +173,11 @@ impl TableColumns {
             .map(|(id, builder)| (id, builder.finish()))
             .collect();
 
-        TableColumns { row_count: row_keys.len(), row_keys, columns }
+        TableColumns {
+            row_count: row_keys.len(),
+            row_keys,
+            columns,
+        }
     }
 
     /// Retrieve a typed value for a specific row and column (for building Row objects).
@@ -187,7 +189,11 @@ impl TableColumns {
             match typed_col {
                 TypedColumn::Int64(v) => TypedValue::Int(v[row_idx]),
                 TypedColumn::Float64(v) => TypedValue::Float(v[row_idx]),
-                TypedColumn::DateDays(v) => TypedValue::Text(days_to_date(v[row_idx])),
+                TypedColumn::Decimal(v) => v[row_idx]
+                    .parse::<Decimal>()
+                    .map(TypedValue::Decimal)
+                    .unwrap_or_else(|_| TypedValue::Text(v[row_idx].clone())),
+                TypedColumn::DateDays(v) => date_to_typed_value(v[row_idx]),
                 TypedColumn::Text(v) => TypedValue::Text(v[row_idx].clone()),
                 TypedColumn::Boolean(v) => TypedValue::Boolean(v[row_idx]),
             }
@@ -214,11 +220,31 @@ impl ColumnBuilder {
     fn new(kind: ColumnKind, capacity: usize) -> Self {
         Self {
             kind,
-            ints: if matches!(kind, ColumnKind::Int64) { Vec::with_capacity(capacity) } else { Vec::new() },
-            floats: if matches!(kind, ColumnKind::Float64) { Vec::with_capacity(capacity) } else { Vec::new() },
-            dates: if matches!(kind, ColumnKind::DateDays) { Vec::with_capacity(capacity) } else { Vec::new() },
-            texts: if matches!(kind, ColumnKind::Text) { Vec::with_capacity(capacity) } else { Vec::new() },
-            bools: if matches!(kind, ColumnKind::Boolean) { Vec::with_capacity(capacity) } else { Vec::new() },
+            ints: if matches!(kind, ColumnKind::Int64) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            floats: if matches!(kind, ColumnKind::Float64) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            dates: if matches!(kind, ColumnKind::DateDays) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            texts: if matches!(kind, ColumnKind::Text | ColumnKind::Decimal) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
+            bools: if matches!(kind, ColumnKind::Boolean) {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
             nulls: NullBitmap::new(capacity),
             count: 0,
         }
@@ -233,11 +259,22 @@ impl ColumnBuilder {
             ColumnKind::Float64 => {
                 self.floats.push(s.parse::<f64>().unwrap_or(0.0));
             }
+            ColumnKind::Decimal => {
+                self.texts.push(if s == EMPTY_TEXT_SENTINEL {
+                    String::new()
+                } else {
+                    s.to_string()
+                });
+            }
             ColumnKind::DateDays => {
                 self.dates.push(date_to_days(s).unwrap_or(0));
             }
             ColumnKind::Text => {
-                self.texts.push(s.to_string());
+                self.texts.push(if s == EMPTY_TEXT_SENTINEL {
+                    String::new()
+                } else {
+                    s.to_string()
+                });
             }
             ColumnKind::Boolean => {
                 self.bools.push(matches!(s, "true" | "1" | "t"));
@@ -251,6 +288,7 @@ impl ColumnBuilder {
         match self.kind {
             ColumnKind::Int64 => self.ints.push(0),
             ColumnKind::Float64 => self.floats.push(0.0),
+            ColumnKind::Decimal => self.texts.push(String::new()),
             ColumnKind::DateDays => self.dates.push(0),
             ColumnKind::Text => self.texts.push(String::new()),
             ColumnKind::Boolean => self.bools.push(false),
@@ -262,6 +300,7 @@ impl ColumnBuilder {
         let col = match self.kind {
             ColumnKind::Int64 => TypedColumn::Int64(self.ints),
             ColumnKind::Float64 => TypedColumn::Float64(self.floats),
+            ColumnKind::Decimal => TypedColumn::Decimal(self.texts),
             ColumnKind::DateDays => TypedColumn::DateDays(self.dates),
             ColumnKind::Text => TypedColumn::Text(self.texts),
             ColumnKind::Boolean => TypedColumn::Boolean(self.bools),
@@ -293,7 +332,10 @@ impl Bitmap {
 
     pub fn all_false(len: usize) -> Self {
         let num_words = (len + 63) / 64;
-        Self { words: vec![0u64; num_words], len }
+        Self {
+            words: vec![0u64; num_words],
+            len,
+        }
     }
 
     #[inline]
@@ -437,9 +479,7 @@ pub fn filter_column(
     literal: &TypedValue,
 ) -> Bitmap {
     let bm = match (col, literal) {
-        (TypedColumn::Int64(vals), TypedValue::Int(threshold)) => {
-            filter_i64(vals, op, *threshold)
-        }
+        (TypedColumn::Int64(vals), TypedValue::Int(threshold)) => filter_i64(vals, op, *threshold),
         (TypedColumn::Int64(vals), TypedValue::Float(threshold)) => {
             // Promote to f64 comparison
             let f_vals: Vec<f64> = vals.iter().map(|&v| v as f64).collect();
@@ -451,6 +491,20 @@ pub fn filter_column(
         (TypedColumn::Float64(vals), TypedValue::Int(threshold)) => {
             filter_f64(vals, op, *threshold as f64)
         }
+        (TypedColumn::DateDays(vals), TypedValue::Date(date)) => {
+            if let Some(days) = date_to_days(&date.format("%Y-%m-%d").to_string()) {
+                filter_i32(vals, op, days)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
+        }
+        (TypedColumn::DateDays(vals), TypedValue::Timestamp(ts)) => {
+            if let Some(days) = date_to_days(&ts.date().format("%Y-%m-%d").to_string()) {
+                filter_i32(vals, op, days)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
+        }
         (TypedColumn::DateDays(vals), TypedValue::Text(date_str)) => {
             if let Some(days) = date_to_days(date_str) {
                 filter_i32(vals, op, days)
@@ -458,14 +512,20 @@ pub fn filter_column(
                 Bitmap::all_false(vals.len())
             }
         }
-        (TypedColumn::Text(vals), TypedValue::Text(threshold)) => {
-            filter_text(vals, op, threshold)
+        (TypedColumn::Decimal(vals), literal) => {
+            if let Some(threshold) = literal.as_decimal() {
+                filter_decimal(vals, op, threshold)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
         }
+        (TypedColumn::Text(vals), TypedValue::Text(threshold)) => filter_text(vals, op, threshold),
         _ => {
             // Unsupported type combination — return empty (no matches)
             let len = match col {
                 TypedColumn::Int64(v) => v.len(),
                 TypedColumn::Float64(v) => v.len(),
+                TypedColumn::Decimal(v) => v.len(),
                 TypedColumn::DateDays(v) => v.len(),
                 TypedColumn::Text(v) => v.len(),
                 TypedColumn::Boolean(v) => v.len(),
@@ -507,13 +567,43 @@ pub fn count_masked(bitmap: &Bitmap) -> i64 {
     bitmap.count_ones() as i64
 }
 
+fn filter_decimal(values: &[String], op: CmpOp, threshold: Decimal) -> Bitmap {
+    let len = values.len();
+    let mut bm = Bitmap::all_false(len);
+    for (i, raw) in values.iter().enumerate() {
+        let Some(value) = raw.parse::<Decimal>().ok() else {
+            continue;
+        };
+        let pass = match op {
+            CmpOp::Eq => value == threshold,
+            CmpOp::Lt => value < threshold,
+            CmpOp::LtEq => value <= threshold,
+            CmpOp::Gt => value > threshold,
+            CmpOp::GtEq => value >= threshold,
+        };
+        bm.words[i / 64] |= (pass as u64) << (i % 64);
+    }
+    bm
+}
+
+fn date_to_typed_value(days: i32) -> TypedValue {
+    let text = days_to_date(days);
+    TypedValue::from_bytes(text.as_bytes(), "DATE")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn date_roundtrip() {
-        for date in ["1970-01-01", "2024-06-15", "1994-01-01", "2000-02-29", "1900-01-01"] {
+        for date in [
+            "1970-01-01",
+            "2024-06-15",
+            "1994-01-01",
+            "2000-02-29",
+            "1900-01-01",
+        ] {
             let days = date_to_days(date).unwrap();
             assert_eq!(days_to_date(days), date, "roundtrip failed for {}", date);
         }

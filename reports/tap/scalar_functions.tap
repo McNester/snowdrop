@@ -1,0 +1,5 @@
+1..4
+ok 1 - current_date filter
+ok 2 - now filter
+ok 3 - boolean cast
+ok 4 - unsupported cast errors

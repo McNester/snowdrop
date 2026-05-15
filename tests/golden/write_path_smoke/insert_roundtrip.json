@@ -1,0 +1,5 @@
+{
+  "name": "insert_roundtrip",
+  "sql": "INSERT INTO accounts (id, owner, balance, status) VALUES (10, 'Cara', 99, 'active'); SELECT id, owner, balance, status FROM accounts WHERE id = 10;",
+  "expected_rows": [["10", "Cara", "99", "active"]]
+}

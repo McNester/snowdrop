@@ -1,0 +1,5 @@
+{
+  "name": "insert_select_cases",
+  "description": "PostgreSQL-style regression subset for INSERT ... SELECT support.",
+  "dataset": "insert_select_cases"
+}

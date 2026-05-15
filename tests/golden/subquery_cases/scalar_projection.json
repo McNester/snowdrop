@@ -1,0 +1,5 @@
+{
+  "name": "scalar_projection",
+  "sql": "SELECT name, (SELECT COUNT(*) FROM orders) AS total_orders FROM customers ORDER BY id;",
+  "expected_rows": [["Alpha", "3"], ["Beta", "3"], ["Gamma", "3"]]
+}

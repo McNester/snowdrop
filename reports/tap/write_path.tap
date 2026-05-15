@@ -1,0 +1,4 @@
+1..3
+ok 1 - insert roundtrip
+ok 2 - update balance
+ok 3 - delete row

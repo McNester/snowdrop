@@ -1,0 +1,25 @@
+# dataset: scalar_functions
+
+query T
+SELECT COALESCE(display_name, fallback_name, 'missing') FROM profiles WHERE id = 2;
+----
+backup
+
+query T
+SELECT CAST(score_text AS BIGINT) FROM profiles WHERE id = 1;
+----
+10
+
+query T
+SELECT 1;
+----
+1
+
+statement error
+SELECT COALESCE() FROM profiles;
+
+statement error
+SELECT NOW(1) FROM profiles;
+
+statement error
+SELECT ROW_NUMBER() OVER (w ORDER BY id) FROM profiles WINDOW w AS (PARTITION BY score_text);

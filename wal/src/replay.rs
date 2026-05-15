@@ -66,7 +66,11 @@ impl WalFile {
         }
 
         self.next_entry_id = max_id + 1;
-        debug!(count = entries.len(), next_id = self.next_entry_id, "WAL scan complete");
+        debug!(
+            count = entries.len(),
+            next_id = self.next_entry_id,
+            "WAL scan complete"
+        );
 
         Ok(entries)
     }
@@ -83,7 +87,10 @@ impl WalFile {
             let status = WalStatus::try_from(entry.header.status)?;
             match status {
                 WalStatus::Neo4jCommitted => {
-                    info!(entry_id = entry.header.entry_id, "entry needs Kvrocks replay");
+                    info!(
+                        entry_id = entry.header.entry_id,
+                        "entry needs Kvrocks replay"
+                    );
                     needs_replay.push(WalEntry {
                         header: entry.header.clone(),
                         payload: entry.payload.clone(),
@@ -91,7 +98,10 @@ impl WalFile {
                     });
                 }
                 WalStatus::Pending => {
-                    warn!(entry_id = entry.header.entry_id, "marking Pending entry as RolledBack");
+                    warn!(
+                        entry_id = entry.header.entry_id,
+                        "marking Pending entry as RolledBack"
+                    );
                     rollback_offsets.push(entry.file_offset);
                 }
                 WalStatus::Committed | WalStatus::RolledBack => {}
@@ -279,7 +289,8 @@ mod tests {
         wal.append(test_payload()).unwrap();
 
         // Mark first entry as Neo4jCommitted
-        wal.update_status(offset1, WalStatus::Neo4jCommitted).unwrap();
+        wal.update_status(offset1, WalStatus::Neo4jCommitted)
+            .unwrap();
 
         let needs_replay = wal.replay().unwrap();
         assert_eq!(needs_replay.len(), 1);
