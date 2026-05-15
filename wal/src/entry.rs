@@ -140,19 +140,14 @@ pub fn append<W: Write + Seek>(
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u64::MAX as u128) as u64;
-
-    let payload_len = u32::try_from(payload_bytes.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "WAL payload exceeds 4 GB limit")
-    })?;
+        .unwrap()
+        .as_nanos() as u64;
 
     let header = WalHeader {
         entry_id: next_entry_id,
         timestamp: now,
         status: WalStatus::Pending as u8,
-        payload_len,
+        payload_len: payload_bytes.len() as u32,
     };
 
     writer.seek(SeekFrom::End(0))?;
