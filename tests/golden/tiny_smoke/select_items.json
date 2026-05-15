@@ -1,0 +1,5 @@
+{
+  "name": "select_items",
+  "sql": "SELECT id, name FROM items ORDER BY id;",
+  "expected_rows": [["1", "pen"], ["2", "notebook"], ["3", "mug"]]
+}

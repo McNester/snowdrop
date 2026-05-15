@@ -1,0 +1,9 @@
+{
+  "name": "edge_cases",
+  "database": "edge_cases",
+  "description": "Nulls, empty strings, negative numbers, and boundary-like values.",
+  "purpose": "Exercise correctness around edge-case predicates and aggregates.",
+  "tables": ["measurements"],
+  "suites": ["golden", "differential"],
+  "postgres_enabled": true
+}

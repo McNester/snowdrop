@@ -2258,6 +2258,17 @@ fn sort_rows(
 fn lookup_row_value(row: &Row, col_name: &str) -> TypedValue {
     row.get(col_name)
         .or_else(|| {
+            // Aggregate/grouped rows often store the projected display name only
+            // (for example `name`) while ORDER BY may still reference the original
+            // qualified path (for example `c.name`). Fall back to the last segment
+            // before trying the fuzzy suffix match used for joined rows.
+            col_name
+                .rsplit('.')
+                .next()
+                .filter(|last| *last != col_name)
+                .and_then(|last| row.get(last))
+        })
+        .or_else(|| {
             // Try fuzzy match: find key ending with .col_name
             row.iter().find(|(k, _)| k.ends_with(&format!(".{}", col_name))).map(|(_, v)| v)
         })
@@ -3459,4 +3470,65 @@ fn extract_index_candidate<'a>(
 fn encode_typed_value(val: &TypedValue, data_type: &str) -> String {
     let raw = val.to_string();
     encode_index_value(raw.as_bytes(), data_type)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use executor::typed_value::TypedValue;
+    use sqlparser::dialect::PostgreSqlDialect;
+    use sqlparser::parser::Parser;
+
+    fn parse_order_by(sql: &str) -> Vec<OrderByExpr> {
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        match &stmts[0] {
+            Statement::Query(query) => query.order_by.as_ref().unwrap().exprs.clone(),
+            _ => panic!("expected query"),
+        }
+    }
+
+    #[test]
+    fn lookup_row_value_falls_back_from_qualified_to_display_name() {
+        let mut row = Row::new();
+        row.insert("name".into(), TypedValue::Text("Acme".into()));
+
+        let val = lookup_row_value(&row, "c.name");
+        assert_eq!(val, TypedValue::Text("Acme".into()));
+    }
+
+    #[test]
+    fn sort_rows_orders_aggregate_rows_by_qualified_order_by_expr() {
+        let mut rows = vec![
+            {
+                let mut row = Row::new();
+                row.insert("name".into(), TypedValue::Text("Cyan".into()));
+                row.insert("sum(o.total)".into(), TypedValue::Float(25.0));
+                row
+            },
+            {
+                let mut row = Row::new();
+                row.insert("name".into(), TypedValue::Text("Beta".into()));
+                row.insert("sum(o.total)".into(), TypedValue::Float(50.0));
+                row
+            },
+            {
+                let mut row = Row::new();
+                row.insert("name".into(), TypedValue::Text("Acme".into()));
+                row.insert("sum(o.total)".into(), TypedValue::Float(495.0));
+                row
+            },
+        ];
+
+        let order_by = parse_order_by(
+            "SELECT c.name, SUM(o.total) FROM customers c INNER JOIN orders o ON c.id = o.customer_id GROUP BY c.name ORDER BY c.name",
+        );
+
+        sort_rows(&mut rows, &order_by, &[]).unwrap();
+
+        let names: Vec<String> = rows
+            .iter()
+            .map(|row| lookup_row_value(row, "name").to_string())
+            .collect();
+        assert_eq!(names, vec!["Acme", "Beta", "Cyan"]);
+    }
 }

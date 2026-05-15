@@ -1,0 +1,5 @@
+{
+  "name": "customer_totals",
+  "sql": "SELECT c.name, SUM(o.total) FROM customers c INNER JOIN orders o ON c.id = o.customer_id GROUP BY c.name ORDER BY c.name;",
+  "expected_rows": [["Acme", "495"], ["Beta", "50"], ["Cyan", "25"]]
+}

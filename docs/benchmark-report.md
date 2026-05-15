@@ -1,5 +1,14 @@
 # Snowdrop Benchmark Report
 
+
+This benchmark-only report is now considered legacy.
+
+The current source of truth for generated test and benchmark output is:
+
+- [test-report.md](/e:/snowdrop-1/docs/test-report.md:1)
+
+`tpch-bench` still produces raw benchmark JSON, but the main human-facing markdown report is now owned by `snowdrop-testkit`.
+
 Scale factor: 1 (~6000 lineitem rows)
 
 ## Architecture
@@ -13,6 +22,7 @@ Snowdrop is a SQL-compatible database PoC with:
 - PostgreSQL wire protocol (pgwire)
 
 ## Results
+
 
 | Query | Snowdrop (warm) | SD Indexed (warm) | PostgreSQL 16 | vs PG (baseline) |
 |---|---|---|---|---|
@@ -60,10 +70,16 @@ Prometheus metrics are exposed on `:9090/metrics` including:
 
 ```bash
 docker compose up -d
+
+export PGPASSWORD="<your-postgres-password>"
+
 cargo run --release -p tpch-bench -- --scale 1 --with-indexes --seed 42 --output results.json
 ```
 
 For containerized benchmark clients, use `--host` and `--pg-host` to target service names on the Docker network.
+
+When PostgreSQL comparison is enabled, `tpch-bench` reads the password from `PGPASSWORD` first and falls back to `POSTGRES_PASSWORD`.
+
 
 ## Flamegraph
 

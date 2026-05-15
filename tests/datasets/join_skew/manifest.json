@@ -1,0 +1,9 @@
+{
+  "name": "join_skew",
+  "database": "join_skew",
+  "description": "Skewed join keys with one hot customer and many orders.",
+  "purpose": "Exercise join behavior and simple skew-sensitive aggregations.",
+  "tables": ["orders", "customers"],
+  "suites": ["golden", "differential"],
+  "postgres_enabled": true
+}

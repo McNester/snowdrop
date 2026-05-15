@@ -1,0 +1,9 @@
+{
+  "name": "perf_fixed",
+  "database": "perf_fixed",
+  "description": "Small fixed performance-oriented dataset with grouped event buckets.",
+  "purpose": "Stable non-synthetic fixture for future query micro-benchmarks.",
+  "tables": ["events"],
+  "suites": ["golden", "differential"],
+  "postgres_enabled": true
+}
