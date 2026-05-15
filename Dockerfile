@@ -35,3 +35,4 @@ COPY --from=builder /app/target/release/orchestrator /usr/local/bin/orchestrator
 RUN mkdir -p /data/wal /data/rocks
 EXPOSE 5432 8080 9090
 ENTRYPOINT ["orchestrator"]
+
