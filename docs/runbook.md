@@ -68,6 +68,7 @@ curl http://localhost:19090/metrics
 cargo run -p sndsql -- --port 15432 -d snowdrop
 ```
 
+
 ## Testing Foundation
 
 Canonical testing workflow:
@@ -103,11 +104,13 @@ Generated reports:
 - [reports/test-report.md](/e:/snowdrop-1/reports/test-report.md:1)
 - [reports/README.md](/e:/snowdrop-1/reports/README.md:1)
 
+
 ## Benchmark Commands
 
 Snowdrop vs PostgreSQL benchmark:
 
 ```powershell
+
 $env:PGPASSWORD = "<your-postgres-password>"
 cargo run --release -p tpch-bench -- --port 15432 --pg-port 15433 --scale 1 --runs 10 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json
 ```
@@ -115,6 +118,7 @@ cargo run --release -p tpch-bench -- --port 15432 --pg-port 15433 --scale 1 --ru
 Benchmark from a Docker-networked Rust container:
 
 ```powershell
+
 docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:\snowdrop-1:/app -w /app rust:1.86-bookworm `
   bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host orchestrator --pg-host postgres --port 5432 --pg-port 5432 --scale 1 --runs 3 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json"
 ```
