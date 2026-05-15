@@ -157,30 +157,15 @@ pub fn resolve_value(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> Type
             row.get(&col_name).cloned().unwrap_or(TypedValue::Null)
         }
         Expr::Value(val) => literal_to_typed(val),
-        Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
-        Expr::UnaryOp {
-            op: UnaryOperator::Minus,
-            expr,
-        } => resolve_value(expr, row, schema_cols).negate_numeric(),
-        Expr::BinaryOp { left, op, right } => eval_arithmetic(left, op, right, row, schema_cols),
-        Expr::Nested(inner) => resolve_value(inner, row, schema_cols),
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-            ..
-        } => eval_case(
-            operand.as_deref(),
-            conditions,
-            results,
-            else_result.as_deref(),
-            row,
-            schema_cols,
-        ),
-        Expr::Function(f) => {
-            let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
-            eval_function(f, &mut resolver)
+        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+            match resolve_value(expr, row, schema_cols) {
+                TypedValue::Int(i) => i
+                    .checked_neg()
+                    .map(TypedValue::Int)
+                    .unwrap_or(TypedValue::Null),
+                TypedValue::Float(f) => TypedValue::Float(-f),
+                _ => TypedValue::Null,
+            }
         }
         Expr::Extract { field, expr, .. } => {
             let mut resolver = |inner: &Expr| resolve_value(inner, row, schema_cols);
@@ -777,11 +762,16 @@ fn resolve_value_view(expr: &Expr, view: &RowView, schema_cols: &[ColumnInfo]) -
             }
         }
         Expr::Value(val) => literal_to_typed(val),
-        Expr::TypedString { value, .. } => TypedValue::Text(value.clone()),
-        Expr::UnaryOp {
-            op: UnaryOperator::Minus,
-            expr,
-        } => resolve_value_view(expr, view, schema_cols).negate_numeric(),
+        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+            match resolve_value_view(expr, view, schema_cols) {
+                TypedValue::Int(i) => i
+                    .checked_neg()
+                    .map(TypedValue::Int)
+                    .unwrap_or(TypedValue::Null),
+                TypedValue::Float(f) => TypedValue::Float(-f),
+                _ => TypedValue::Null,
+            }
+        }
         Expr::BinaryOp { left, op, right } => {
             let lval = resolve_value_view(left, view, schema_cols);
             let rval = resolve_value_view(right, view, schema_cols);
