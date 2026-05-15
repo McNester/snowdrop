@@ -1,0 +1,5 @@
+{
+  "name": "groups_frame_error",
+  "sql": "SELECT id, SUM(score) OVER (ORDER BY id GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_sum FROM scores;",
+  "expected_error": "GROUPS window frames are not supported yet"
+}

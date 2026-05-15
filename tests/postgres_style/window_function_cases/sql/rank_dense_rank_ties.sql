@@ -1,0 +1,4 @@
+SELECT id, RANK() OVER (PARTITION BY grp ORDER BY score DESC) AS rnk, DENSE_RANK() OVER (PARTITION BY grp ORDER BY score DESC) AS dense_rnk
+FROM scores
+WHERE grp = 'A'
+ORDER BY id;

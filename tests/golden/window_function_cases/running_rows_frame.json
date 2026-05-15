@@ -1,0 +1,5 @@
+{
+  "name": "running_rows_frame",
+  "sql": "SELECT id, grp, SUM(score) OVER (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_sum FROM scores ORDER BY id;",
+  "expected_rows": [["1", "A", "10"], ["2", "A", "20"], ["3", "A", "27"], ["4", "B", "5"], ["5", "B", "7"]]
+}

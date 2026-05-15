@@ -1,0 +1,9 @@
+{
+  "name": "window_function_cases",
+  "database": "window_function_cases",
+  "description": "Phase 3.5 fixture for the broader practical window function compatibility slice.",
+  "purpose": "Validate ranking, navigation, named windows, ROWS-frame aggregates, grouped/window coexistence, and the remaining explicit unsupported boundaries.",
+  "tables": ["scores"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

@@ -1,0 +1,5 @@
+{
+  "name": "lag_lead_defaults",
+  "sql": "SELECT id, score, LAG(score, 1, 0) OVER (PARTITION BY grp ORDER BY id) AS prev_score, LEAD(score, 1, -1) OVER (PARTITION BY grp ORDER BY id) AS next_score FROM scores ORDER BY id;",
+  "expected_rows": [["1", "10", "0", "10"], ["2", "10", "10", "7"], ["3", "7", "10", "-1"], ["4", "5", "0", "2"], ["5", "2", "5", "-1"]]
+}

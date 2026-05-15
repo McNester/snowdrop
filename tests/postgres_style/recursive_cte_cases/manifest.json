@@ -1,0 +1,5 @@
+{
+  "name": "recursive_cte_cases",
+  "description": "PostgreSQL-style regression subset for the narrow recursive CTE Phase 3.5 slice.",
+  "dataset": "recursive_cte_cases"
+}

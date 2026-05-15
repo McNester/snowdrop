@@ -1,0 +1,3 @@
+SELECT id, grp, COUNT(*) OVER (PARTITION BY grp) AS grp_count, SUM(score) OVER (PARTITION BY grp) AS grp_sum
+FROM scores
+ORDER BY id;

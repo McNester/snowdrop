@@ -1,0 +1,5 @@
+{
+  "name": "nested_window_error",
+  "sql": "SELECT SUM(ROW_NUMBER() OVER (ORDER BY id)) OVER (ORDER BY id) FROM scores;",
+  "expected_error": "nested window expressions are not supported yet"
+}

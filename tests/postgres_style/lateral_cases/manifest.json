@@ -1,0 +1,5 @@
+{
+  "name": "lateral_cases",
+  "description": "PostgreSQL-style regression subset for the narrow JOIN LATERAL Phase 3.5 slice.",
+  "dataset": "lateral_cases"
+}

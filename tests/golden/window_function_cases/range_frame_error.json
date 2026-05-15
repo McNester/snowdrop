@@ -1,0 +1,5 @@
+{
+  "name": "range_frame_error",
+  "sql": "SELECT id, SUM(score) OVER (ORDER BY id RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_sum FROM scores;",
+  "expected_error": "RANGE window frames are not supported yet"
+}

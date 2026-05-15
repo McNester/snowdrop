@@ -1,0 +1,3 @@
+SELECT id
+FROM scores
+WHERE ROW_NUMBER() OVER (ORDER BY id) > 1;

@@ -1,2 +1,3 @@
-SELECT ROW_NUMBER() OVER (ORDER BY id)
-FROM profiles;
+SELECT ROW_NUMBER() OVER (w ORDER BY id)
+FROM profiles
+WINDOW w AS (PARTITION BY score_text);

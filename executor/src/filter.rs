@@ -14,6 +14,7 @@ pub type Row = HashMap<String, TypedValue>;
 /// Evaluate a WHERE expression against a row. Returns true if the row matches.
 pub fn evaluate_predicate(expr: &Expr, row: &Row, schema_cols: &[ColumnInfo]) -> bool {
     match expr {
+        Expr::Value(Value::Boolean(value)) => *value,
         Expr::BinaryOp { left, op, right } => eval_binary_op(left, op, right, row, schema_cols),
         Expr::UnaryOp {
             op: UnaryOperator::Not,
@@ -1037,6 +1038,20 @@ mod tests {
     fn arithmetic_division_by_zero() {
         let expr = parse_where("age / 0 = 1");
         assert!(!evaluate_predicate(&expr, &test_row(), &test_schema()));
+    }
+
+    #[test]
+    fn boolean_literal_predicate() {
+        assert!(evaluate_predicate(
+            &Expr::Value(Value::Boolean(true)),
+            &test_row(),
+            &test_schema()
+        ));
+        assert!(!evaluate_predicate(
+            &Expr::Value(Value::Boolean(false)),
+            &test_row(),
+            &test_schema()
+        ));
     }
 
     #[test]

@@ -1,0 +1,3 @@
+SELECT id, score, LAG(score, 1, 0) OVER (PARTITION BY grp ORDER BY id) AS prev_score, LEAD(score, 1, -1) OVER (PARTITION BY grp ORDER BY id) AS next_score
+FROM scores
+ORDER BY id;

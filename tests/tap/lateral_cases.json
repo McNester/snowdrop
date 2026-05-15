@@ -1,0 +1,24 @@
+{
+  "name": "lateral_cases",
+  "dataset": "lateral_cases",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "inner join lateral latest paid",
+      "sql": "SELECT c.name, recent.total FROM customers c INNER JOIN LATERAL (SELECT o.total FROM orders o WHERE o.customer_id = c.id AND o.status = 'paid' ORDER BY o.total DESC LIMIT 1) AS recent ON TRUE ORDER BY c.name;",
+      "expected_rows": [["Alpha", "75"], ["Gamma", "40"]]
+    },
+    {
+      "kind": "sql",
+      "name": "left join lateral latest paid",
+      "sql": "SELECT c.name, recent.total FROM customers c LEFT JOIN LATERAL (SELECT o.total FROM orders o WHERE o.customer_id = c.id AND o.status = 'paid' ORDER BY o.total DESC LIMIT 1) AS recent ON TRUE ORDER BY c.name;",
+      "expected_rows": [["Alpha", "75"], ["Beta", "NULL"], ["Gamma", "40"]]
+    },
+    {
+      "kind": "sql",
+      "name": "lateral values unsupported",
+      "sql": "SELECT c.name FROM customers c INNER JOIN LATERAL (VALUES (1)) AS recent(total) ON TRUE;",
+      "expected_error": "LATERAL VALUES is not supported yet"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+SELECT id, ROW_NUMBER() OVER (w ORDER BY score) AS rn
+FROM scores
+WINDOW w AS (PARTITION BY grp);

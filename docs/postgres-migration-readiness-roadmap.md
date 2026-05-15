@@ -37,7 +37,22 @@ This roadmap assumes the near-term priority is:
   - `UNION ALL` and `UNION` are supported
   - `INSERT ... SELECT` now accepts the supported Phase 3 query-source forms and rejects count/type mismatch up front
   - relation-level `ORDER BY` works over subqueries, derived tables, CTEs, and compound results
-  - recursive CTE, `INTERSECT`, `EXCEPT`, `LATERAL`, and window functions remain explicit boundaries
+  - recursive CTE, `LATERAL`, and compound-set support started Phase 3 as explicit boundaries before they moved into the narrower Phase 3.5 implementation slices
+- Phase 3.5 is now implemented as a narrow advanced-query compatibility layer:
+  - a narrow core window-function subset now runs on the relation pipeline
+  - a narrow `JOIN LATERAL` subset now works over relation-backed derived subqueries
+  - a narrow recursive CTE subset now supports `seed UNION ALL recursive_term` hierarchy walks with a deterministic iteration cap
+  - distinct `INTERSECT` and `EXCEPT` now run through the relation-level compound-query pipeline
+  - supported so far:
+    - `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, and partition aggregate windows (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`)
+    - `INNER JOIN LATERAL (SELECT ...) alias ON ...`
+    - `LEFT JOIN LATERAL (SELECT ...) alias ON ...`
+    - one recursive CTE at a time using `UNION ALL`
+    - distinct `INTERSECT`
+    - distinct `EXCEPT`
+    - distinct `INTERSECT`
+    - distinct `EXCEPT`
+  - remaining advanced-query gaps are now narrower variants beyond the current narrow window / lateral / recursive slices
 
 The remaining work for Phase 1 and Phase 3 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
 
@@ -211,11 +226,11 @@ The repository now has a broad Phase 3 relation-pipeline slice:
   - broader `INSERT ... SELECT` with explicit count/type mismatch validation
   - broader relation-level `ORDER BY`
 - still explicitly unsupported
-  - recursive CTE
-  - `INTERSECT`
-  - `EXCEPT`
-  - `LATERAL`
-  - window functions
+  - recursive CTE beyond the current narrow Phase 3.5 subset
+  - `INTERSECT ALL`
+  - `EXCEPT ALL`
+  - `LATERAL` beyond the current narrow Phase 3.5 subset
+  - window functions beyond the current narrow Phase 3.5 subset
 - still intentionally partial
   - grouped expressions beyond the current narrow identifier-based subset
   - `INSERT ... SELECT` execution is still materialized, not streaming
@@ -249,7 +264,7 @@ Suites:
 Important rule:
 
 - each newly supported feature must also gain an "unsupported boundary" test
-- for example, even after `UNION` support lands, `INTERSECT` and `EXCEPT` should stay explicitly covered as unsupported until they are implemented
+- for example, even after `UNION` support lands, the remaining `INTERSECT ALL` / `EXCEPT ALL` boundary should stay explicitly covered until that wider set-op surface is implemented
 
 ### Exit Criteria
 
@@ -261,12 +276,208 @@ Important rule:
 
 These Phase 3 boundaries do not carry the same migration risk:
 
-- `window functions`: high risk for migration readiness because they are common in production analytics, reporting, deduplication, and ranking queries
+- `window functions`: medium risk after the broader Phase 3.5 slice because the most common ranking and running-window patterns are now covered, while advanced PostgreSQL-only variants still remain
 - recursive CTE: medium, workload-dependent risk because they matter a lot for hierarchy and traversal use cases but do not appear in every application
 - `LATERAL`: medium-high risk for SQL-heavy applications, especially ones that lean on per-row derived sources
 - `INTERSECT` / `EXCEPT`: medium-low risk because they are often rewritable, even though native support is still preferable
 
 This means Phase 3 should still be considered a practical migration subset, not a claim of full PostgreSQL query compatibility. The next phases should prioritize the highest-risk remaining gaps before chasing lower-frequency syntax.
+
+## Phase 3.5: Advanced Query Compatibility Boundaries
+
+### Objectives
+
+- reduce rewrite pressure for migration-heavy SQL workloads
+- close the highest-risk query-surface gaps intentionally left out of Phase 3
+- keep unsupported advanced forms explicit and testable until they are implemented
+
+### Why This Phase Exists
+
+- Phase 3 already provides a practical migration subset for a broad range of workloads
+- the remaining blockers are no longer “basic query surface” tasks
+- they are advanced relation/planner semantics that deserve their own focused delivery phase before schema-fidelity work begins
+
+### Functional Priorities
+
+Implement in this order:
+
+1. core window functions
+2. narrow `LATERAL`
+3. narrow recursive CTE
+4. `INTERSECT` / `EXCEPT`
+
+Current status:
+
+- completed:
+  - broader practical window-function slice
+  - narrow `LATERAL` slice
+  - narrow recursive CTE slice
+  - distinct `INTERSECT` / `EXCEPT` slice
+- remaining:
+  - broader advanced variants beyond the narrow Phase 3.5 surface
+
+### Implementation Scope
+
+#### Window functions first
+
+Target a practical migration-oriented window surface:
+
+- `ROW_NUMBER() OVER (...)`
+- `RANK() OVER (...)`
+- `DENSE_RANK() OVER (...)`
+- `LAG(expr [, offset [, default]]) OVER (...)`
+- `LEAD(expr [, offset [, default]]) OVER (...)`
+- aggregate-over-window subset:
+  - `COUNT`
+  - `SUM`
+  - `AVG`
+  - `MIN`
+  - `MAX`
+
+Supported syntax in this slice:
+
+- `PARTITION BY` optional
+- `ORDER BY` required for ranking and navigation functions
+- `ORDER BY` optional for aggregate-over-window subset, and required when explicit running-window semantics are requested
+- inline `OVER (...)` and named `WINDOW` references
+- explicit `ROWS` frames for ordered aggregate windows
+- grouped/window coexistence when windows run over the post-aggregate relation result
+
+Still unsupported after the first window slice:
+
+- named-window inheritance / override forms
+- `RANGE` frames
+- `GROUPS` frames
+- `FILTER (...) OVER (...)`
+- ordered-set / hypothetical-set aggregates
+- nested window expressions
+- window functions inside unsupported grouped or write-path contexts
+
+Implementation intent:
+
+- evaluate windows on materialized relation rows after source relation formation and filtering
+- run window evaluation before final projection output is frozen
+- preserve the optimized simple-table fast path for non-window queries
+
+#### Narrow `LATERAL`
+
+Support only:
+
+- `INNER JOIN LATERAL (SELECT ...) alias ON ...`
+- `LEFT JOIN LATERAL (SELECT ...) alias ON ...`
+- mandatory alias
+- right-hand lateral subquery may reference only relations already bound on the left
+
+Still unsupported after this slice:
+
+- lateral function/table-valued function sources
+- lateral `VALUES`
+- `RIGHT/FULL JOIN LATERAL`
+- nested lateral chains that require broader planner rules than the current join subset
+
+Implementation intent:
+
+- extend relation-source binding so right-side relation execution can receive left-row scope
+- reuse existing correlated-subquery machinery instead of inventing a separate outer-scope model
+
+#### Narrow recursive CTE
+
+Support only:
+
+- one recursive CTE at a time
+- form: `WITH RECURSIVE cte AS (seed UNION ALL recursive_term) SELECT ...`
+- recursive self-reference only inside `recursive_term`
+- one self-reference per recursive CTE
+- column counts must match exactly
+- deterministic recursion cap with a readable overflow error
+
+Still unsupported after this slice:
+
+- mutual recursion
+- multiple recursive CTEs depending on each other
+- `UNION DISTINCT` recursive fixpoint semantics
+- data-modifying CTEs
+- recursive CTEs inside unsupported compound/lateral combinations
+
+Implementation intent:
+
+- add an iterative fixpoint executor over relation results
+- evaluate `seed`, then repeatedly evaluate `recursive_term` against the growing working set until no new rows appear or the recursion cap is reached
+- keep `UNION ALL` semantics only in this slice
+
+#### `INTERSECT` / `EXCEPT`
+
+Support:
+
+- `INTERSECT`
+- `EXCEPT`
+
+Behavior:
+
+- relation-level set-op execution reuses the existing compound-query pipeline
+- keep current column-count validation style
+- keep current type-compatibility validation style
+
+Still unsupported after this slice:
+
+- `INTERSECT ALL`
+- `EXCEPT ALL`
+
+Implementation intent:
+
+- normalize both relation inputs to the same output shape
+- perform distinct set semantics only
+- preserve relation-level `ORDER BY` / `LIMIT` handling over the compound result
+
+### Required Test Coverage
+
+Add or expand fixed datasets:
+
+- `window_function_cases`
+- `lateral_cases`
+- `recursive_cte_cases`
+- expand `set_ops_cases`
+
+Suites:
+
+- `golden`
+  - happy-path and explicit-error coverage for every feature family
+- `differential`
+  - PostgreSQL parity for supported subsets only
+- `sqllogictest`
+  - `window_functions.test`
+  - `lateral.test`
+  - `recursive_cte.test`
+  - expand `union.test` or add `set_ops_advanced.test`
+- `postgres_style`
+  - one grouped regression family per feature family
+- `tap`
+  - smoke workflow for each new supported feature family
+
+Minimum required scenarios:
+
+- `ROW_NUMBER()` with `PARTITION BY` + `ORDER BY`
+- `RANK()` / `DENSE_RANK()` tie behavior
+- `LAG` / `LEAD` with default argument
+- aggregate-over-window over one partition and multiple partitions
+- `JOIN LATERAL` reading left-row values
+- one simple recursive hierarchy traversal
+- recursion-cap failure
+- `INTERSECT` and `EXCEPT` happy paths
+- explicit unsupported tests for:
+  - named window clauses
+  - explicit frame clauses
+  - lateral non-subquery sources
+  - mutual recursion
+  - `INTERSECT ALL`
+  - `EXCEPT ALL`
+
+### Exit Criteria
+
+- the highest-risk query boundaries from Phase 3 are either supported or narrowed to smaller explicit boundaries
+- the compatibility matrix is updated from `Not Supported` to `Supported` / `Partial` where applicable
+- all newly supported forms are backed by fixed datasets and differential coverage
+- the optimized simple-table path remains intact for non-advanced queries
 
 ## Phase 4: Schema Fidelity for Migration
 
