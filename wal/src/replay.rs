@@ -153,9 +153,8 @@ impl WalFile {
         let entries = self.scan_all()?;
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .min(u64::MAX as u128) as u64;
+            .unwrap()
+            .as_nanos() as u64;
         let cutoff_nanos = now_nanos.saturating_sub(max_age_secs * 1_000_000_000);
 
         let mut keep = Vec::new();
