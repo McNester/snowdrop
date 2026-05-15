@@ -1,0 +1,9 @@
+{
+  "name": "catalog_introspection",
+  "database": "catalog_introspection",
+  "description": "Phase 5 fixture for information_schema constraint introspection.",
+  "purpose": "Validate information_schema table_constraints, key_column_usage, and referential_constraints over named schema constraints.",
+  "tables": ["parent_accounts", "accounts"],
+  "suites": ["golden", "differential", "sqllogictest", "tap", "postgres_style"],
+  "postgres_enabled": true
+}

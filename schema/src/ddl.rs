@@ -930,6 +930,164 @@ impl Neo4jConnection {
         Ok(rows)
     }
 
+    pub async fn information_schema_table_constraints(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String, String, String)>> {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            if !constraints.primary_key_columns.is_empty() {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    format!("{}_pkey", table.name),
+                    "PRIMARY KEY".to_string(),
+                ));
+            }
+            for unique in constraints.unique_constraints {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    unique.name,
+                    "UNIQUE".to_string(),
+                ));
+            }
+            for foreign_key in constraints.foreign_keys {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    foreign_key.name,
+                    "FOREIGN KEY".to_string(),
+                ));
+            }
+            for check in constraints.check_constraints {
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    table.name.clone(),
+                    check.name,
+                    "CHECK".to_string(),
+                ));
+            }
+        }
+        rows.sort();
+        Ok(rows)
+    }
+
+    pub async fn information_schema_key_column_usage(
+        &self,
+        db_name: &str,
+    ) -> Result<Vec<(String, String, String, String, i64, String)>> {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            if !constraints.primary_key_columns.is_empty() {
+                let constraint_name = format!("{}_pkey", table.name);
+                for (idx, column) in constraints.primary_key_columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        constraint_name.clone(),
+                    ));
+                }
+            }
+            for unique in &constraints.unique_constraints {
+                for (idx, column) in unique.columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        unique.name.clone(),
+                    ));
+                }
+            }
+            for foreign_key in &constraints.foreign_keys {
+                for (idx, column) in foreign_key.columns.iter().enumerate() {
+                    rows.push((
+                        db_name.to_string(),
+                        "public".to_string(),
+                        table.name.clone(),
+                        column.clone(),
+                        (idx + 1) as i64,
+                        foreign_key.name.clone(),
+                    ));
+                }
+            }
+        }
+        rows.sort_by(|left, right| {
+            left.2
+                .cmp(&right.2)
+                .then(left.5.cmp(&right.5))
+                .then(left.4.cmp(&right.4))
+                .then(left.3.cmp(&right.3))
+        });
+        Ok(rows)
+    }
+
+    pub async fn information_schema_referential_constraints(
+        &self,
+        db_name: &str,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+    > {
+        let tables = self.show_tables(db_name).await?;
+        let mut rows = Vec::new();
+        for table in &tables {
+            let constraints = self.get_table_constraints(db_name, &table.name).await?;
+            for foreign_key in &constraints.foreign_keys {
+                let ref_db_name = foreign_key.ref_db_name.as_deref().unwrap_or(db_name);
+                let ref_constraints = self
+                    .get_table_constraints(ref_db_name, &foreign_key.ref_table_name)
+                    .await?;
+                let unique_constraint_name =
+                    if ref_constraints.primary_key_columns == foreign_key.ref_columns {
+                        format!("{}_pkey", foreign_key.ref_table_name)
+                    } else if let Some(unique) = ref_constraints
+                        .unique_constraints
+                        .iter()
+                        .find(|unique| unique.columns == foreign_key.ref_columns)
+                    {
+                        unique.name.clone()
+                    } else {
+                        format!("{}_key", foreign_key.ref_table_name)
+                    };
+
+                rows.push((
+                    db_name.to_string(),
+                    "public".to_string(),
+                    foreign_key.name.clone(),
+                    ref_db_name.to_string(),
+                    "public".to_string(),
+                    unique_constraint_name,
+                    foreign_key.on_update.clone(),
+                    foreign_key.on_delete.clone(),
+                ));
+            }
+        }
+        rows.sort();
+        Ok(rows)
+    }
+
     // ── CREATE INDEX ──
 
     /// Marks a column as indexed in Neo4j. Does not create index entries --

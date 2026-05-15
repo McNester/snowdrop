@@ -53,6 +53,12 @@ This roadmap assumes the near-term priority is:
     - distinct `INTERSECT`
     - distinct `EXCEPT`
   - remaining advanced-query gaps are now narrower variants beyond the current narrow window / lateral / recursive slices
+- Phase 5 is now started with an initial numeric-semantics slice:
+  - `DECIMAL` / `NUMERIC` values now preserve exact runtime semantics in the row and relation execution paths instead of immediately degrading into loose float-only comparisons
+  - a first fixed-dataset `numeric_precision` family now covers exact decimal arithmetic, predicates, ordering, and aggregates
+  - a practical date/time slice now preserves typed `DATE` / `TIMESTAMP` / `TIME` values at runtime, adds a narrow `EXTRACT` subset, and is covered by the `datetime_semantics` dataset family
+  - `information_schema` coverage now also includes targeted constraint introspection handlers for `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`, and `REFERENTIAL_CONSTRAINTS`, backed by the `catalog_introspection` dataset family
+  - fuller `pg_catalog` compatibility and pattern-matching expansion remain for follow-up slices inside Phase 5
 
 The remaining work for Phase 1 and Phase 3 is expansion, not bootstrapping. The foundation now exists and should be grown deliberately.
 
@@ -577,13 +583,13 @@ Phase 4 is now started with a real implemented narrow slice and fixed-dataset co
 Datasets:
 
 - `numeric_precision`
-- `date_time_semantics`
+- `datetime_semantics`
 - `catalog_introspection`
 
 Cases to cover:
 
 - numeric rounding and equality edge cases
-- date comparisons and ordering
+- date comparisons, temporal ordering, and practical `EXTRACT`
 - introspection queries used by clients and migration tooling
 
 ### Exit Criteria

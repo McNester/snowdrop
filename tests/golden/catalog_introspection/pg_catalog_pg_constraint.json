@@ -1,0 +1,11 @@
+{
+  "name": "pg_catalog_pg_constraint",
+  "sql": "SELECT con.conname, con.contype FROM pg_catalog.pg_constraint con LEFT JOIN pg_catalog.pg_class c ON c.oid = con.conrelid LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND con.conrelid <> 0 ORDER BY con.conname;",
+  "expected_rows": [
+    ["accounts_balance_check", "c"],
+    ["accounts_parent_fkey", "f"],
+    ["accounts_pkey", "p"],
+    ["accounts_tenant_email_key", "u"],
+    ["parent_accounts_pkey", "p"]
+  ]
+}

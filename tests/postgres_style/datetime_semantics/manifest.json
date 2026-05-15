@@ -1,0 +1,5 @@
+{
+  "name": "datetime_semantics",
+  "description": "PostgreSQL-style regression coverage for practical DATE/TIMESTAMP/TIME semantics.",
+  "dataset": "datetime_semantics"
+}

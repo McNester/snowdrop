@@ -6,6 +6,7 @@
 /// produce u64 bitmasks. Only matching rows are materialized into Row objects.
 use crate::row_format::RowView;
 use crate::typed_value::{TypedValue, EMPTY_TEXT_SENTINEL};
+use rust_decimal::Decimal;
 use schema::ColumnInfo;
 use std::collections::HashMap;
 
@@ -17,6 +18,7 @@ use std::collections::HashMap;
 pub enum TypedColumn {
     Int64(Vec<i64>),
     Float64(Vec<f64>),
+    Decimal(Vec<String>),
     /// Days since Unix epoch (1970-01-01). Enables i32 SIMD comparisons on dates.
     DateDays(Vec<i32>),
     Text(Vec<String>),
@@ -61,6 +63,7 @@ pub struct TableColumns {
 enum ColumnKind {
     Int64,
     Float64,
+    Decimal,
     DateDays,
     Text,
     Boolean,
@@ -73,7 +76,7 @@ fn classify_column(data_type: &str) -> ColumnKind {
         "FLOAT" | "DOUBLE" | "REAL" => ColumnKind::Float64,
         "BOOLEAN" | "BOOL" => ColumnKind::Boolean,
         "DATE" => ColumnKind::DateDays,
-        dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => ColumnKind::Float64,
+        dt if dt.starts_with("DECIMAL") || dt.starts_with("NUMERIC") => ColumnKind::Decimal,
         _ => ColumnKind::Text,
     }
 }
@@ -186,7 +189,11 @@ impl TableColumns {
             match typed_col {
                 TypedColumn::Int64(v) => TypedValue::Int(v[row_idx]),
                 TypedColumn::Float64(v) => TypedValue::Float(v[row_idx]),
-                TypedColumn::DateDays(v) => TypedValue::Text(days_to_date(v[row_idx])),
+                TypedColumn::Decimal(v) => v[row_idx]
+                    .parse::<Decimal>()
+                    .map(TypedValue::Decimal)
+                    .unwrap_or_else(|_| TypedValue::Text(v[row_idx].clone())),
+                TypedColumn::DateDays(v) => date_to_typed_value(v[row_idx]),
                 TypedColumn::Text(v) => TypedValue::Text(v[row_idx].clone()),
                 TypedColumn::Boolean(v) => TypedValue::Boolean(v[row_idx]),
             }
@@ -228,7 +235,7 @@ impl ColumnBuilder {
             } else {
                 Vec::new()
             },
-            texts: if matches!(kind, ColumnKind::Text) {
+            texts: if matches!(kind, ColumnKind::Text | ColumnKind::Decimal) {
                 Vec::with_capacity(capacity)
             } else {
                 Vec::new()
@@ -252,6 +259,13 @@ impl ColumnBuilder {
             ColumnKind::Float64 => {
                 self.floats.push(s.parse::<f64>().unwrap_or(0.0));
             }
+            ColumnKind::Decimal => {
+                self.texts.push(if s == EMPTY_TEXT_SENTINEL {
+                    String::new()
+                } else {
+                    s.to_string()
+                });
+            }
             ColumnKind::DateDays => {
                 self.dates.push(date_to_days(s).unwrap_or(0));
             }
@@ -274,6 +288,7 @@ impl ColumnBuilder {
         match self.kind {
             ColumnKind::Int64 => self.ints.push(0),
             ColumnKind::Float64 => self.floats.push(0.0),
+            ColumnKind::Decimal => self.texts.push(String::new()),
             ColumnKind::DateDays => self.dates.push(0),
             ColumnKind::Text => self.texts.push(String::new()),
             ColumnKind::Boolean => self.bools.push(false),
@@ -285,6 +300,7 @@ impl ColumnBuilder {
         let col = match self.kind {
             ColumnKind::Int64 => TypedColumn::Int64(self.ints),
             ColumnKind::Float64 => TypedColumn::Float64(self.floats),
+            ColumnKind::Decimal => TypedColumn::Decimal(self.texts),
             ColumnKind::DateDays => TypedColumn::DateDays(self.dates),
             ColumnKind::Text => TypedColumn::Text(self.texts),
             ColumnKind::Boolean => TypedColumn::Boolean(self.bools),
@@ -475,9 +491,30 @@ pub fn filter_column(
         (TypedColumn::Float64(vals), TypedValue::Int(threshold)) => {
             filter_f64(vals, op, *threshold as f64)
         }
+        (TypedColumn::DateDays(vals), TypedValue::Date(date)) => {
+            if let Some(days) = date_to_days(&date.format("%Y-%m-%d").to_string()) {
+                filter_i32(vals, op, days)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
+        }
+        (TypedColumn::DateDays(vals), TypedValue::Timestamp(ts)) => {
+            if let Some(days) = date_to_days(&ts.date().format("%Y-%m-%d").to_string()) {
+                filter_i32(vals, op, days)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
+        }
         (TypedColumn::DateDays(vals), TypedValue::Text(date_str)) => {
             if let Some(days) = date_to_days(date_str) {
                 filter_i32(vals, op, days)
+            } else {
+                Bitmap::all_false(vals.len())
+            }
+        }
+        (TypedColumn::Decimal(vals), literal) => {
+            if let Some(threshold) = literal.as_decimal() {
+                filter_decimal(vals, op, threshold)
             } else {
                 Bitmap::all_false(vals.len())
             }
@@ -488,6 +525,7 @@ pub fn filter_column(
             let len = match col {
                 TypedColumn::Int64(v) => v.len(),
                 TypedColumn::Float64(v) => v.len(),
+                TypedColumn::Decimal(v) => v.len(),
                 TypedColumn::DateDays(v) => v.len(),
                 TypedColumn::Text(v) => v.len(),
                 TypedColumn::Boolean(v) => v.len(),
@@ -527,6 +565,30 @@ pub fn sum_product_f64_masked(a: &[f64], b: &[f64], bitmap: &Bitmap) -> f64 {
 /// Count set bits in a bitmap.
 pub fn count_masked(bitmap: &Bitmap) -> i64 {
     bitmap.count_ones() as i64
+}
+
+fn filter_decimal(values: &[String], op: CmpOp, threshold: Decimal) -> Bitmap {
+    let len = values.len();
+    let mut bm = Bitmap::all_false(len);
+    for (i, raw) in values.iter().enumerate() {
+        let Some(value) = raw.parse::<Decimal>().ok() else {
+            continue;
+        };
+        let pass = match op {
+            CmpOp::Eq => value == threshold,
+            CmpOp::Lt => value < threshold,
+            CmpOp::LtEq => value <= threshold,
+            CmpOp::Gt => value > threshold,
+            CmpOp::GtEq => value >= threshold,
+        };
+        bm.words[i / 64] |= (pass as u64) << (i % 64);
+    }
+    bm
+}
+
+fn date_to_typed_value(days: i32) -> TypedValue {
+    let text = days_to_date(days);
+    TypedValue::from_bytes(text.as_bytes(), "DATE")
 }
 
 #[cfg(test)]

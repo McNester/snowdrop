@@ -1,0 +1,5 @@
+catalog_introspection|public|accounts|parent_id|1|accounts_parent_fkey
+catalog_introspection|public|accounts|id|1|accounts_pkey
+catalog_introspection|public|accounts|tenant_id|1|accounts_tenant_email_key
+catalog_introspection|public|accounts|email|2|accounts_tenant_email_key
+catalog_introspection|public|parent_accounts|id|1|parent_accounts_pkey

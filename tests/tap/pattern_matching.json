@@ -1,0 +1,24 @@
+{
+  "name": "pattern_matching",
+  "dataset": "pattern_matching",
+  "checks": [
+    {
+      "kind": "sql",
+      "name": "like single wildcard",
+      "sql": "SELECT name FROM contacts WHERE name LIKE 'A_i_e' ORDER BY name;",
+      "expected_rows": [["Alice"]]
+    },
+    {
+      "kind": "sql",
+      "name": "like escape",
+      "sql": "SELECT name FROM contacts WHERE name LIKE 'ali\\_ce' ESCAPE '\\' ORDER BY id;",
+      "expected_rows": [["ali_ce"]]
+    },
+    {
+      "kind": "sql",
+      "name": "ilike prefix",
+      "sql": "SELECT name FROM contacts WHERE name ILIKE 'ali%' ORDER BY id;",
+      "expected_rows": [["Alice"], ["ALICE"], ["ali_ce"]]
+    }
+  ]
+}
