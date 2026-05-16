@@ -202,16 +202,13 @@ JOIN queries still use the row-oriented `fetch_rows` path (no columnar cache). E
 
 ---
 
-## Benchmark Results (TPC-H, scale=1, ~6700 lineitem rows)
+## Benchmark Summary
 
-### Snowdrop vs PostgreSQL 16 (no indexes on either side)
+The current benchmark snapshot is maintained separately in:
 
-| Query | Snowdrop (cold) | Snowdrop (warm) | PostgreSQL 16 | Warm vs PG |
-|---|---|---|---|---|
-| Q6 (SUM + date range) | 8.2ms | **0.8ms** | 1.5ms | **1.9x faster** |
-| Q1 (GROUP BY + 6 aggregates) | 15.9ms | **10.9ms** | 4.6ms | 2.4x slower |
-| Q14 (2-table JOIN + CASE) | 42.2ms | **26.1ms** | 1.5ms | 17x slower (JOIN) |
-| Q3 (3-table JOIN + GROUP BY) | 62.6ms | **44.3ms** | 1.6ms | 28x slower (JOIN) |
+- [benchmark-results.md](/e:/snowdrop-1/docs/benchmark-results.md:1)
+
+This document remains focused on architectural explanation and bottleneck interpretation.
 
 ### Remaining Bottlenecks
 
