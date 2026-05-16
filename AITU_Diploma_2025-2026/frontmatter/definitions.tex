@@ -1,0 +1,52 @@
+\chapter{Definitions}
+
+Following terms are used in this work:\par\bigskip
+
+\begin{description}[style=multiline, labelwidth=5cm, leftmargin=5.5cm]
+
+  \item[RDBMS]
+       Relational Database Management System - a database system based on the relational model that stores data in structured tables with predefined schemas and supports SQL for data manipulation.
+
+  \item[NoSQL]
+       A broad category of database systems that use data models other than the traditional relational model, including key-value stores, document databases, graph databases, and columnar stores.
+
+  \item[ACID]
+       Atomicity, Consistency, Isolation, Durability - a set of properties that guarantee reliable processing of database transactions, ensuring data integrity even in the presence of system failures.
+
+  \item[SQL]
+       Structured Query Language - a standardized declarative language used to define, manipulate, and query data in relational database systems.
+
+  \item[Wire Protocol]
+       A binary-level communication protocol that defines how data is formatted and transmitted between a database client and server over a TCP connection.
+
+  \item[WAL]
+       Write-Ahead Log - a durability mechanism where every data modification is recorded in a sequential log file before being applied to the main storage, enabling crash recovery.
+
+  \item[LSM-Tree]
+       Log-Structured Merge-Tree - a data structure that buffers writes in memory and periodically flushes sorted runs to disk, optimizing write throughput at the cost of read amplification.
+
+  \item[SIMD]
+       Single Instruction, Multiple Data - a CPU architecture feature that applies the same operation to multiple data elements simultaneously in a single clock cycle.
+
+  \item[Columnar Storage]
+       A data storage format where values of each column are stored contiguously, enabling efficient analytical queries that access only a subset of columns across many rows.
+
+  \item[Graph Database]
+       A database system that models data as nodes and edges, enabling constant-time relationship traversal regardless of total dataset size.
+
+  \item[TPC-H]
+       Transaction Processing Performance Council Benchmark H - a standardized decision-support benchmark consisting of analytical SQL queries over a defined schema, used to evaluate database query performance.
+
+  \item[Orchestrator]
+       In the context of Snowdrop, the central Rust binary that handles client connections, SQL parsing, query planning, transaction coordination, and result assembly.
+
+  \item[RocksDB]
+       An embeddable, high-performance key-value store developed by Facebook, based on the LSM-tree data structure, optimized for fast storage environments such as NVMe SSDs.
+
+  \item[Neo4j]
+       A graph database management system that uses index-free adjacency for constant-time relationship traversal, used in Snowdrop exclusively for schema metadata, relationship modeling between schema objects, and introspection support.
+
+  \item[p99 Latency]
+       The 99th percentile latency - the maximum response time experienced by 99\% of requests, used as a measure of tail latency in performance-sensitive systems.
+
+\end{description}

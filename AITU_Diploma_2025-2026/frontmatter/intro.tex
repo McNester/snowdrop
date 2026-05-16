@@ -1,0 +1,20 @@
+\chapter{Introduction}
+\label{chap:intro}
+
+\section{Background and Problem Context}
+
+The rapid growth of data-intensive applications over the past decade has exposed fundamental limitations in traditional relational database management systems. While RDBMS solutions such as PostgreSQL and MySQL provide robust transactional guarantees and a mature SQL ecosystem, they were designed in an era when workloads were predominantly transactional and datasets fit comfortably on a single machine. Modern applications increasingly demand both transactional consistency for write operations and analytical performance for real-time reads - a combination that forces organizations into maintaining separate systems for each concern, introducing synchronization complexity and operational overhead.
+
+The NoSQL movement emerged as a response to these scalability challenges, offering specialized data models - key-value stores, document databases, graph databases, columnar engines - each optimized for particular access patterns. However, adopting NoSQL typically requires abandoning SQL compatibility, rewriting application code, and accepting weaker consistency models. This creates a difficult trade-off: developers must choose between the familiarity and guarantees of SQL and the performance characteristics of specialized storage engines.
+
+\section{Project Overview}
+
+This diploma project explores a third path - a hybrid architecture that preserves PostgreSQL wire compatibility and a practical SQL subset while leveraging multiple storage technologies internally. The result is Snowdrop, a proof-of-concept database engine that accepts standard PostgreSQL connections and executes SQL queries against a composite backend consisting of a graph database for schema metadata, an embedded key-value store for durable row storage and secondary indexes, and an in-memory columnar cache for analytical read acceleration.
+
+The core hypothesis is that by decomposing the responsibilities of a traditional database engine and assigning each responsibility to the most appropriate storage technology, it is possible to achieve sub-30\,ms p99 query latency on analytical read paths while maintaining ACID guarantees and keeping the PostgreSQL ecosystem usable without changes to clients, drivers, or ORMs.
+
+Snowdrop validates this hypothesis through implementation and benchmarking against PostgreSQL~16 using the TPC-H benchmark at scale factor~1, providing an objective comparison on identical hardware. The implementation is written in Rust, chosen for its zero-cost abstractions, absence of garbage collection pauses, and mature async runtime ecosystem - properties critical for achieving deterministic tail latency in a database engine. In its current state, the system also includes a PostgreSQL-oriented migration workflow with preflight analysis, automatic safe-subset migration, and post-load verification.
+
+\section{Report Structure}
+
+This report is structured as follows. Chapter~1 presents a literature review covering database architecture evolution, hybrid storage approaches, and the theoretical foundations underlying the project's design decisions. Chapter~2 analyzes existing database systems - both traditional RDBMS and modern NewSQL/hybrid solutions - identifying the gaps that Snowdrop aims to address. Chapter~3 describes the data collection strategy, including the TPC-H benchmark dataset and the metrics framework used for performance evaluation. Chapter~4 details the methodology guiding the project's development, from technology selection criteria to benchmark-driven validation. Chapter~5 presents the system architecture through component diagrams, UML diagrams, and the current schema-metadata design in Neo4j. Chapter~6 provides a detailed technology comparison justifying each component choice against evaluated alternatives.

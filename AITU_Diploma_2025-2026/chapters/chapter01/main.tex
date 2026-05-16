@@ -1,0 +1,58 @@
+%
+% Chapter 1: Literature Review
+%
+\chapter{Literature Review}
+\label{chap:lit-review}
+\setlength{\parskip}{1em}
+
+\section{Evolution of Relational Database Systems}
+
+The modern approach to data management largely traces back to Codd’s work in 1970, where he introduced the relational model as a way to separate the logical structure of data from its physical storage~\cite{codd1970}. One of the most important ideas behind this model was data independence: applications could query and manipulate data through a declarative language without having to account for how that data was actually stored. Over time, this principle became the basis for relational database management systems, which remained the dominant solution for data storage for decades. Systems such as PostgreSQL, MySQL, Oracle, and Microsoft SQL Server continue to support a large share of enterprise and web applications.
+
+Alongside the relational model, SQL emerged as the standard language for querying and managing structured data. At the same time, the ACID properties --- Atomicity, Consistency, Isolation, and Durability --- became the accepted benchmark for transactional correctness. To implement these guarantees in practice, relational systems adopted techniques such as Write-Ahead Logging and two-phase locking, both of which became core elements of major RDBMS platforms.
+
+As applications began to grow to internet scale in the 2000s, however, the limitations of traditional relational architectures became more visible. Scaling a database beyond the resources of a single machine usually meant either upgrading the hardware or partitioning data across multiple nodes. Both approaches came with trade-offs. Vertical scaling eventually becomes too expensive or technically impractical, while horizontal sharding complicates joins, transactions, and other features that assume a unified relational view of the data.
+
+\section{The CAP Theorem and the Rise of NoSQL}
+
+A major step toward understanding the trade-offs of distributed databases came with Brewer’s CAP conjecture, presented in 2000 at the ACM Symposium on Principles of Distributed Computing~\cite{brewer2000}. It was later formalized by Gilbert and Lynch in 2002~\cite{gilbert2002}. In simple terms, CAP states that a distributed system can guarantee at most two out of three properties at the same time: Consistency, Availability, and Partition Tolerance. Since partitions are unavoidable in real distributed environments, database systems must decide how to behave when communication between nodes is disrupted.
+
+This idea helped explain the rise of NoSQL systems, many of which intentionally relaxed strict consistency in order to improve availability and scale more effectively across clusters. A well-known example is Amazon’s Dynamo, which introduced eventual consistency and consistent hashing as practical techniques for building highly available key-value stores across distributed nodes~\cite{decandia2007}. Brewer later clarified that the familiar phrase ``pick two out of three'' oversimplifies the actual situation. The tension between consistency and availability only becomes critical during partition events; when the network is operating normally, systems can often provide both. This more balanced interpretation encouraged the development of hybrid architectures that aim for strong guarantees under normal conditions while still remaining resilient under network failures.
+
+\section{Log-Structured Merge Trees and Embedded Storage}
+
+The Log-Structured Merge-Tree (LSM-tree), proposed by O'Neil et al. in 1996~\cite{oneil1996}, introduced a different way of organizing storage. Instead of writing updates directly to their final disk locations, the system first buffers them in memory and later flushes them to disk as sorted runs. In effect, this turns many random writes into sequential ones. The result is higher write throughput, especially for write-intensive workloads and storage devices that benefit from sequential access patterns.
+
+RocksDB, originally developed at Facebook as a fork of Google’s LevelDB, is one of the most widely used implementations of the LSM-tree approach. Facebook’s MyRocks project showed that replacing InnoDB’s B-tree engine with RocksDB in MySQL could reduce storage usage by more than 60\% while still preserving competitive query performance~\cite{matsunobu2020}. Although LSM-based systems introduce write amplification during compaction, they often achieve much better compression and more efficient on-disk layouts.
+
+For Snowdrop, another important property of RocksDB is that it can be embedded directly into the application process. This matters because an embedded storage engine removes the need for network or inter-process communication between the query layer and the storage layer. Luo and Carey’s survey of LSM-based storage techniques~\cite{luo2019} points out that in many modern data systems, a significant portion of latency comes not from computation itself, but from the movement of data --- including serialization, copying, context switches, and network transfer. By embedding RocksDB, Snowdrop reduces this overhead and avoids an entire class of latency that external storage services usually introduce.
+
+\section{Column-Oriented Storage and SIMD Processing}
+
+Traditional row-oriented databases store all attributes of a record together. This organization works well for transactional workloads, where operations usually involve complete rows. However, it becomes inefficient for analytical workloads that scan only a small number of columns across very large datasets, because the system still has to read large amounts of irrelevant data.
+
+Column-oriented storage addresses this issue by storing each column separately as a contiguous array of values. Abadi et al. describe this design in detail and explain why it is especially effective for analytical processing~\cite{abadi2013}. The advantages are usually grouped into three areas: less unnecessary I/O, better compression due to similar data being stored together, and more efficient CPU execution through vectorized processing.
+
+In a vectorized model, operations are applied to batches of values rather than one tuple at a time. This makes it possible to use SIMD instructions, which allow a processor to perform the same operation on multiple data elements in parallel within a single clock cycle. Zhou and Ross showed that SIMD can significantly speed up common database tasks such as sequential scans, aggregation, and join probing, with improvements ranging from roughly 2x to 4x~\cite{zhou2002}.
+
+Snowdrop uses these ideas in a selective way. Instead of storing all data permanently in columnar form, it keeps rows in RocksDB and constructs typed column arrays only when a scan is first needed. These arrays are then cached in memory. Predicate evaluation is performed using SIMD-accelerated comparison loops, which produce 64-bit bitmasks indicating which rows satisfy the condition. In this sense, Snowdrop follows a hybrid approach: row-oriented storage supports durability and write efficiency, while an in-memory columnar cache accelerates analytical reads. This resembles the dual-format philosophy discussed by Abadi et al.~\cite{abadi2013}, although in Snowdrop the mechanism is implemented at the application level rather than inside a single integrated database engine.
+
+\section{Graph Databases for Metadata and Schema Management}
+
+Graph databases represent information as nodes and edges, which makes them especially effective for workloads built around relationships. Neo4j, one of the most widely adopted graph databases, uses an index-free adjacency model in which each node directly stores references to its neighboring nodes~\cite{robinson2015}. This design supports efficient traversal of connected structures and is well suited to use cases where queries repeatedly follow chains of relationships.
+
+In relational databases, retrieving related information often requires JOIN operations, whose cost can increase with data volume and query complexity. Graph databases, by contrast, maintain predictable per-hop traversal cost. This property is particularly relevant to Snowdrop's metadata layer. By storing databases, tables, columns, and schema relationships as graph structures in Neo4j, the system can resolve metadata and introspection lookups as graph traversals rather than forcing those concerns into the same storage engine that serves durable row data.
+
+The separation of responsibilities in Snowdrop --- with Neo4j handling schema metadata and RocksDB storing row data together with secondary indexes --- also reflects a broader architectural trend toward specialization. Instead of forcing a single storage engine to solve every problem equally well, this design allows each component to focus on the workload for which it is most suitable. In practice, Neo4j grows with the size of the schema and metadata graph, while RocksDB scales with the underlying data volume and indexed values.
+
+\section{Write-Ahead Logging and Crash Recovery}
+
+Write-Ahead Logging (WAL) is a standard technique for preserving atomicity and durability in database systems. Its central principle, formalized in the ARIES recovery framework by Mohan et al.~\cite{mohan1992}, is that any change to persistent data must first be recorded in a sequential log before the change itself is applied. If the system crashes, recovery is performed by replaying the log and restoring the database to a consistent state.
+
+In a conventional single-engine database, this mechanism is relatively straightforward because both the data and the recovery log belong to the same storage subsystem. Snowdrop introduces an additional challenge, since each write may affect two different stores: Neo4j for schema-related metadata and RocksDB for row data plus secondary-index updates. Because of this, the WAL has to capture the progress of each operation across both components. Snowdrop handles this by recording write states through a transition sequence (PENDING $\rightarrow$ NEO4J\_COMMITTED $\rightarrow$ COMMITTED), which allows the system to recover correctly even if a failure occurs in the middle of the write process.
+
+\section{Hybrid and NewSQL Architectures}
+
+Google’s Spanner showed that strong consistency can be preserved even in a globally distributed database, provided that the system uses tightly synchronized clocks and a carefully designed commit protocol~\cite{corbett2012}. Later systems such as CockroachDB and TiDB brought similar ideas into the open-source ecosystem, relying on consensus protocols like Raft and distributed transaction coordination. These NewSQL systems demonstrate that it is possible to combine relational guarantees with horizontal scalability, although such guarantees typically come with the latency costs of coordination across the network.
+
+Snowdrop explores a different direction. Instead of focusing on distribution across many machines, it emphasizes performance optimization on a single node through specialized components. The goal is not to distribute one monolithic design, but to divide responsibilities among storage engines that are each well matched to a specific access pattern. This idea is related to approaches seen in HTAP systems, where row-oriented and column-oriented representations coexist to support different workloads. Snowdrop’s columnar cache follows a similar intuition, but it does so through on-demand in-memory materialization rather than through a permanently maintained replica.

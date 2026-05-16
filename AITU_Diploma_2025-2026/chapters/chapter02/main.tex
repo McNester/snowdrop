@@ -1,0 +1,105 @@
+%
+% Chapter 2: Analysis of Existing Systems
+%
+\chapter{Analysis of Existing Systems}
+\label{chap:existing-systems}
+\setlength{\parskip}{1em}
+
+This chapter reviews the database systems that are most relevant to Snowdrop’s design. The discussion is organized into four groups: traditional relational databases, NewSQL systems, hybrid transactional/analytical processing (HTAP) platforms, and Redis-compatible persistent key-value stores. For each group, the goal is to identify the architectural strengths and limitations that influenced Snowdrop’s hybrid design.
+
+\section{Traditional RDBMS: PostgreSQL}
+
+PostgreSQL is one of the most widely used open-source relational database systems and serves as the main benchmark target for Snowdrop~\cite{postgresql2026}. Its architecture reflects the classical monolithic database model: a single storage engine built around heap tables and B-tree indexes, a mature query optimizer, and a process-per-connection execution model. PostgreSQL provides full ACID guarantees, broad SQL support including window functions, CTEs, and JSON operators, as well as a large ecosystem of drivers, ORMs, and administrative tools~\cite{codd1970}.
+
+The strengths of PostgreSQL are well established. Its optimizer handles complex joins efficiently, and B-tree indexes provide \(O(\log\,n)\) lookup performance across many types of workloads. The MVCC (Multi-Version Concurrency Control) mechanism also allows reads and writes to proceed concurrently without blocking one another.
+
+At the same time, PostgreSQL’s monolithic design means that very different workload types --- transactional writes, point lookups, and large analytical scans --- all go through the same storage engine and execution pipeline. This becomes a limitation for scan-heavy analytical queries. When a query processes millions of rows but needs only a small subset of columns, PostgreSQL still has to access full tuples from heap pages. Because the storage is row-oriented, the system cannot take full advantage of column-based SIMD filtering, and the tuple-at-a-time execution model introduces noticeable per-row overhead during large scans~\cite{abadi2013}.
+
+The benchmark results reflect this behavior. On TPC-H Q6, which is essentially a single-table analytical scan with aggregation over about 6 million rows, PostgreSQL~16 achieves 1.5\,ms with a warm cache, while Snowdrop’s current columnar execution path completes the same query in 0.8\,ms, which is about 1.9 times faster. This improvement comes from evaluating predicates over typed in-memory column arrays using SIMD-based filtering and materializing only the rows that satisfy the conditions~\cite{zhou2002}. On the other hand, PostgreSQL still clearly outperforms Snowdrop on multi-table JOIN queries such as Q14 and Q3, which highlights the maturity of PostgreSQL’s optimizer and join execution engine even though Snowdrop now supports a broader practical JOIN subset than the earliest prototype.
+
+\section{NewSQL: CockroachDB}
+
+CockroachDB is an open-source distributed SQL database influenced by the ideas behind Google Spanner~\cite{corbett2012}. It offers serializable isolation, automatic sharding, and multi-region replication while exposing a PostgreSQL-compatible SQL interface~\cite{cockroachdb2025}. Internally, CockroachDB originally relied on RocksDB as its storage layer, though this was later replaced by Pebble, a Go-native LSM-based engine. Distributed transaction coordination is handled through the Raft consensus protocol.
+
+The main advantage of CockroachDB is its ability to scale horizontally while preserving strong consistency. Data can be distributed across large clusters, and serializable transactions remain available without forcing developers to manually shard the application. Compatibility with the PostgreSQL wire protocol also lowers the migration barrier for existing systems.
+
+However, these properties come with an unavoidable cost. Because the architecture is distributed, each write must go through Raft coordination across replicas, which adds network round-trips and increases latency. For single-node analytical scenarios, CockroachDB does not rely on native columnar execution or SIMD-accelerated scan filtering, so scan-heavy workloads behave more like they do in a traditional row-store~\cite{abadi2013}. In practice, CockroachDB is primarily optimized for distributed OLTP rather than for minimizing analytical latency on one machine.
+
+Snowdrop addresses a different problem. Whereas CockroachDB focuses on scalable distributed operation, Snowdrop is aimed at extracting as much performance as possible from a single node by assigning different responsibilities to components that are specialized for those tasks.
+
+\section{HTAP Systems: TiDB}
+
+TiDB, developed by PingCAP, is an open-source NewSQL system explicitly designed for HTAP workloads~\cite{tidb2025}. Its architecture separates transactional row storage and analytical columnar storage. Row-oriented data is handled by TiKV, which is itself based on RocksDB~\cite{matsunobu2020}, while analytical queries are served by TiFlash, a columnar engine. Replication between these components is coordinated through Raft.
+
+Conceptually, TiDB is closer to Snowdrop than the previously discussed systems, because both designs recognize that row-oriented and column-oriented representations are suited to different access patterns. The difference is in how that separation is implemented. In TiDB, TiKV and TiFlash operate as separate services, often on different machines, and data is propagated asynchronously between them. As a result, there can be some lag between the transactional state and the analytical replica.
+
+Snowdrop applies a similar idea inside a single process. Its columnar cache is generated on demand from the same RocksDB data that serves transactional operations, which means there is no replication lag at all. The drawback is that this cache is volatile: it disappears on restart and has to be rebuilt the next time a scan is performed. For the proof-of-concept stage, this trade-off is acceptable, since the one-time rebuild cost is offset by the performance of later queries.
+
+\section{Persistent Key-Value Stores: Apache Kvrocks}
+
+Apache Kvrocks is a Redis-compatible persistent key-value store that replaces Redis’s in-memory storage model with RocksDB-backed persistence on disk~\cite{kvrocks2025}. It supports the standard RESP protocol, which allows existing Redis clients to connect without modification, while using LSM-tree compaction on NVMe-backed storage~\cite{oneil1996}. This makes Kvrocks attractive in situations where a pure in-memory Redis deployment would be too expensive, but protocol compatibility is still important.
+
+Kvrocks was originally used as Snowdrop’s main storage layer. In the first version of the architecture, it ran as an external TCP service, and the Rust orchestration layer interacted with it through SCAN and MGET commands sent over the network. Profiling showed that these TCP round-trips between the orchestrator and the Kvrocks process accounted for roughly 70\% of total query time~\cite{luo2019}. After replacing Kvrocks with embedded in-process RocksDB~\cite{rocksdb2025}, this communication overhead disappeared, and TPC-H Q6 latency dropped from 165\,ms to 17\,ms. In other words, a single architectural change produced a roughly 10x improvement.
+
+This result points to an important practical lesson: in a system targeting sub-30\,ms p99 latency, the cost of inter-process communication can dominate the actual data processing. Persistent key-value stores such as Kvrocks work well as standalone external services, but they introduce too much latency when used as internal components inside a performance-sensitive database engine. Even so, the Snowdrop codebase still includes the Kvrocks-based implementation behind the \texttt{StorageBackend} trait, and it can be selected through the \texttt{STORAGE\_BACKEND=kvrocks} environment variable. This makes it possible to compare the embedded and networked storage paths directly.
+
+\section{Comparative Summary}
+
+Table~\ref{tab:system-comparison} summarizes the main characteristics of the analyzed systems alongside Snowdrop.
+
+\begin{table}[H]
+\centering
+\caption{Comparison of existing database systems with Snowdrop}
+\label{tab:system-comparison}
+\renewcommand{\arraystretch}{1.4}
+\small
+\begin{tabular}{|p{2.8cm}|c|c|c|c|p{2.2cm}|}
+\hline
+\textbf{Property} & \textbf{PostgreSQL} & \textbf{CockroachDB} & \textbf{TiDB} & \textbf{Kvrocks} & \textbf{Snowdrop} \\
+\hline
+SQL compatible      & Yes & Yes & Yes & No  & Practical subset \\
+\hline
+ACID guarantees     & Yes & Yes & Yes & No  & Yes \\
+\hline
+Columnar cache      & No  & No  & Yes & No  & Yes \\
+\hline
+SIMD filtering      & No  & No  & No  & No  & Yes \\
+\hline
+Embedded storage    & Yes & Yes & No  & No  & Yes \\
+\hline
+Graph-based schema metadata & No  & No  & No  & No  & Yes \\
+\hline
+Horizontal scaling  & Limited & Yes & Yes & Yes & No \\
+\hline
+Wire protocol       & PG  & PG  & MySQL & RESP & PG \\
+\hline
+Primary focus       & OLTP & Distr. OLTP & HTAP & Persistent KV & Hybrid node \\
+\hline
+\end{tabular}
+\end{table}
+
+The comparison shows that none of the reviewed systems occupies exactly the same design position as Snowdrop. PostgreSQL offers the most mature SQL stack, but it does not include the same kind of on-demand in-memory columnar acceleration for analytical scans~\cite{abadi2013}. CockroachDB and TiDB solve the problem of distributed scalability, though they accept additional latency due to replication and coordination across the network~\cite{corbett2012}. Kvrocks provides persistent Redis-compatible storage, but it does not offer SQL support or full ACID semantics~\cite{kvrocks2025}. Snowdrop’s contribution lies in showing that a hybrid architecture --- combining graph-based schema metadata~\cite{robinson2015}, embedded LSM-based storage~\cite{luo2019}, RocksDB-backed secondary indexes, and SIMD-accelerated in-memory columnar caching~\cite{zhou2002} behind a PostgreSQL-compatible interface --- can deliver competitive analytical performance on a single node while preserving transactional guarantees.
+
+Table~\ref{tab:perf-comparison} shows the measured performance of Snowdrop and PostgreSQL~16 on TPC-H queries at scale factor~1.
+
+\begin{table}[H]
+\centering
+\caption{Performance comparison: Snowdrop vs PostgreSQL 16 (warm cache, TPC-H scale=1)}
+\label{tab:perf-comparison}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{|p{5cm}|c|c|c|c|}
+\hline
+\textbf{Query} & \textbf{SD Columnar} & \textbf{SD Indexed} & \textbf{PG 16} & \textbf{SD vs PG} \\
+\hline
+Q6: SUM + 5-predicate WHERE  & \textbf{0.8\,ms} & 8.2\,ms & 1.5\,ms & \textbf{1.9x faster} \\
+\hline
+Q1: GROUP BY + 7 aggregates  & 10.9\,ms & 15.9\,ms & 4.6\,ms & 2.4x slower \\
+\hline
+Q14: 2-table JOIN + CASE     & 26.1\,ms & 42.2\,ms & 1.5\,ms & 17.0x slower \\
+\hline
+Q3: 3-table JOIN + GROUP BY  & 44.3\,ms & 62.6\,ms & 1.6\,ms & 28.0x slower \\
+\hline
+\end{tabular}
+\end{table}
+
+The results show that Snowdrop’s columnar execution path achieves a meaningful speedup on Q6, which remains the main target workload for this prototype. At the same time, the measurements make its current limitations very clear. Multi-table JOIN queries remain much slower because PostgreSQL still has a much more mature optimizer and join engine, even though Snowdrop now supports a broader practical JOIN surface including right, full outer, and cross joins in its current subset. These weaknesses are not just observations --- they define the most important optimization targets for future versions of the system.

@@ -1,0 +1,89 @@
+%
+% Chapter 4: Methodology of the Work
+%
+\chapter{Methodology of the Work}
+\label{chap:methodology}
+\setlength{\parskip}{1em}
+
+This chapter explains the research approach, design methodology, and validation strategy used in the development of Snowdrop. The work follows an experimental methodology: first, a hypothesis is formulated; then a system is built to test it; finally, the results are measured against an established baseline.
+
+\section{Research Approach}
+
+The main research question of this project is whether separating the responsibilities of a monolithic database engine across several specialized storage technologies can improve analytical query performance on a single node while still preserving PostgreSQL ecosystem compatibility, a practical SQL subset, and ACID guarantees.
+
+To address this question, the project follows an experimental process with three phases.
+
+\textbf{Phase 1: Hypothesis formulation.} Based on the literature review of existing database architectures~\cite{abadi2013, oneil1996, robinson2015}, the team concluded that the performance of traditional RDBMSs on analytical workloads is often limited by row-oriented storage and tuple-at-a-time execution. The working hypothesis is that a hybrid architecture --- combining graph-based schema metadata, embedded LSM storage, RocksDB-backed secondary indexes, and SIMD-accelerated columnar caching --- can achieve sub-30\,ms p99 latency on single-table analytical queries over one million rows.
+
+\textbf{Phase 2: Prototype implementation.} A proof-of-concept system is developed in Rust to implement the proposed architecture. The prototype is expected to be functional enough to execute standard TPC-H queries and return correct results, but it is not intended to support the full SQL standard.
+
+\textbf{Phase 3: Empirical validation.} The prototype is benchmarked against PostgreSQL~16~\cite{postgresql2026} using the TPC-H benchmark at scale factor~1~\cite{tpch2024}, with the same dataset and hardware environment for both systems. The measured results are then used to confirm or reject the original hypothesis.
+
+This three-phase structure ensures that the project produces not only a working software artifact, but also a measurable and reproducible evaluation of the proposed architectural approach.
+
+\section{Design Methodology}
+
+The system is designed around the principle of \textit{separation of concerns through component specialization}. Instead of relying on one general-purpose storage engine to handle every workload in the same way, the architecture assigns each major responsibility to the technology that fits it best:
+
+\begin{itemize}
+    \item \textbf{Schema metadata and relationship modeling} $\rightarrow$ Neo4j, using graph traversal for compact and expressive schema introspection~\cite{robinson2015}
+    \item \textbf{Durable row storage and secondary indexes} $\rightarrow$ Embedded RocksDB, using in-process access and avoiding network overhead~\cite{matsunobu2020}
+    \item \textbf{Analytical read acceleration} $\rightarrow$ In-memory columnar cache with SIMD filtering, using CPU-level parallelism~\cite{zhou2002}
+    \item \textbf{Client compatibility} $\rightarrow$ PostgreSQL wire protocol via the pgwire crate, allowing reuse of the PostgreSQL ecosystem
+    \item \textbf{Crash recovery} $\rightarrow$ Write-Ahead Log with a three-state machine, preserving ACID guarantees across the two-store architecture~\cite{mohan1992}
+\end{itemize}
+
+Each component choice was assessed against three project-specific constraints: predictable tail latency, proof-of-concept feasibility within a single academic term, and compatibility with existing PostgreSQL clients. These constraints are discussed in more detail in Chapter~6 (Technology Comparison).
+
+An important part of the methodology is the decision to prioritize \textit{honest evaluation over favorable presentation}. For this reason, the benchmark section includes all measured results, including the cases where Snowdrop performs substantially worse than PostgreSQL, such as multi-table JOIN queries. This makes the work more useful as an architectural study rather than as a selectively framed demonstration.
+
+\section{Development Process}
+
+The implementation began as an iterative prototyping process organized into seven milestones. Each milestone produced a testable system increment with clearly defined acceptance criteria. Table~\ref{tab:milestones} summarizes that original development plan.
+
+\begin{table}[H]
+\centering
+\caption{Development milestones}
+\label{tab:milestones}
+\renewcommand{\arraystretch}{1.4}
+\small
+\begin{tabular}{|c|p{3.5cm}|c|p{5cm}|}
+\hline
+\textbf{M\#} & \textbf{Focus} & \textbf{Duration} & \textbf{Deliverable} \\
+\hline
+M1 & Skeleton + connectivity & 1--2 weeks & psql connects, health probe works \\
+\hline
+M2 & DDL - schema and tables & 1--2 weeks & CREATE/DROP TABLE, DESCRIBE \\
+\hline
+M3 & Write operations + WAL & 2 weeks & INSERT/UPDATE/DELETE with crash recovery \\
+\hline
+M4 & SELECT - single table & 2 weeks & Full single-table SELECT \\
+\hline
+M5 & JOIN support & 2--3 weeks & INNER JOIN, LEFT JOIN \\
+\hline
+M6 & Benchmarking & 1 week & TPC-H results vs PostgreSQL 16 \\
+\hline
+M7 & Secondary indexes & 2 weeks & CREATE INDEX, indexed read path \\
+\hline
+\end{tabular}
+\end{table}
+
+The milestones are ordered so that the core capabilities --- connectivity, schema management, and the write path --- are implemented first, while more advanced query execution features are added later on top of that foundation.
+
+The current \texttt{main} branch has progressed well beyond this original milestone table. After the prototype stage, the project continued through explicit migration-readiness phases that broadened query compatibility, added schema-fidelity features such as \texttt{DEFAULT}, \texttt{UNIQUE}, composite primary keys, practical foreign keys and checks, introduced typed date/time and numeric semantics, and finally implemented PostgreSQL migration tooling through \texttt{migration-preflight}, \texttt{migration-run}, and \texttt{migration-auto}. The milestone table should therefore be read as the original development plan rather than as the complete list of delivered capabilities.
+
+This iterative structure turned out to be especially important when architectural assumptions had to be revised. The clearest example was the migration from Apache Kvrocks, used as an external TCP-based key-value store, to embedded RocksDB. The initial design assumed that an external storage service would provide acceptable latency. However, profiling during Milestone~4 showed that TCP round-trips accounted for roughly 70\% of total query time~\cite{luo2019}. Because the storage layer had already been abstracted behind a \texttt{StorageBackend} trait in Milestone~1, it was possible to replace the implementation without redesigning the query engine, WAL, or schema management components.
+
+This experience confirmed the practical value of the iterative approach: early abstraction boundaries made it possible to adapt the architecture without losing previously completed work.
+
+\section{Validation Strategy}
+
+The validation strategy operates at three levels.
+
+\textbf{Correctness.} Query results produced by Snowdrop are compared row-by-row with the output of PostgreSQL~16 on the same TPC-H dataset. Any mismatch in values, row counts, or ordering is treated as a failure. Correctness is always verified before performance is measured.
+
+\textbf{Performance.} Latency is measured under controlled conditions using both cold-cache and warm-cache runs, with 10 iterations per query. The baseline is an untuned PostgreSQL~16 instance. This is a deliberate methodological choice: it provides a fair out-of-the-box comparison, while still acknowledging that a production-tuned PostgreSQL deployment would likely reduce the performance gap.
+
+\textbf{Durability.} The crash recovery mechanism is tested through controlled failure injection. The orchestrator process is terminated at specific stages of the write sequence, and data integrity is checked after WAL replay during restart. This makes it possible to verify that the two-store ACID guarantee holds even under realistic failure scenarios.
+
+Taken together, these three validation levels ensure that the project’s claims are supported by evidence: the system must produce correct results, demonstrate measurable performance characteristics, and preserve data integrity in the presence of failures.
