@@ -2,7 +2,7 @@
 
 > Embedded RocksDB, in-memory columnar cache, SIMD-filtered scans
 
-Note: `Snowdrop architecture.pdf` is now partially historical. The current source of truth is this document plus the repository code. In particular, secondary indexes now live in RocksDB, while Neo4j is used for schema metadata only.
+Note: `Snowdrop architecture.pdf` is now partially historical. The current source of truth is this document plus the repository code. In particular, secondary indexes now live in RocksDB, while Neo4j is used for schema metadata only. Current benchmark snapshots live in [benchmark-results.md](/e:/snowdrop-1/docs/benchmark-results.md:1), and the active optimization plan lives in [performance-acceleration-roadmap.md](/e:/snowdrop-1/docs/performance-acceleration-roadmap.md:1).
 
 ---
 
@@ -231,8 +231,8 @@ cargo test
 
 Run TPC-H benchmark:
 ```bash
-docker compose up -d
-cargo run --release -p tpch-bench -- --scale 1 --port 5432 --seed 42
+docker compose up -d --build orchestrator postgres neo4j
+docker run --rm --platform linux/amd64 --network snowdrop-1_default -e PGPASSWORD=postgres -v E:\snowdrop-1:/app -w /app rust:1.86-bookworm bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host snowdrop-1-orchestrator-1 --pg-host snowdrop-1-postgres-1 --port 5432 --pg-port 5432 --scale 1 --runs 10 --warmup-runs 2 --with-indexes --pg-indexes --pg-analyze --seed 42 --output reports/benchmarks/tpch-results.json"
 ```
 
 Custom host port example:
@@ -246,4 +246,4 @@ docker compose up -d
 cargo run --release -p tpch-bench -- --scale 1 --port 15432 --pg-port 15433 --seed 42
 ```
 
-The benchmark loads data, runs each TPC-H query 3 times (discarding cold run), and compares against PostgreSQL 16 on identical data.
+The benchmark loads deterministic data, records warmup runs separately, reports measured-run medians and variance, and compares against PostgreSQL 16 on the same Docker network. Treat ratios within the same run as the stable signal; raw milliseconds differ across host machines.

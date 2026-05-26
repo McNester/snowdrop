@@ -45,6 +45,7 @@ services:
       WAL_PATH: /data/wal
       ROCKS_PATH: /data/rocks
       STORAGE_BACKEND: rocksdb
+      SNOWDROP_ENABLE_TRUSTED_BULK_LOAD: "1"
       RUST_LOG: info
       PGWIRE_PORT: ${PGWIRE_PORT:-5432}
       HEALTH_PORT: ${HEALTH_PORT:-8080}

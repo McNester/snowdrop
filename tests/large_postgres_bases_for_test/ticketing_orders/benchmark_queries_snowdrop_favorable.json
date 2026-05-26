@@ -1,0 +1,27 @@
+[
+  {
+    "name": "audit_activity_scan_rollup",
+    "description": "Snowdrop-favorable scan-heavy activity dashboard over the largest append-style fact table.",
+    "sql": "SELECT event_day, event_kind, COUNT(*) AS activity_count FROM audit_events GROUP BY event_day, event_kind ORDER BY event_day, event_kind LIMIT 60;"
+  },
+  {
+    "name": "orders_status_count_scan",
+    "description": "Single-table status distribution over order facts with low-cardinality grouping.",
+    "sql": "SELECT order_status, COUNT(*) AS order_count FROM orders GROUP BY order_status ORDER BY order_status;"
+  },
+  {
+    "name": "tickets_status_scan",
+    "description": "High-row-count status distribution over tickets without join materialization.",
+    "sql": "SELECT ticket_status, COUNT(*) AS ticket_count FROM tickets GROUP BY ticket_status ORDER BY ticket_status;"
+  },
+  {
+    "name": "payments_status_count_scan",
+    "description": "Payment fact status distribution using a compact projection.",
+    "sql": "SELECT payment_status, COUNT(*) AS payment_count FROM payments GROUP BY payment_status ORDER BY payment_status;"
+  },
+  {
+    "name": "seat_hold_status_scan",
+    "description": "Operational hold-state dashboard over a focused fact-like table.",
+    "sql": "SELECT hold_status, COUNT(*) AS hold_count FROM seat_holds GROUP BY hold_status ORDER BY hold_status;"
+  }
+]

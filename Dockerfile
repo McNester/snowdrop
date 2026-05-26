@@ -10,6 +10,7 @@ COPY keys/ keys/
 COPY sndsql/ sndsql/
 COPY tpch-bench/ tpch-bench/
 COPY snowdrop-testkit/ snowdrop-testkit/
+COPY demo/ demo/
 RUN cargo build --release --bin orchestrator
 
 FROM debian:bookworm-slim

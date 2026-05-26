@@ -4,8 +4,8 @@ use crate::storage::StorageBackend;
 use anyhow::{bail, Context, Result};
 use keys::{build_row_key, encode_row_id};
 use schema::{
-    ColumnInfo, ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo,
-    UniqueConstraintInfo,
+    ColumnInfo, DatabaseInfo, ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo,
+    TableInfo, UniqueConstraintInfo,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -17,6 +17,20 @@ pub struct WriteEngine<'a> {
     storage: &'a dyn StorageBackend,
     neo4j: &'a Neo4jConnection,
     wal: &'a mut WalFile,
+}
+
+#[derive(Debug, Clone)]
+pub struct InsertPlan {
+    db: DatabaseInfo,
+    table: TableInfo,
+    schema_cols: Vec<ColumnInfo>,
+    constraints: TableConstraintsInfo,
+}
+
+struct ForeignKeyTarget<'a> {
+    fk: &'a ForeignKeyConstraintInfo,
+    ref_db_id: u32,
+    ref_table_id: u32,
 }
 
 impl<'a> WriteEngine<'a> {
@@ -41,6 +55,12 @@ impl<'a> WriteEngine<'a> {
         column_names: &[String],
         values: &[Vec<u8>],
     ) -> Result<u64> {
+        let plan = self.prepare_insert_plan(db_name, table_name).await?;
+        self.insert_with_plan(db_name, column_names, values, &plan)
+            .await
+    }
+
+    pub async fn prepare_insert_plan(&self, db_name: &str, table_name: &str) -> Result<InsertPlan> {
         let db = self
             .neo4j
             .get_database(db_name)
@@ -59,34 +79,58 @@ impl<'a> WriteEngine<'a> {
             .neo4j
             .get_table_constraints(db_name, table_name)
             .await?;
+        Ok(InsertPlan {
+            db,
+            table,
+            schema_cols,
+            constraints,
+        })
+    }
 
+    pub async fn insert_with_plan(
+        &mut self,
+        db_name: &str,
+        column_names: &[String],
+        values: &[Vec<u8>],
+        plan: &InsertPlan,
+    ) -> Result<u64> {
         // Resolve which columns are being inserted
-        let resolved = resolve_columns(&schema_cols, column_names, values)?;
-        let resolved =
-            apply_defaults_for_insert(self.neo4j, db_name, &schema_cols, &constraints, resolved)
-                .await?;
+        let resolved = resolve_columns(&plan.schema_cols, column_names, values)?;
+        let resolved = apply_defaults_for_insert(
+            self.neo4j,
+            db_name,
+            &plan.schema_cols,
+            &plan.constraints,
+            resolved,
+        )
+        .await?;
 
         // Validate NOT NULL constraints after DEFAULT expansion, including PK columns.
         let resolved_columns: Vec<(u32, Vec<u8>)> = resolved
             .iter()
             .map(|(col, value)| (col.id, value.clone()))
             .collect();
-        validate_not_null_columns(&schema_cols, &resolved_columns)?;
-        validate_check_constraints(&schema_cols, &constraints, &resolved)?;
+        validate_not_null_columns(&plan.schema_cols, &resolved_columns)?;
+        validate_check_constraints(&plan.schema_cols, &plan.constraints, &resolved)?;
 
-        let pk_key =
-            build_primary_key_mapping_key(db.id, table.id, &schema_cols, &constraints, &resolved)?;
+        let pk_key = build_primary_key_mapping_key(
+            plan.db.id,
+            plan.table.id,
+            &plan.schema_cols,
+            &plan.constraints,
+            &resolved,
+        )?;
         self.check_constraint_key_available(&pk_key, None).await?;
         self.validate_unique_constraints(
-            db.id,
-            table.id,
-            &schema_cols,
-            &constraints,
+            plan.db.id,
+            plan.table.id,
+            &plan.schema_cols,
+            &plan.constraints,
             &resolved,
             None,
         )
         .await?;
-        self.validate_foreign_keys(db_name, &schema_cols, &constraints, &resolved)
+        self.validate_foreign_keys(db_name, &plan.schema_cols, &plan.constraints, &resolved)
             .await?;
 
         // Generate row_id
@@ -100,8 +144,8 @@ impl<'a> WriteEngine<'a> {
             .collect();
 
         let payload = WalPayload::V1(WalPayloadV1::Insert {
-            db_id: db.id,
-            table_id: table.id,
+            db_id: plan.db.id,
+            table_id: plan.table.id,
             row_id: row_id.clone(),
             columns: wal_columns.clone(),
         });
@@ -113,10 +157,10 @@ impl<'a> WriteEngine<'a> {
         // Step 2: store constraint lookup mappings
         let mut constraint_pairs = vec![(pk_key, row_id.as_bytes().to_vec())];
         constraint_pairs.extend(build_unique_constraint_pairs(
-            db.id,
-            table.id,
-            &schema_cols,
-            &constraints,
+            plan.db.id,
+            plan.table.id,
+            &plan.schema_cols,
+            &plan.constraints,
             &resolved,
             &row_id,
         )?);
@@ -127,16 +171,16 @@ impl<'a> WriteEngine<'a> {
             .update_status(file_offset, WalStatus::Neo4jCommitted)?;
 
         // Step 4: Storage write (row + index entries in one batch)
-        let row_key = build_row_key(db.id, table.id, row_id_raw)?;
+        let row_key = build_row_key(plan.db.id, plan.table.id, row_id_raw)?;
         let row_value = serialize_columns(&wal_columns);
         let mut pairs = vec![(row_key, row_value)];
 
         // Write index entries for any indexed columns
-        let indexed_cols = get_indexed_cols(&schema_cols);
+        let indexed_cols = get_indexed_cols(&plan.schema_cols);
         if !indexed_cols.is_empty() {
             pairs.extend(build_index_entries_for_row(
-                db.id,
-                table.id,
+                plan.db.id,
+                plan.table.id,
                 row_id_raw,
                 &wal_columns,
                 &indexed_cols,
@@ -148,8 +192,159 @@ impl<'a> WriteEngine<'a> {
         // Step 5: WAL status -> Committed
         self.wal.update_status(file_offset, WalStatus::Committed)?;
 
-        info!(db_name, table_name, %row_id, "row inserted");
+        debug!(db_name, table_name = %plan.table.name, %row_id, "row inserted");
         Ok(1)
+    }
+
+    pub async fn insert_many_with_plan(
+        &mut self,
+        db_name: &str,
+        column_names: &[String],
+        rows: &[Vec<Vec<u8>>],
+        plan: &InsertPlan,
+    ) -> Result<u64> {
+        self.insert_many_with_plan_mode(db_name, column_names, rows, plan, false)
+            .await
+    }
+
+    pub async fn insert_many_trusted_with_plan(
+        &mut self,
+        db_name: &str,
+        column_names: &[String],
+        rows: &[Vec<Vec<u8>>],
+        plan: &InsertPlan,
+    ) -> Result<u64> {
+        self.insert_many_with_plan_mode(db_name, column_names, rows, plan, true)
+            .await
+    }
+
+    async fn insert_many_with_plan_mode(
+        &mut self,
+        db_name: &str,
+        column_names: &[String],
+        rows: &[Vec<Vec<u8>>],
+        plan: &InsertPlan,
+        trusted_bulk_load: bool,
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let indexed_cols = get_indexed_cols(&plan.schema_cols);
+        let fk_targets = if trusted_bulk_load {
+            Vec::new()
+        } else {
+            self.resolve_foreign_key_targets(db_name, &plan.constraints)
+                .await?
+        };
+        let mut pending_constraint_keys = HashSet::new();
+        let mut constraint_keys_to_check = Vec::new();
+        let mut fk_keys_seen = HashSet::new();
+        let mut fk_keys_to_check = Vec::new();
+        let mut constraint_pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut row_pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut wal_rows = Vec::with_capacity(rows.len());
+
+        for values in rows {
+            let resolved = resolve_columns(&plan.schema_cols, column_names, values)?;
+            let resolved = apply_defaults_for_insert_without_fk_check(
+                &plan.schema_cols,
+                &plan.constraints,
+                resolved,
+            )?;
+
+            let wal_columns: Vec<(u32, Vec<u8>)> = resolved
+                .iter()
+                .map(|(col, value)| (col.id, value.clone()))
+                .collect();
+            validate_not_null_columns(&plan.schema_cols, &wal_columns)?;
+            validate_check_constraints_columns(&plan.schema_cols, &plan.constraints, &wal_columns)?;
+
+            let pk_key = build_primary_key_mapping_key(
+                plan.db.id,
+                plan.table.id,
+                &plan.schema_cols,
+                &plan.constraints,
+                &resolved,
+            )?;
+
+            let row_id_raw: u64 = rand::random();
+            let row_id = encode_row_id(row_id_raw)?;
+            let mut row_constraint_pairs = vec![(pk_key, row_id.as_bytes().to_vec())];
+            row_constraint_pairs.extend(build_unique_constraint_pairs(
+                plan.db.id,
+                plan.table.id,
+                &plan.schema_cols,
+                &plan.constraints,
+                &resolved,
+                &row_id,
+            )?);
+            for (key, _) in &row_constraint_pairs {
+                if !pending_constraint_keys.insert(key.clone()) {
+                    bail!("duplicate constraint value");
+                }
+                constraint_keys_to_check.push(key.clone());
+            }
+
+            if !trusted_bulk_load {
+                for key in foreign_key_lookup_keys(&plan.schema_cols, &resolved, &fk_targets)? {
+                    if fk_keys_seen.insert(key.clone()) {
+                        fk_keys_to_check.push(key);
+                    }
+                }
+            }
+            wal_rows.push((row_id.clone(), wal_columns.clone()));
+
+            constraint_pairs.extend(row_constraint_pairs);
+
+            let row_key = build_row_key(plan.db.id, plan.table.id, row_id_raw)?;
+            let row_value = serialize_columns(&wal_columns);
+            row_pairs.push((row_key, row_value));
+            if !indexed_cols.is_empty() {
+                row_pairs.extend(build_index_entries_for_row(
+                    plan.db.id,
+                    plan.table.id,
+                    row_id_raw,
+                    &wal_columns,
+                    &indexed_cols,
+                ));
+            }
+        }
+
+        if !trusted_bulk_load {
+            let existing_constraint_values = self.storage.mget(&constraint_keys_to_check).await?;
+            if existing_constraint_values.iter().any(Option::is_some) {
+                bail!("duplicate constraint value");
+            }
+
+            let existing_fk_values = self.storage.mget(&fk_keys_to_check).await?;
+            if existing_fk_values.iter().any(Option::is_none) {
+                bail!("FOREIGN KEY violation: referenced row is missing");
+            }
+        }
+
+        let wal_payload = WalPayload::V1(WalPayloadV1::InsertBatch {
+            db_id: plan.db.id,
+            table_id: plan.table.id,
+            rows: wal_rows,
+        });
+        let (_, file_offset) = self.wal.append(wal_payload)?;
+
+        self.storage.mset(&constraint_pairs).await?;
+        self.wal
+            .update_status(file_offset, WalStatus::Neo4jCommitted)?;
+
+        self.storage.mset(&row_pairs).await?;
+        self.wal.update_status(file_offset, WalStatus::Committed)?;
+
+        debug!(
+            db_name,
+            table_name = %plan.table.name,
+            rows = rows.len(),
+            trusted_bulk_load,
+            "rows inserted with cached batch plan"
+        );
+        Ok(rows.len() as u64)
     }
 
     /// UPDATE table SET col=val WHERE pk_col = pk_val
@@ -614,6 +809,46 @@ impl<'a> WriteEngine<'a> {
         Ok(())
     }
 
+    async fn resolve_foreign_key_targets<'p>(
+        &self,
+        db_name: &str,
+        constraints: &'p TableConstraintsInfo,
+    ) -> Result<Vec<ForeignKeyTarget<'p>>> {
+        let mut targets = Vec::with_capacity(constraints.foreign_keys.len());
+        for fk in &constraints.foreign_keys {
+            let ref_db_name = fk.ref_db_name.as_deref().unwrap_or(db_name);
+            let ref_db = self
+                .neo4j
+                .get_database(ref_db_name)
+                .await?
+                .context(format!("database '{}' does not exist", ref_db_name))?;
+            let ref_table = self
+                .neo4j
+                .get_table(ref_db_name, &fk.ref_table_name)
+                .await?
+                .context(format!(
+                    "referenced table '{}.{}' does not exist",
+                    ref_db_name, fk.ref_table_name
+                ))?;
+            let ref_constraints = self
+                .neo4j
+                .get_table_constraints(ref_db_name, &fk.ref_table_name)
+                .await?;
+            if ref_constraints.primary_key_columns != fk.ref_columns {
+                bail!(
+                    "FOREIGN KEY '{}' currently supports references to the referenced table primary key only",
+                    fk.name
+                );
+            }
+            targets.push(ForeignKeyTarget {
+                fk,
+                ref_db_id: ref_db.id,
+                ref_table_id: ref_table.id,
+            });
+        }
+        Ok(targets)
+    }
+
     async fn ensure_foreign_key_target_exists(
         &self,
         db_name: &str,
@@ -1035,16 +1270,7 @@ async fn apply_defaults_for_insert(
     constraints: &TableConstraintsInfo,
     mut resolved: Vec<(ColumnInfo, Vec<u8>)>,
 ) -> Result<Vec<(ColumnInfo, Vec<u8>)>> {
-    let present: HashSet<u32> = resolved.iter().map(|(col, _)| col.id).collect();
-    for col in schema_cols {
-        if present.contains(&col.id) {
-            continue;
-        }
-        if let Some(default_expr) = constraints.defaults.get(&col.name) {
-            let bytes = evaluate_default_expr(default_expr)?;
-            resolved.push((col.clone(), bytes));
-        }
-    }
+    resolved = apply_defaults_for_insert_without_fk_check(schema_cols, constraints, resolved)?;
 
     for fk in &constraints.foreign_keys {
         let ref_db_name = fk.ref_db_name.as_deref().unwrap_or(db_name);
@@ -1060,6 +1286,47 @@ async fn apply_defaults_for_insert(
     }
 
     Ok(resolved)
+}
+
+fn apply_defaults_for_insert_without_fk_check(
+    schema_cols: &[ColumnInfo],
+    constraints: &TableConstraintsInfo,
+    mut resolved: Vec<(ColumnInfo, Vec<u8>)>,
+) -> Result<Vec<(ColumnInfo, Vec<u8>)>> {
+    let present: HashSet<u32> = resolved.iter().map(|(col, _)| col.id).collect();
+    for col in schema_cols {
+        if present.contains(&col.id) {
+            continue;
+        }
+        if let Some(default_expr) = constraints.defaults.get(&col.name) {
+            let bytes = evaluate_default_expr(default_expr)?;
+            resolved.push((col.clone(), bytes));
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn foreign_key_lookup_keys(
+    schema_cols: &[ColumnInfo],
+    resolved: &[(ColumnInfo, Vec<u8>)],
+    targets: &[ForeignKeyTarget<'_>],
+) -> Result<Vec<String>> {
+    let mut keys = Vec::new();
+    for target in targets {
+        let Some(values) =
+            maybe_constraint_values_from_resolved(schema_cols, &target.fk.columns, resolved)?
+        else {
+            continue;
+        };
+        keys.push(format!(
+            "pk:{}:{}:{}",
+            target.ref_db_id,
+            target.ref_table_id,
+            encode_constraint_values(&values)
+        ));
+    }
+    Ok(keys)
 }
 
 fn validate_check_constraints(
@@ -1232,6 +1499,55 @@ pub async fn replay_wal_entries(
 
                 storage.mset(&pairs).await?;
                 info!(entry_id = entry.header.entry_id, "replayed INSERT");
+            }
+            WalPayload::V1(WalPayloadV1::InsertBatch {
+                db_id,
+                table_id,
+                rows,
+            }) => {
+                let schema_cols =
+                    lookup_schema_cols(neo4j, &mut schema_cache, *db_id, *table_id).await?;
+                let constraints =
+                    lookup_constraints(neo4j, &mut constraints_cache, *db_id, *table_id).await?;
+                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                let mut pairs = Vec::new();
+
+                for (row_id, columns) in rows {
+                    let row_id_raw = keys::decode_base62(row_id)?;
+                    let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
+                    let row_value = serialize_columns(columns);
+                    pairs.push((row_key, row_value));
+
+                    let pk_key = build_primary_key_mapping_key_from_columns(
+                        *db_id,
+                        *table_id,
+                        &schema_cols,
+                        &constraints,
+                        columns,
+                    )?;
+                    pairs.push((pk_key, row_id.as_bytes().to_vec()));
+                    pairs.extend(build_unique_constraint_pairs_from_columns(
+                        *db_id,
+                        *table_id,
+                        &schema_cols,
+                        &constraints,
+                        columns,
+                        row_id,
+                    )?);
+
+                    if !indexed.is_empty() {
+                        pairs.extend(build_index_entries_for_row(
+                            *db_id, *table_id, row_id_raw, columns, &indexed,
+                        ));
+                    }
+                }
+
+                storage.mset(&pairs).await?;
+                info!(
+                    entry_id = entry.header.entry_id,
+                    rows = rows.len(),
+                    "replayed batch INSERT"
+                );
             }
             WalPayload::V1(WalPayloadV1::Update {
                 db_id,

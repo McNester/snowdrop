@@ -9,11 +9,14 @@ It is not the main generated report.
 The current source of truth for human-facing generated output is:
 
 - [reports/test-report.md](/e:/snowdrop-1/reports/test-report.md:1)
+- [benchmark-results.md](/e:/snowdrop-1/docs/benchmark-results.md:1)
+- [write-ddl-results.md](/e:/snowdrop-1/reports/benchmarks/write-ddl-results.md:1)
 
 ## What Owns What
 
-- `tpch-bench` owns raw TPC-H-style benchmark execution and optional JSON output.
+- `tpch-bench` owns raw TPC-H-style benchmark execution, JSON output, and the generated `docs/benchmark-results.md` snapshot when `--markdown-output` is used.
 - `snowdrop-testkit` owns the unified markdown report that combines correctness suites and the TPC-H benchmark section.
+- `snowdrop-testkit write-ddl-benchmark` owns the current DDL/insert baseline report.
 
 Code references:
 
@@ -41,27 +44,74 @@ These queries exercise:
 
 ## Running the Benchmark
 
-From the host:
+Use the Docker-network command as the canonical team run. This avoids local Windows/MSVC toolchain differences and records the benchmark environment in the JSON output.
 
 ```powershell
-docker compose up -d --build orchestrator
-$env:PGPASSWORD = "<your-postgres-password>"
-cargo run --release -p tpch-bench -- --scale 1 --runs 10 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json
+docker compose up -d --build orchestrator postgres neo4j
+
+docker run --rm --platform linux/amd64 --network snowdrop-1_default `
+  -e PGPASSWORD=postgres `
+  -v E:\snowdrop-1:/app `
+  -w /app `
+  rust:1.86-bookworm `
+  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host snowdrop-1-orchestrator-1 --pg-host snowdrop-1-postgres-1 --port 5432 --pg-port 5432 --scale 1 --runs 10 --warmup-runs 2 --with-indexes --pg-indexes --pg-analyze --seed 42 --output reports/benchmarks/tpch-results.json --markdown-output docs/benchmark-results.md"
 ```
 
-From a Rust container on the Docker network:
+If the JSON already exists and you only need to refresh the markdown snapshot:
 
 ```powershell
-docker run --rm --network snowdrop-1_default -e PGPASSWORD=$env:PGPASSWORD -v E:\snowdrop-1:/app -w /app rust:1.86-bookworm `
-  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run --release -p tpch-bench -- --host orchestrator --pg-host postgres --port 5432 --pg-port 5432 --scale 1 --runs 3 --with-indexes --seed 42 --output reports/benchmarks/tpch-results.json"
+docker run --rm --platform linux/amd64 `
+  -v E:\snowdrop-1:/app `
+  -w /app `
+  rust:1.86-bookworm `
+  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run -p snowdrop-testkit -- benchmark-report --input reports/benchmarks/tpch-results.json --output docs/benchmark-results.md"
 ```
+
+## Write/DDL Benchmark
+
+Run this before and after changing schema metadata, Neo4j batching, insert, or migration-load behavior:
+
+```powershell
+docker run --rm --platform linux/amd64 --network snowdrop-1_default `
+  -e PGPASSWORD=postgres `
+  -e SNOWDROP_HOST=snowdrop-1-orchestrator-1 `
+  -e SNOWDROP_PORT=5432 `
+  -e POSTGRES_HOST=snowdrop-1-postgres-1 `
+  -e POSTGRES_PORT=5432 `
+  -e HEALTH_HOST=snowdrop-1-orchestrator-1 `
+  -e HEALTH_PORT=8080 `
+  -e METRICS_HOST=snowdrop-1-orchestrator-1 `
+  -e METRICS_PORT=9090 `
+  -v E:\snowdrop-1:/app `
+  -w /app `
+  rust:1.86-bookworm `
+  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run -p snowdrop-testkit -- write-ddl-benchmark --rows 100"
+```
+
+Outputs:
+
+- [write-ddl-results.json](/e:/snowdrop-1/reports/benchmarks/write-ddl-results.json:1)
+- [write-ddl-results.md](/e:/snowdrop-1/reports/benchmarks/write-ddl-results.md:1)
+
+The current baseline shows that DDL and inserts are a first-order bottleneck, so TPC-H acceleration work should not ignore setup/load time.
 
 To generate the unified report with the benchmark section included:
 
 ```powershell
-docker compose up -d --build orchestrator
-$env:PGPASSWORD = "<your-postgres-password>"
-cargo run -p snowdrop-testkit -- run-all --with-tpch
+docker run --rm --platform linux/amd64 --network snowdrop-1_default `
+  -e PGPASSWORD=postgres `
+  -e SNOWDROP_HOST=snowdrop-1-orchestrator-1 `
+  -e SNOWDROP_PORT=5432 `
+  -e POSTGRES_HOST=snowdrop-1-postgres-1 `
+  -e POSTGRES_PORT=5432 `
+  -e HEALTH_HOST=snowdrop-1-orchestrator-1 `
+  -e HEALTH_PORT=8080 `
+  -e METRICS_HOST=snowdrop-1-orchestrator-1 `
+  -e METRICS_PORT=9090 `
+  -v E:\snowdrop-1:/app `
+  -w /app `
+  rust:1.86-bookworm `
+  bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run -p snowdrop-testkit -- run-all --with-tpch"
 ```
 
 ## How to Read the Results
@@ -100,13 +150,37 @@ It should not be treated as:
 ## Interpretation Notes
 
 - Use `--seed` so Snowdrop and PostgreSQL receive the same generated dataset.
+- Use `--warmup-runs` so cold startup effects are recorded but excluded from headline latency.
 - Use `--with-indexes` to compare the baseline and indexed Snowdrop paths.
+- Use `--pg-indexes --pg-analyze` so PostgreSQL has a fair prepared baseline for join-heavy queries.
+- Treat median latency and the Snowdrop/PostgreSQL ratio as the headline; absolute milliseconds vary by Docker resources and host hardware.
 - Prefer the unified report for team-facing communication because it also shows correctness suite status.
 - Rebuild the `orchestrator` service before rerunning benchmarks after query-engine changes; otherwise you may benchmark an older Snowdrop binary.
 - If a benchmark regression appears, correlate it with query-stage metrics on `/metrics` before drawing conclusions.
+
+## Expensive Table Matrix To Add Next
+
+The focused TPC-H suite remains the regression benchmark, but the next benchmark expansion should add a separate expensive-table suite:
+
+- wide table scan: 20-40 columns, selective predicates, projected few columns
+- large fact table aggregate: high row count, low-cardinality grouping
+- mixed schema query: fact table plus dimension joins
+- point/range lookup comparison with and without indexes
+
+Each new case should record row count, column count, selected column count, predicate selectivity, cache warmth, and whether Snowdrop used index, columnar, or relation path.
+
+## Migration Demo Query Suites
+
+The ticketing/orders fixture now separates two benchmark catalogs:
+
+- `tests/large_postgres_bases_for_test/ticketing_orders/benchmark_queries.json` is the join-heavy gap suite. It is useful for tracking current planner/JOIN weaknesses and should not be used as the main “Snowdrop is faster” demo.
+- `tests/large_postgres_bases_for_test/ticketing_orders/benchmark_queries_snowdrop_favorable.json` is the Snowdrop-favorable scan/aggregate suite. `migration-auto` prefers this file when it exists, and the demo site uses it by default.
+
+This split is intentional: the product message should be workload-specific and honest. Snowdrop should win on the supported scan/aggregate workload, while join-heavy cases remain visible as optimization targets.
 
 ## Related Docs
 
 - [testing.en.md](/e:/snowdrop-1/docs/testing.en.md:1)
 - [testing.ru.md](/e:/snowdrop-1/docs/testing.ru.md:1)
 - [reports/README.md](/e:/snowdrop-1/reports/README.md:1)
+- [performance-acceleration-roadmap.md](/e:/snowdrop-1/docs/performance-acceleration-roadmap.md:1)

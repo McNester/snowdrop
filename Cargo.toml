@@ -9,6 +9,7 @@ members = [
     "sndsql",
     "tpch-bench",
     "snowdrop-testkit",
+    "demo/migration-speed-demo",
 ]
 
 [workspace.dependencies]

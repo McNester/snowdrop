@@ -1,28 +1,28 @@
 {
-  "generated_at": "2026-05-11T03:52:25.443295138+00:00",
+  "generated_at": "2026-05-25T20:35:04.918259242+00:00",
   "runtime": {
-    "snowdrop_host": "orchestrator",
+    "snowdrop_host": "snowdrop-1-orchestrator-1",
     "snowdrop_port": 5432,
-    "postgres_host": "postgres",
+    "postgres_host": "snowdrop-1-postgres-1",
     "postgres_port": 5432,
-    "health_host": "orchestrator",
+    "health_host": "snowdrop-1-orchestrator-1",
     "health_port": 8080,
-    "metrics_host": "orchestrator",
+    "metrics_host": "snowdrop-1-orchestrator-1",
     "metrics_port": 9090
   },
   "source_database": "ticketing_orders_large",
   "target_database": "ticketing_orders_large_snowdrop",
   "source_schema_filter": null,
   "preflight": {
-    "generated_at": "2026-05-11T03:24:50.605287560+00:00",
+    "generated_at": "2026-05-25T20:34:43.830275628+00:00",
     "runtime": {
-      "snowdrop_host": "orchestrator",
+      "snowdrop_host": "snowdrop-1-orchestrator-1",
       "snowdrop_port": 5432,
-      "postgres_host": "postgres",
+      "postgres_host": "snowdrop-1-postgres-1",
       "postgres_port": 5432,
-      "health_host": "orchestrator",
+      "health_host": "snowdrop-1-orchestrator-1",
       "health_port": 8080,
-      "metrics_host": "orchestrator",
+      "metrics_host": "snowdrop-1-orchestrator-1",
       "metrics_port": 9090
     },
     "source_database": "ticketing_orders_large",
@@ -30,24 +30,22 @@
     "summary": {
       "table_count": 13,
       "column_count": 78,
-      "constraint_count": 51,
-      "index_count": 29,
-      "supported_tables": 0,
-      "partial_tables": 13,
+      "constraint_count": 37,
+      "index_count": 0,
+      "supported_tables": 13,
+      "partial_tables": 0,
       "unsupported_tables": 0,
-      "ddl_ready_tables": 0,
-      "ddl_partial_tables": 13,
+      "ddl_ready_tables": 13,
+      "ddl_partial_tables": 0,
       "ddl_blocked_tables": 0,
-      "findings_by_status": {
-        "partial": 43
-      }
+      "findings_by_status": {}
     },
     "tables": [
       {
         "schema_name": "public",
         "table_name": "accounts",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -97,19 +95,6 @@
         ],
         "constraints": [
           {
-            "name": "accounts_credit_limit_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((credit_limit >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "accounts_customer_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -149,38 +134,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "accounts_customer_id_key",
-            "definition": "CREATE UNIQUE INDEX accounts_customer_id_key ON public.accounts USING btree (customer_id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "accounts_pkey",
-            "definition": "CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'accounts_customer_id_key' is omitted from the preview and should be recreated manually if still needed",
-          "index 'accounts_pkey' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.accounts\nCREATE TABLE \"accounts\" (\n  \"id\" BIGINT NOT NULL,\n  \"customer_id\" BIGINT NOT NULL,\n  \"status\" VARCHAR(16) NOT NULL DEFAULT 'active'::character varying,\n  \"credit_limit\" NUMERIC(12,2) NOT NULL DEFAULT 0,\n  \"opened_on\" DATE NOT NULL,\n  CHECK (((credit_limit >= (0)::numeric))),\n  FOREIGN KEY (\"customer_id\") REFERENCES \"customers\" (\"id\"),\n  UNIQUE (\"customer_id\"),\n  PRIMARY KEY (\"id\")\n);\n\n-- NOTE: index 'accounts_customer_id_key' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'accounts_pkey' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.accounts\nCREATE TABLE \"accounts\" (\n  \"id\" BIGINT NOT NULL,\n  \"customer_id\" BIGINT NOT NULL,\n  \"status\" VARCHAR(16) NOT NULL DEFAULT 'active',\n  \"credit_limit\" NUMERIC(12,2) NOT NULL DEFAULT 0,\n  \"opened_on\" DATE NOT NULL,\n  FOREIGN KEY (\"customer_id\") REFERENCES \"customers\" (\"id\"),\n  UNIQUE (\"customer_id\"),\n  PRIMARY KEY (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "audit_events",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -265,38 +230,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "audit_events_pkey",
-            "definition": "CREATE UNIQUE INDEX audit_events_pkey ON public.audit_events USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "idx_audit_events_account_day",
-            "definition": "CREATE INDEX idx_audit_events_account_day ON public.audit_events USING btree (account_id, event_day)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'audit_events_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'idx_audit_events_account_day' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.audit_events\nCREATE TABLE \"audit_events\" (\n  \"id\" BIGINT NOT NULL,\n  \"account_id\" BIGINT NOT NULL,\n  \"event_kind\" VARCHAR(32) NOT NULL,\n  \"created_at\" TIMESTAMP NOT NULL,\n  \"event_day\" DATE NOT NULL,\n  \"payload_hint\" VARCHAR(160),\n  FOREIGN KEY (\"account_id\") REFERENCES \"accounts\" (\"id\"),\n  PRIMARY KEY (\"id\")\n);\n\n-- NOTE: index 'audit_events_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'idx_audit_events_account_day' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.audit_events\nCREATE TABLE \"audit_events\" (\n  \"id\" BIGINT NOT NULL,\n  \"account_id\" BIGINT NOT NULL,\n  \"event_kind\" VARCHAR(32) NOT NULL,\n  \"created_at\" TIMESTAMP NOT NULL,\n  \"event_day\" DATE NOT NULL,\n  \"payload_hint\" VARCHAR(160),\n  FOREIGN KEY (\"account_id\") REFERENCES \"accounts\" (\"id\"),\n  PRIMARY KEY (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "customers",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -379,53 +324,20 @@
             "update_rule": null,
             "check_clause": null,
             "notes": []
-          },
-          {
-            "name": "customers_tier_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((((tier)::text = 'standard'::text) OR ((tier)::text = 'vip'::text) OR ((tier)::text = 'enterprise'::text)))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
           }
         ],
-        "indexes": [
-          {
-            "name": "customers_email_key",
-            "definition": "CREATE UNIQUE INDEX customers_email_key ON public.customers USING btree (email)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "customers_pkey",
-            "definition": "CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'customers_email_key' is omitted from the preview and should be recreated manually if still needed",
-          "index 'customers_pkey' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.customers\nCREATE TABLE \"customers\" (\n  \"id\" BIGINT NOT NULL,\n  \"email\" VARCHAR(255) NOT NULL,\n  \"full_name\" VARCHAR(128) NOT NULL,\n  \"tier\" VARCHAR(16) NOT NULL DEFAULT 'standard'::character varying,\n  \"marketing_opt_in\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_on\" DATE NOT NULL,\n  UNIQUE (\"email\"),\n  PRIMARY KEY (\"id\"),\n  CHECK (((((tier)::text = 'standard'::text) OR ((tier)::text = 'vip'::text) OR ((tier)::text = 'enterprise'::text))))\n);\n\n-- NOTE: index 'customers_email_key' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'customers_pkey' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.customers\nCREATE TABLE \"customers\" (\n  \"id\" BIGINT NOT NULL,\n  \"email\" VARCHAR(255) NOT NULL,\n  \"full_name\" VARCHAR(128) NOT NULL,\n  \"tier\" VARCHAR(16) NOT NULL DEFAULT 'standard',\n  \"marketing_opt_in\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_on\" DATE NOT NULL,\n  UNIQUE (\"email\"),\n  PRIMARY KEY (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "events",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -493,19 +405,6 @@
         ],
         "constraints": [
           {
-            "name": "events_base_price_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((base_price >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "events_event_code_key",
             "kind": "UNIQUE",
             "columns": [
@@ -545,47 +444,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "events_event_code_key",
-            "definition": "CREATE UNIQUE INDEX events_event_code_key ON public.events USING btree (event_code)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "events_pkey",
-            "definition": "CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "idx_events_starts_on",
-            "definition": "CREATE INDEX idx_events_starts_on ON public.events USING btree (starts_on)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'events_event_code_key' is omitted from the preview and should be recreated manually if still needed",
-          "index 'events_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'idx_events_starts_on' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.events\nCREATE TABLE \"events\" (\n  \"id\" BIGINT NOT NULL,\n  \"venue_id\" BIGINT NOT NULL,\n  \"event_code\" VARCHAR(32) NOT NULL,\n  \"title\" VARCHAR(160) NOT NULL,\n  \"category\" VARCHAR(32) NOT NULL,\n  \"starts_on\" DATE NOT NULL,\n  \"base_price\" NUMERIC(10,2) NOT NULL,\n  CHECK (((base_price >= (0)::numeric))),\n  UNIQUE (\"event_code\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"venue_id\") REFERENCES \"venues\" (\"id\")\n);\n\n-- NOTE: index 'events_event_code_key' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'events_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'idx_events_starts_on' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.events\nCREATE TABLE \"events\" (\n  \"id\" BIGINT NOT NULL,\n  \"venue_id\" BIGINT NOT NULL,\n  \"event_code\" VARCHAR(32) NOT NULL,\n  \"title\" VARCHAR(160) NOT NULL,\n  \"category\" VARCHAR(32) NOT NULL,\n  \"starts_on\" DATE NOT NULL,\n  \"base_price\" NUMERIC(10,2) NOT NULL,\n  UNIQUE (\"event_code\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"venue_id\") REFERENCES \"venues\" (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "order_items",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -653,19 +523,6 @@
         ],
         "constraints": [
           {
-            "name": "order_items_line_total_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((line_total >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "order_items_order_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -708,19 +565,6 @@
             "notes": []
           },
           {
-            "name": "order_items_quantity_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((quantity > 0))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "order_items_show_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -732,62 +576,20 @@
             "update_rule": "NO ACTION",
             "check_clause": null,
             "notes": []
-          },
-          {
-            "name": "order_items_unit_price_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((unit_price >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
           }
         ],
-        "indexes": [
-          {
-            "name": "idx_order_items_show_id",
-            "definition": "CREATE INDEX idx_order_items_show_id ON public.order_items USING btree (show_id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "order_items_order_id_line_no_key",
-            "definition": "CREATE UNIQUE INDEX order_items_order_id_line_no_key ON public.order_items USING btree (order_id, line_no)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "order_items_pkey",
-            "definition": "CREATE UNIQUE INDEX order_items_pkey ON public.order_items USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'idx_order_items_show_id' is omitted from the preview and should be recreated manually if still needed",
-          "index 'order_items_order_id_line_no_key' is omitted from the preview and should be recreated manually if still needed",
-          "index 'order_items_pkey' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.order_items\nCREATE TABLE \"order_items\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"line_no\" INT NOT NULL,\n  \"quantity\" INT NOT NULL,\n  \"unit_price\" NUMERIC(10,2) NOT NULL,\n  \"line_total\" NUMERIC(12,2) NOT NULL,\n  CHECK (((line_total >= (0)::numeric))),\n  FOREIGN KEY (\"order_id\") REFERENCES \"orders\" (\"id\"),\n  UNIQUE (\"order_id\", \"line_no\"),\n  PRIMARY KEY (\"id\"),\n  CHECK (((quantity > 0))),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\"),\n  CHECK (((unit_price >= (0)::numeric)))\n);\n\n-- NOTE: index 'idx_order_items_show_id' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'order_items_order_id_line_no_key' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'order_items_pkey' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.order_items\nCREATE TABLE \"order_items\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"line_no\" INT NOT NULL,\n  \"quantity\" INT NOT NULL,\n  \"unit_price\" NUMERIC(10,2) NOT NULL,\n  \"line_total\" NUMERIC(12,2) NOT NULL,\n  FOREIGN KEY (\"order_id\") REFERENCES \"orders\" (\"id\"),\n  UNIQUE (\"order_id\", \"line_no\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "orders",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -877,32 +679,6 @@
             "notes": []
           },
           {
-            "name": "orders_discount_total_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((discount_total >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
-            "name": "orders_grand_total_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((grand_total >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "orders_pkey",
             "kind": "PRIMARY KEY",
             "columns": [
@@ -927,53 +703,20 @@
             "update_rule": "NO ACTION",
             "check_clause": null,
             "notes": []
-          },
-          {
-            "name": "orders_subtotal_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((subtotal >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
           }
         ],
-        "indexes": [
-          {
-            "name": "idx_orders_account_ordered_at",
-            "definition": "CREATE INDEX idx_orders_account_ordered_at ON public.orders USING btree (account_id, ordered_at)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "orders_pkey",
-            "definition": "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'idx_orders_account_ordered_at' is omitted from the preview and should be recreated manually if still needed",
-          "index 'orders_pkey' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.orders\nCREATE TABLE \"orders\" (\n  \"id\" BIGINT NOT NULL,\n  \"account_id\" BIGINT NOT NULL,\n  \"promo_id\" BIGINT,\n  \"order_status\" VARCHAR(16) NOT NULL DEFAULT 'placed'::character varying,\n  \"ordered_at\" TIMESTAMP NOT NULL,\n  \"subtotal\" NUMERIC(12,2) NOT NULL,\n  \"discount_total\" NUMERIC(12,2) NOT NULL DEFAULT 0,\n  \"grand_total\" NUMERIC(12,2) NOT NULL,\n  FOREIGN KEY (\"account_id\") REFERENCES \"accounts\" (\"id\"),\n  CHECK (((discount_total >= (0)::numeric))),\n  CHECK (((grand_total >= (0)::numeric))),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"promo_id\") REFERENCES \"promotions\" (\"id\"),\n  CHECK (((subtotal >= (0)::numeric)))\n);\n\n-- NOTE: index 'idx_orders_account_ordered_at' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'orders_pkey' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.orders\nCREATE TABLE \"orders\" (\n  \"id\" BIGINT NOT NULL,\n  \"account_id\" BIGINT NOT NULL,\n  \"promo_id\" BIGINT,\n  \"order_status\" VARCHAR(16) NOT NULL DEFAULT 'placed',\n  \"ordered_at\" TIMESTAMP NOT NULL,\n  \"subtotal\" NUMERIC(12,2) NOT NULL,\n  \"discount_total\" NUMERIC(12,2) NOT NULL DEFAULT 0,\n  \"grand_total\" NUMERIC(12,2) NOT NULL,\n  FOREIGN KEY (\"account_id\") REFERENCES \"accounts\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"promo_id\") REFERENCES \"promotions\" (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "payments",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1032,19 +775,6 @@
         ],
         "constraints": [
           {
-            "name": "payments_amount_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((amount >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "payments_order_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -1084,47 +814,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "idx_payments_order_id",
-            "definition": "CREATE INDEX idx_payments_order_id ON public.payments USING btree (order_id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "payments_pkey",
-            "definition": "CREATE UNIQUE INDEX payments_pkey ON public.payments USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "payments_provider_ref_key",
-            "definition": "CREATE UNIQUE INDEX payments_provider_ref_key ON public.payments USING btree (provider_ref)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'idx_payments_order_id' is omitted from the preview and should be recreated manually if still needed",
-          "index 'payments_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'payments_provider_ref_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.payments\nCREATE TABLE \"payments\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_id\" BIGINT NOT NULL,\n  \"payment_status\" VARCHAR(16) NOT NULL,\n  \"amount\" NUMERIC(12,2) NOT NULL,\n  \"paid_at\" TIMESTAMP NOT NULL,\n  \"provider_ref\" VARCHAR(64) NOT NULL,\n  CHECK (((amount >= (0)::numeric))),\n  FOREIGN KEY (\"order_id\") REFERENCES \"orders\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"provider_ref\")\n);\n\n-- NOTE: index 'idx_payments_order_id' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'payments_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'payments_provider_ref_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.payments\nCREATE TABLE \"payments\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_id\" BIGINT NOT NULL,\n  \"payment_status\" VARCHAR(16) NOT NULL,\n  \"amount\" NUMERIC(12,2) NOT NULL,\n  \"paid_at\" TIMESTAMP NOT NULL,\n  \"provider_ref\" VARCHAR(64) NOT NULL,\n  FOREIGN KEY (\"order_id\") REFERENCES \"orders\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"provider_ref\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "promotions",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1165,19 +866,6 @@
         ],
         "constraints": [
           {
-            "name": "promotions_discount_percent_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "(((discount_percent >= 0) AND (discount_percent <= 80)))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "promotions_pkey",
             "kind": "PRIMARY KEY",
             "columns": [
@@ -1204,38 +892,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "promotions_pkey",
-            "definition": "CREATE UNIQUE INDEX promotions_pkey ON public.promotions USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "promotions_promo_code_key",
-            "definition": "CREATE UNIQUE INDEX promotions_promo_code_key ON public.promotions USING btree (promo_code)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'promotions_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'promotions_promo_code_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.promotions\nCREATE TABLE \"promotions\" (\n  \"id\" BIGINT NOT NULL,\n  \"promo_code\" VARCHAR(32) NOT NULL,\n  \"discount_percent\" INT NOT NULL,\n  \"active\" BOOLEAN NOT NULL DEFAULT true,\n  CHECK ((((discount_percent >= 0) AND (discount_percent <= 80)))),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"promo_code\")\n);\n\n-- NOTE: index 'promotions_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'promotions_promo_code_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.promotions\nCREATE TABLE \"promotions\" (\n  \"id\" BIGINT NOT NULL,\n  \"promo_code\" VARCHAR(32) NOT NULL,\n  \"discount_percent\" INT NOT NULL,\n  \"active\" BOOLEAN NOT NULL DEFAULT true,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"promo_code\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "refunds",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1285,19 +953,6 @@
         ],
         "constraints": [
           {
-            "name": "refunds_amount_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((amount >= (0)::numeric))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "refunds_payment_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -1324,29 +979,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "refunds_pkey",
-            "definition": "CREATE UNIQUE INDEX refunds_pkey ON public.refunds USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'refunds_pkey' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.refunds\nCREATE TABLE \"refunds\" (\n  \"id\" BIGINT NOT NULL,\n  \"payment_id\" BIGINT NOT NULL,\n  \"refund_status\" VARCHAR(16) NOT NULL,\n  \"amount\" NUMERIC(12,2) NOT NULL,\n  \"refunded_at\" TIMESTAMP NOT NULL,\n  CHECK (((amount >= (0)::numeric))),\n  FOREIGN KEY (\"payment_id\") REFERENCES \"payments\" (\"id\"),\n  PRIMARY KEY (\"id\")\n);\n\n-- NOTE: index 'refunds_pkey' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.refunds\nCREATE TABLE \"refunds\" (\n  \"id\" BIGINT NOT NULL,\n  \"payment_id\" BIGINT NOT NULL,\n  \"refund_status\" VARCHAR(16) NOT NULL,\n  \"amount\" NUMERIC(12,2) NOT NULL,\n  \"refunded_at\" TIMESTAMP NOT NULL,\n  FOREIGN KEY (\"payment_id\") REFERENCES \"payments\" (\"id\"),\n  PRIMARY KEY (\"id\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "seat_holds",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1460,38 +1104,18 @@
             ]
           }
         ],
-        "indexes": [
-          {
-            "name": "seat_holds_pkey",
-            "definition": "CREATE UNIQUE INDEX seat_holds_pkey ON public.seat_holds USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "seat_holds_show_id_seat_label_key",
-            "definition": "CREATE UNIQUE INDEX seat_holds_show_id_seat_label_key ON public.seat_holds USING btree (show_id, seat_label)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'seat_holds_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'seat_holds_show_id_seat_label_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.seat_holds\nCREATE TABLE \"seat_holds\" (\n  \"id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"customer_id\" BIGINT NOT NULL,\n  \"seat_label\" VARCHAR(16) NOT NULL,\n  \"hold_status\" VARCHAR(16) NOT NULL DEFAULT 'held'::character varying,\n  \"expires_at\" TIMESTAMP NOT NULL,\n  FOREIGN KEY (\"customer_id\") REFERENCES \"customers\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\"),\n  UNIQUE (\"show_id\", \"seat_label\")\n);\n\n-- NOTE: index 'seat_holds_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'seat_holds_show_id_seat_label_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.seat_holds\nCREATE TABLE \"seat_holds\" (\n  \"id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"customer_id\" BIGINT NOT NULL,\n  \"seat_label\" VARCHAR(16) NOT NULL,\n  \"hold_status\" VARCHAR(16) NOT NULL DEFAULT 'held',\n  \"expires_at\" TIMESTAMP NOT NULL,\n  FOREIGN KEY (\"customer_id\") REFERENCES \"customers\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\"),\n  UNIQUE (\"show_id\", \"seat_label\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "shows",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1550,19 +1174,6 @@
         ],
         "constraints": [
           {
-            "name": "shows_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((seat_capacity >= sold_count))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "shows_event_id_fkey",
             "kind": "FOREIGN KEY",
             "columns": [
@@ -1602,47 +1213,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "idx_shows_event_day",
-            "definition": "CREATE INDEX idx_shows_event_day ON public.shows USING btree (event_id, show_day)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "shows_pkey",
-            "definition": "CREATE UNIQUE INDEX shows_pkey ON public.shows USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "shows_show_code_key",
-            "definition": "CREATE UNIQUE INDEX shows_show_code_key ON public.shows USING btree (show_code)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'idx_shows_event_day' is omitted from the preview and should be recreated manually if still needed",
-          "index 'shows_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'shows_show_code_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.shows\nCREATE TABLE \"shows\" (\n  \"id\" BIGINT NOT NULL,\n  \"event_id\" BIGINT NOT NULL,\n  \"show_code\" VARCHAR(32) NOT NULL,\n  \"show_day\" DATE NOT NULL,\n  \"seat_capacity\" INT NOT NULL,\n  \"sold_count\" INT NOT NULL DEFAULT 0,\n  CHECK (((seat_capacity >= sold_count))),\n  FOREIGN KEY (\"event_id\") REFERENCES \"events\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"show_code\")\n);\n\n-- NOTE: index 'idx_shows_event_day' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'shows_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'shows_show_code_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.shows\nCREATE TABLE \"shows\" (\n  \"id\" BIGINT NOT NULL,\n  \"event_id\" BIGINT NOT NULL,\n  \"show_code\" VARCHAR(32) NOT NULL,\n  \"show_day\" DATE NOT NULL,\n  \"seat_capacity\" INT NOT NULL,\n  \"sold_count\" INT NOT NULL DEFAULT 0,\n  FOREIGN KEY (\"event_id\") REFERENCES \"events\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"show_code\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "tickets",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1762,38 +1344,18 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "tickets_pkey",
-            "definition": "CREATE UNIQUE INDEX tickets_pkey ON public.tickets USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "tickets_ticket_code_key",
-            "definition": "CREATE UNIQUE INDEX tickets_ticket_code_key ON public.tickets USING btree (ticket_code)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'tickets_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'tickets_ticket_code_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.tickets\nCREATE TABLE \"tickets\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_item_id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"ticket_code\" VARCHAR(48) NOT NULL,\n  \"seat_label\" VARCHAR(16) NOT NULL,\n  \"ticket_status\" VARCHAR(16) NOT NULL DEFAULT 'issued'::character varying,\n  \"issued_at\" TIMESTAMP NOT NULL,\n  FOREIGN KEY (\"order_item_id\") REFERENCES \"order_items\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\"),\n  UNIQUE (\"ticket_code\")\n);\n\n-- NOTE: index 'tickets_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'tickets_ticket_code_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.tickets\nCREATE TABLE \"tickets\" (\n  \"id\" BIGINT NOT NULL,\n  \"order_item_id\" BIGINT NOT NULL,\n  \"show_id\" BIGINT NOT NULL,\n  \"ticket_code\" VARCHAR(48) NOT NULL,\n  \"seat_label\" VARCHAR(16) NOT NULL,\n  \"ticket_status\" VARCHAR(16) NOT NULL DEFAULT 'issued',\n  \"issued_at\" TIMESTAMP NOT NULL,\n  FOREIGN KEY (\"order_item_id\") REFERENCES \"order_items\" (\"id\"),\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"show_id\") REFERENCES \"shows\" (\"id\"),\n  UNIQUE (\"ticket_code\")\n);"
       },
       {
         "schema_name": "public",
         "table_name": "venues",
-        "status": "partial",
-        "translation_status": "partial",
+        "status": "supported",
+        "translation_status": "ready",
         "columns": [
           {
             "column_name": "id",
@@ -1843,19 +1405,6 @@
         ],
         "constraints": [
           {
-            "name": "venues_capacity_check",
-            "kind": "CHECK",
-            "columns": [],
-            "status": "partial",
-            "reference": null,
-            "delete_rule": null,
-            "update_rule": null,
-            "check_clause": "((capacity > 0))",
-            "notes": [
-              "CHECK constraints are supported only for the current safe row-local scalar subset"
-            ]
-          },
-          {
             "name": "venues_pkey",
             "kind": "PRIMARY KEY",
             "columns": [
@@ -1882,454 +1431,52 @@
             "notes": []
           }
         ],
-        "indexes": [
-          {
-            "name": "venues_pkey",
-            "definition": "CREATE UNIQUE INDEX venues_pkey ON public.venues USING btree (id)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          },
-          {
-            "name": "venues_venue_code_key",
-            "definition": "CREATE UNIQUE INDEX venues_venue_code_key ON public.venues USING btree (venue_code)",
-            "status": "partial",
-            "notes": [
-              "secondary-index compatibility is still narrower than PostgreSQL and should be recreated selectively"
-            ]
-          }
-        ],
+        "indexes": [],
         "notes": [
-          "table needs manual review for partial features before a production migration"
+          "table shape is directly compatible with the current Snowdrop subset"
         ],
-        "translation_notes": [
-          "index 'venues_pkey' is omitted from the preview and should be recreated manually if still needed",
-          "index 'venues_venue_code_key' is omitted from the preview and should be recreated manually if still needed"
-        ],
-        "translated_ddl": "-- Source table public.venues\nCREATE TABLE \"venues\" (\n  \"id\" BIGINT NOT NULL,\n  \"venue_code\" VARCHAR(32) NOT NULL,\n  \"name\" VARCHAR(128) NOT NULL,\n  \"city\" VARCHAR(64) NOT NULL,\n  \"capacity\" INT NOT NULL,\n  CHECK (((capacity > 0))),\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"venue_code\")\n);\n\n-- NOTE: index 'venues_pkey' is omitted from the preview and should be recreated manually if still needed\n-- NOTE: index 'venues_venue_code_key' is omitted from the preview and should be recreated manually if still needed"
+        "translation_notes": [],
+        "translated_ddl": "-- Source table public.venues\nCREATE TABLE \"venues\" (\n  \"id\" BIGINT NOT NULL,\n  \"venue_code\" VARCHAR(32) NOT NULL,\n  \"name\" VARCHAR(128) NOT NULL,\n  \"city\" VARCHAR(64) NOT NULL,\n  \"capacity\" INT NOT NULL,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"venue_code\")\n);"
       }
     ],
-    "findings": [
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.accounts.accounts_credit_limit_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.accounts.accounts_customer_id_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.accounts.accounts_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.audit_events.audit_events_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.audit_events.idx_audit_events_account_day",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.customers.customers_tier_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.customers.customers_email_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.customers.customers_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.events.events_base_price_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.events.events_event_code_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.events.events_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.events.idx_events_starts_on",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.order_items.order_items_line_total_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.order_items.order_items_quantity_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.order_items.order_items_unit_price_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.order_items.idx_order_items_show_id",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.order_items.order_items_order_id_line_no_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.order_items.order_items_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.orders.orders_discount_total_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.orders.orders_grand_total_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.orders.orders_subtotal_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.orders.idx_orders_account_ordered_at",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.orders.orders_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.payments.payments_amount_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.payments.idx_payments_order_id",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.payments.payments_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.payments.payments_provider_ref_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.promotions.promotions_discount_percent_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.promotions.promotions_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.promotions.promotions_promo_code_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.refunds.refunds_amount_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.refunds.refunds_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.seat_holds.seat_holds_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.seat_holds.seat_holds_show_id_seat_label_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.shows.shows_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.shows.idx_shows_event_day",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.shows.shows_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.shows.shows_show_code_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.tickets.tickets_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.tickets.tickets_ticket_code_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "constraint",
-        "object_name": "public.venues.venues_capacity_check",
-        "category": "constraint",
-        "message": "CHECK constraint needs manual review during migration",
-        "recommendation": "validate this constraint against the current Snowdrop subset before applying it automatically"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.venues.venues_pkey",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      },
-      {
-        "status": "partial",
-        "object_kind": "index",
-        "object_name": "public.venues.venues_venue_code_key",
-        "category": "index",
-        "message": "index definition needs review during migration",
-        "recommendation": "review whether this index is required for the first migration cut and recreate it after load if needed"
-      }
-    ],
+    "findings": [],
     "unsupported_inventory": {},
-    "partial_inventory": {
-      "constraint": [
-        "constraint public.accounts.accounts_credit_limit_check -> CHECK constraint needs manual review during migration",
-        "constraint public.customers.customers_tier_check -> CHECK constraint needs manual review during migration",
-        "constraint public.events.events_base_price_check -> CHECK constraint needs manual review during migration",
-        "constraint public.order_items.order_items_line_total_check -> CHECK constraint needs manual review during migration",
-        "constraint public.order_items.order_items_quantity_check -> CHECK constraint needs manual review during migration",
-        "constraint public.order_items.order_items_unit_price_check -> CHECK constraint needs manual review during migration",
-        "constraint public.orders.orders_discount_total_check -> CHECK constraint needs manual review during migration",
-        "constraint public.orders.orders_grand_total_check -> CHECK constraint needs manual review during migration",
-        "constraint public.orders.orders_subtotal_check -> CHECK constraint needs manual review during migration",
-        "constraint public.payments.payments_amount_check -> CHECK constraint needs manual review during migration",
-        "constraint public.promotions.promotions_discount_percent_check -> CHECK constraint needs manual review during migration",
-        "constraint public.refunds.refunds_amount_check -> CHECK constraint needs manual review during migration",
-        "constraint public.shows.shows_check -> CHECK constraint needs manual review during migration",
-        "constraint public.venues.venues_capacity_check -> CHECK constraint needs manual review during migration"
-      ],
-      "index": [
-        "index public.accounts.accounts_customer_id_key -> index definition needs review during migration",
-        "index public.accounts.accounts_pkey -> index definition needs review during migration",
-        "index public.audit_events.audit_events_pkey -> index definition needs review during migration",
-        "index public.audit_events.idx_audit_events_account_day -> index definition needs review during migration",
-        "index public.customers.customers_email_key -> index definition needs review during migration",
-        "index public.customers.customers_pkey -> index definition needs review during migration",
-        "index public.events.events_event_code_key -> index definition needs review during migration",
-        "index public.events.events_pkey -> index definition needs review during migration",
-        "index public.events.idx_events_starts_on -> index definition needs review during migration",
-        "index public.order_items.idx_order_items_show_id -> index definition needs review during migration",
-        "index public.order_items.order_items_order_id_line_no_key -> index definition needs review during migration",
-        "index public.order_items.order_items_pkey -> index definition needs review during migration",
-        "index public.orders.idx_orders_account_ordered_at -> index definition needs review during migration",
-        "index public.orders.orders_pkey -> index definition needs review during migration",
-        "index public.payments.idx_payments_order_id -> index definition needs review during migration",
-        "index public.payments.payments_pkey -> index definition needs review during migration",
-        "index public.payments.payments_provider_ref_key -> index definition needs review during migration",
-        "index public.promotions.promotions_pkey -> index definition needs review during migration",
-        "index public.promotions.promotions_promo_code_key -> index definition needs review during migration",
-        "index public.refunds.refunds_pkey -> index definition needs review during migration",
-        "index public.seat_holds.seat_holds_pkey -> index definition needs review during migration",
-        "index public.seat_holds.seat_holds_show_id_seat_label_key -> index definition needs review during migration",
-        "index public.shows.idx_shows_event_day -> index definition needs review during migration",
-        "index public.shows.shows_pkey -> index definition needs review during migration",
-        "index public.shows.shows_show_code_key -> index definition needs review during migration",
-        "index public.tickets.tickets_pkey -> index definition needs review during migration",
-        "index public.tickets.tickets_ticket_code_key -> index definition needs review during migration",
-        "index public.venues.venues_pkey -> index definition needs review during migration",
-        "index public.venues.venues_venue_code_key -> index definition needs review during migration"
-      ]
-    }
+    "partial_inventory": {}
   },
   "summary": {
     "planned_tables": 13,
     "blocked_tables": 0,
     "ddl_applied_tables": 13,
-    "loaded_tables": 5,
-    "verified_tables": 5,
-    "row_count_matches": 5,
-    "sample_matches": 3,
-    "aggregate_matches": 3,
-    "replay_queries_run": 15,
-    "replay_queries_matched": 11
+    "loaded_tables": 13,
+    "verified_tables": 13,
+    "row_count_matches": 13,
+    "sample_matches": 13,
+    "aggregate_matches": 13,
+    "replay_queries_run": 39,
+    "replay_queries_matched": 39,
+    "benchmark_queries_run": 5,
+    "benchmark_queries_matched": 5,
+    "benchmark_queries_snowdrop_faster": 3
   },
   "table_runs": [
     {
       "schema_name": "public",
       "table_name": "customers",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
       "load_status": "verified",
-      "source_row_count": 4000,
-      "target_row_count": 4000,
+      "source_row_count": 400,
+      "load_timings": {
+        "export_ms": 7.4672410000000005,
+        "literal_build_ms": 2.392245,
+        "snowdrop_insert_ms": 335.025246,
+        "total_ms": 344.893532,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 400,
       "row_count_match": true,
-      "sample_rows_match": false,
+      "sample_rows_match": true,
       "aggregate_match": true,
       "replay_checks": [
         {
@@ -2343,7 +1490,7 @@
           "name": "ordered_sample",
           "source_sql": "SELECT \"id\", \"email\", \"full_name\", \"tier\", \"marketing_opt_in\", \"created_on\" FROM \"public\".\"customers\" ORDER BY \"id\" LIMIT 25;",
           "target_sql": "SELECT \"id\", \"email\", \"full_name\", \"tier\", \"marketing_opt_in\", \"created_on\" FROM \"customers\" ORDER BY \"id\" LIMIT 25;",
-          "matched": false,
+          "matched": true,
           "note": null
         },
         {
@@ -2354,20 +1501,26 @@
           "note": null
         }
       ],
-      "notes": [
-        "sample row verification diverged on the ordered first 25 rows"
-      ]
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "promotions",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
       "load_status": "verified",
-      "source_row_count": 64,
-      "target_row_count": 64,
+      "source_row_count": 32,
+      "load_timings": {
+        "export_ms": 0.982918,
+        "literal_build_ms": 0.127303,
+        "snowdrop_insert_ms": 541.889163,
+        "total_ms": 543.003884,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 32,
       "row_count_match": true,
-      "sample_rows_match": false,
+      "sample_rows_match": true,
       "aggregate_match": true,
       "replay_checks": [
         {
@@ -2381,7 +1534,7 @@
           "name": "ordered_sample",
           "source_sql": "SELECT \"id\", \"promo_code\", \"discount_percent\", \"active\" FROM \"public\".\"promotions\" ORDER BY \"id\" LIMIT 25;",
           "target_sql": "SELECT \"id\", \"promo_code\", \"discount_percent\", \"active\" FROM \"promotions\" ORDER BY \"id\" LIMIT 25;",
-          "matched": false,
+          "matched": true,
           "note": null
         },
         {
@@ -2392,18 +1545,24 @@
           "note": null
         }
       ],
-      "notes": [
-        "sample row verification diverged on the ordered first 25 rows"
-      ]
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "venues",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
       "load_status": "verified",
-      "source_row_count": 100,
-      "target_row_count": 100,
+      "source_row_count": 30,
+      "load_timings": {
+        "export_ms": 1.08012,
+        "literal_build_ms": 0.14160299999999998,
+        "snowdrop_insert_ms": 104.682183,
+        "total_ms": 105.908906,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 30,
       "row_count_match": true,
       "sample_rows_match": true,
       "aggregate_match": true,
@@ -2435,14 +1594,22 @@
     {
       "schema_name": "public",
       "table_name": "accounts",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
       "load_status": "verified",
-      "source_row_count": 4000,
-      "target_row_count": 4000,
+      "source_row_count": 400,
+      "load_timings": {
+        "export_ms": 6.6416260000000005,
+        "literal_build_ms": 1.7482330000000001,
+        "snowdrop_insert_ms": 470.49071100000003,
+        "total_ms": 478.89007,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 400,
       "row_count_match": true,
       "sample_rows_match": true,
-      "aggregate_match": false,
+      "aggregate_match": true,
       "replay_checks": [
         {
           "name": "row_count",
@@ -2462,25 +1629,31 @@
           "name": "numeric_aggregates",
           "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"customer_id\"), SUM(\"customer_id\"), COUNT(\"credit_limit\"), SUM(\"credit_limit\") FROM \"public\".\"accounts\";",
           "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"customer_id\"), SUM(\"customer_id\"), COUNT(\"credit_limit\"), SUM(\"credit_limit\") FROM \"accounts\";",
-          "matched": false,
+          "matched": true,
           "note": null
         }
       ],
-      "notes": [
-        "aggregate verification diverged for at least one numeric column"
-      ]
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "events",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
       "load_status": "verified",
-      "source_row_count": 1600,
-      "target_row_count": 1600,
+      "source_row_count": 160,
+      "load_timings": {
+        "export_ms": 3.365964,
+        "literal_build_ms": 1.04222,
+        "snowdrop_insert_ms": 283.54457,
+        "total_ms": 287.95845399999996,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 160,
       "row_count_match": true,
       "sample_rows_match": true,
-      "aggregate_match": false,
+      "aggregate_match": true,
       "replay_checks": [
         {
           "name": "row_count",
@@ -2500,141 +1673,415 @@
           "name": "numeric_aggregates",
           "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"venue_id\"), SUM(\"venue_id\"), COUNT(\"base_price\"), SUM(\"base_price\") FROM \"public\".\"events\";",
           "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"venue_id\"), SUM(\"venue_id\"), COUNT(\"base_price\"), SUM(\"base_price\") FROM \"events\";",
-          "matched": false,
+          "matched": true,
           "note": null
         }
       ],
-      "notes": [
-        "aggregate verification diverged for at least one numeric column"
-      ]
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "audit_events",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: table 'audit_events' does not exist in database 'catalog_introspection_dump_snowdrop'"
-      ]
+      "load_status": "verified",
+      "source_row_count": 5000,
+      "load_timings": {
+        "export_ms": 80.00209799999999,
+        "literal_build_ms": 26.327270000000002,
+        "snowdrop_insert_ms": 4294.1580730000005,
+        "total_ms": 4400.511544000001,
+        "chunks": 5,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 5000,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"audit_events\";",
+          "target_sql": "SELECT COUNT(*) FROM \"audit_events\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"account_id\", \"event_kind\", \"created_at\", \"event_day\", \"payload_hint\" FROM \"public\".\"audit_events\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"account_id\", \"event_kind\", \"created_at\", \"event_day\", \"payload_hint\" FROM \"audit_events\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"account_id\"), SUM(\"account_id\") FROM \"public\".\"audit_events\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"account_id\"), SUM(\"account_id\") FROM \"audit_events\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "orders",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: table 'promotions' does not exist in database 'catalog_introspection_dump_snowdrop'"
-      ]
+      "load_status": "verified",
+      "source_row_count": 1600,
+      "load_timings": {
+        "export_ms": 44.50187,
+        "literal_build_ms": 13.985053,
+        "snowdrop_insert_ms": 1502.902156,
+        "total_ms": 1561.4056810000002,
+        "chunks": 2,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 1600,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"orders\";",
+          "target_sql": "SELECT COUNT(*) FROM \"orders\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"account_id\", \"promo_id\", \"order_status\", \"ordered_at\", \"subtotal\", \"discount_total\", \"grand_total\" FROM \"public\".\"orders\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"account_id\", \"promo_id\", \"order_status\", \"ordered_at\", \"subtotal\", \"discount_total\", \"grand_total\" FROM \"orders\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"account_id\"), SUM(\"account_id\"), COUNT(\"promo_id\"), SUM(\"promo_id\"), COUNT(\"subtotal\"), SUM(\"subtotal\"), COUNT(\"discount_total\"), SUM(\"discount_total\"), COUNT(\"grand_total\"), SUM(\"grand_total\") FROM \"public\".\"orders\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"account_id\"), SUM(\"account_id\"), COUNT(\"promo_id\"), SUM(\"promo_id\"), COUNT(\"subtotal\"), SUM(\"subtotal\"), COUNT(\"discount_total\"), SUM(\"discount_total\"), COUNT(\"grand_total\"), SUM(\"grand_total\") FROM \"orders\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "shows",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: table 'events' does not exist in database 'catalog_introspection_dump_snowdrop'"
-      ]
+      "load_status": "verified",
+      "source_row_count": 800,
+      "load_timings": {
+        "export_ms": 14.168969,
+        "literal_build_ms": 5.026615,
+        "snowdrop_insert_ms": 675.4821119999999,
+        "total_ms": 694.688697,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 800,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"shows\";",
+          "target_sql": "SELECT COUNT(*) FROM \"shows\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"event_id\", \"show_code\", \"show_day\", \"seat_capacity\", \"sold_count\" FROM \"public\".\"shows\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"event_id\", \"show_code\", \"show_day\", \"seat_capacity\", \"sold_count\" FROM \"shows\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"event_id\"), SUM(\"event_id\"), COUNT(\"seat_capacity\"), SUM(\"seat_capacity\"), COUNT(\"sold_count\"), SUM(\"sold_count\") FROM \"public\".\"shows\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"event_id\"), SUM(\"event_id\"), COUNT(\"seat_capacity\"), SUM(\"seat_capacity\"), COUNT(\"sold_count\"), SUM(\"sold_count\") FROM \"shows\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "order_items",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: FOREIGN KEY 'fk_order_items_1' violation: referenced row is missing"
-      ]
+      "load_status": "verified",
+      "source_row_count": 3200,
+      "load_timings": {
+        "export_ms": 55.028839000000005,
+        "literal_build_ms": 18.246671000000003,
+        "snowdrop_insert_ms": 2705.1632000000004,
+        "total_ms": 2778.460212,
+        "chunks": 4,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 3200,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"order_items\";",
+          "target_sql": "SELECT COUNT(*) FROM \"order_items\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"order_id\", \"show_id\", \"line_no\", \"quantity\", \"unit_price\", \"line_total\" FROM \"public\".\"order_items\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"order_id\", \"show_id\", \"line_no\", \"quantity\", \"unit_price\", \"line_total\" FROM \"order_items\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_id\"), SUM(\"order_id\"), COUNT(\"show_id\"), SUM(\"show_id\"), COUNT(\"line_no\"), SUM(\"line_no\"), COUNT(\"quantity\"), SUM(\"quantity\"), COUNT(\"unit_price\"), SUM(\"unit_price\"), COUNT(\"line_total\"), SUM(\"line_total\") FROM \"public\".\"order_items\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_id\"), SUM(\"order_id\"), COUNT(\"show_id\"), SUM(\"show_id\"), COUNT(\"line_no\"), SUM(\"line_no\"), COUNT(\"quantity\"), SUM(\"quantity\"), COUNT(\"unit_price\"), SUM(\"unit_price\"), COUNT(\"line_total\"), SUM(\"line_total\") FROM \"order_items\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "payments",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: FOREIGN KEY 'fk_payments_1' violation: referenced row is missing"
-      ]
+      "load_status": "verified",
+      "source_row_count": 1600,
+      "load_timings": {
+        "export_ms": 25.223758999999998,
+        "literal_build_ms": 8.529428,
+        "snowdrop_insert_ms": 1207.468351,
+        "total_ms": 1241.238239,
+        "chunks": 2,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 1600,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"payments\";",
+          "target_sql": "SELECT COUNT(*) FROM \"payments\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"order_id\", \"payment_status\", \"amount\", \"paid_at\", \"provider_ref\" FROM \"public\".\"payments\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"order_id\", \"payment_status\", \"amount\", \"paid_at\", \"provider_ref\" FROM \"payments\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_id\"), SUM(\"order_id\"), COUNT(\"amount\"), SUM(\"amount\") FROM \"public\".\"payments\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_id\"), SUM(\"order_id\"), COUNT(\"amount\"), SUM(\"amount\") FROM \"payments\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "seat_holds",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: table 'customers' does not exist in database 'catalog_introspection_dump_snowdrop'"
-      ]
+      "load_status": "verified",
+      "source_row_count": 1000,
+      "load_timings": {
+        "export_ms": 15.114735000000001,
+        "literal_build_ms": 5.330829,
+        "snowdrop_insert_ms": 733.253333,
+        "total_ms": 753.709898,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 1000,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"seat_holds\";",
+          "target_sql": "SELECT COUNT(*) FROM \"seat_holds\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"show_id\", \"customer_id\", \"seat_label\", \"hold_status\", \"expires_at\" FROM \"public\".\"seat_holds\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"show_id\", \"customer_id\", \"seat_label\", \"hold_status\", \"expires_at\" FROM \"seat_holds\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"show_id\"), SUM(\"show_id\"), COUNT(\"customer_id\"), SUM(\"customer_id\") FROM \"public\".\"seat_holds\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"show_id\"), SUM(\"show_id\"), COUNT(\"customer_id\"), SUM(\"customer_id\") FROM \"seat_holds\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "refunds",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: FOREIGN KEY 'fk_refunds_1' violation: referenced row is missing"
-      ]
+      "load_status": "verified",
+      "source_row_count": 84,
+      "load_timings": {
+        "export_ms": 1.739808,
+        "literal_build_ms": 0.37222299999999997,
+        "snowdrop_insert_ms": 187.68800399999998,
+        "total_ms": 189.806235,
+        "chunks": 1,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 84,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"refunds\";",
+          "target_sql": "SELECT COUNT(*) FROM \"refunds\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"payment_id\", \"refund_status\", \"amount\", \"refunded_at\" FROM \"public\".\"refunds\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"payment_id\", \"refund_status\", \"amount\", \"refunded_at\" FROM \"refunds\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"payment_id\"), SUM(\"payment_id\"), COUNT(\"amount\"), SUM(\"amount\") FROM \"public\".\"refunds\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"payment_id\"), SUM(\"payment_id\"), COUNT(\"amount\"), SUM(\"amount\") FROM \"refunds\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
     },
     {
       "schema_name": "public",
       "table_name": "tickets",
-      "translation_status": "partial",
+      "translation_status": "ready",
       "ddl_applied": true,
-      "load_status": "load_failed",
-      "source_row_count": null,
-      "target_row_count": null,
-      "row_count_match": null,
-      "sample_rows_match": null,
-      "aggregate_match": null,
-      "replay_checks": [],
-      "notes": [
-        "data load failed: ERROR: FOREIGN KEY 'fk_tickets_0' violation: referenced row is missing"
-      ]
+      "load_status": "verified",
+      "source_row_count": 3200,
+      "load_timings": {
+        "export_ms": 56.923919000000005,
+        "literal_build_ms": 22.227573999999997,
+        "snowdrop_insert_ms": 2581.30889,
+        "total_ms": 2660.485584,
+        "chunks": 4,
+        "trusted_bulk_load": true
+      },
+      "target_row_count": 3200,
+      "row_count_match": true,
+      "sample_rows_match": true,
+      "aggregate_match": true,
+      "replay_checks": [
+        {
+          "name": "row_count",
+          "source_sql": "SELECT COUNT(*) FROM \"public\".\"tickets\";",
+          "target_sql": "SELECT COUNT(*) FROM \"tickets\";",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "ordered_sample",
+          "source_sql": "SELECT \"id\", \"order_item_id\", \"show_id\", \"ticket_code\", \"seat_label\", \"ticket_status\", \"issued_at\" FROM \"public\".\"tickets\" ORDER BY \"id\" LIMIT 25;",
+          "target_sql": "SELECT \"id\", \"order_item_id\", \"show_id\", \"ticket_code\", \"seat_label\", \"ticket_status\", \"issued_at\" FROM \"tickets\" ORDER BY \"id\" LIMIT 25;",
+          "matched": true,
+          "note": null
+        },
+        {
+          "name": "numeric_aggregates",
+          "source_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_item_id\"), SUM(\"order_item_id\"), COUNT(\"show_id\"), SUM(\"show_id\") FROM \"public\".\"tickets\";",
+          "target_sql": "SELECT COUNT(*), COUNT(\"id\"), SUM(\"id\"), COUNT(\"order_item_id\"), SUM(\"order_item_id\"), COUNT(\"show_id\"), SUM(\"show_id\") FROM \"tickets\";",
+          "matched": true,
+          "note": null
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "benchmark_results": [
+    {
+      "name": "audit_activity_scan_rollup",
+      "description": "Snowdrop-favorable scan-heavy activity dashboard over the largest append-style fact table.",
+      "sql": "SELECT event_day, event_kind, COUNT(*) AS activity_count FROM audit_events GROUP BY event_day, event_kind ORDER BY event_day, event_kind LIMIT 60;",
+      "matched": true,
+      "source_latency_ms": 1.613966666666667,
+      "target_latency_ms": 2.4830533333333333,
+      "speedup_vs_postgres": 0.6499927508604998,
+      "faster_engine": "postgres"
+    },
+    {
+      "name": "orders_status_count_scan",
+      "description": "Single-table status distribution over order facts with low-cardinality grouping.",
+      "sql": "SELECT order_status, COUNT(*) AS order_count FROM orders GROUP BY order_status ORDER BY order_status;",
+      "matched": true,
+      "source_latency_ms": 0.6017373333333333,
+      "target_latency_ms": 0.7025766666666667,
+      "speedup_vs_postgres": 0.8564721287830983,
+      "faster_engine": "postgres"
+    },
+    {
+      "name": "tickets_status_scan",
+      "description": "High-row-count status distribution over tickets without join materialization.",
+      "sql": "SELECT ticket_status, COUNT(*) AS ticket_count FROM tickets GROUP BY ticket_status ORDER BY ticket_status;",
+      "matched": true,
+      "source_latency_ms": 0.9888276666666668,
+      "target_latency_ms": 0.8200506666666666,
+      "speedup_vs_postgres": 1.2058128928619047,
+      "faster_engine": "snowdrop"
+    },
+    {
+      "name": "payments_status_count_scan",
+      "description": "Payment fact status distribution using a compact projection.",
+      "sql": "SELECT payment_status, COUNT(*) AS payment_count FROM payments GROUP BY payment_status ORDER BY payment_status;",
+      "matched": true,
+      "source_latency_ms": 0.5991703333333334,
+      "target_latency_ms": 0.568035,
+      "speedup_vs_postgres": 1.0548123501779527,
+      "faster_engine": "snowdrop"
+    },
+    {
+      "name": "seat_hold_status_scan",
+      "description": "Operational hold-state dashboard over a focused fact-like table.",
+      "sql": "SELECT hold_status, COUNT(*) AS hold_count FROM seat_holds GROUP BY hold_status ORDER BY hold_status;",
+      "matched": true,
+      "source_latency_ms": 0.5223656666666667,
+      "target_latency_ms": 0.47902933333333336,
+      "speedup_vs_postgres": 1.0904669720991338,
+      "faster_engine": "snowdrop"
     }
   ]
 }
