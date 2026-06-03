@@ -251,6 +251,31 @@ impl Neo4jConnection {
         Ok(id as u32)
     }
 
+    async fn next_ids(&self, counter_key: &str, count: usize) -> Result<Vec<u32>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let mut result = self
+            .graph()
+            .execute(
+                query(
+                    "MATCH (m:Meta {key: $key}) \
+                 SET m.value = m.value + $count \
+                 RETURN m.value AS end_id",
+                )
+                .param("key", counter_key)
+                .param("count", count as i64),
+            )
+            .await
+            .context("failed to increment counter range")?;
+
+        let row = result.next().await?.context("counter returned no result")?;
+
+        let end_id: i64 = row.get("end_id").context("missing end_id field")?;
+        let start_id = end_id - count as i64 + 1;
+        Ok((start_id..=end_id).map(|id| id as u32).collect())
+    }
+
     fn serialize_constraints(
         constraints: &TableConstraintsInfo,
     ) -> Result<(String, String, String, String)> {
@@ -419,7 +444,7 @@ impl Neo4jConnection {
         table_name: &str,
         columns: Vec<ColumnDefinition>,
         constraints: TableConstraintsInfo,
-    ) -> Result<TableInfo> {
+    ) -> Result<(TableInfo, Vec<ColumnInfo>)> {
         let db = self
             .get_database(db_name)
             .await?
@@ -472,28 +497,53 @@ impl Neo4jConnection {
             .await
             .context("failed to create Table node")?;
 
-        // Create Column nodes
-        for col in &columns {
-            let col_id = self.next_id("col_counter").await?;
+        // Create Column nodes in one Cypher round-trip. DDL is latency-sensitive
+        // because migration setup creates many tables in sequence.
+        let col_ids = self.next_ids("col_counter", columns.len()).await?;
+        let column_infos: Vec<ColumnInfo> = columns
+            .iter()
+            .zip(col_ids.iter())
+            .map(|(col, col_id)| ColumnInfo {
+                id: *col_id,
+                name: col.name.clone(),
+                data_type: col.data_type.clone(),
+                nullable: col.nullable,
+                is_pk: col.is_pk,
+                table_id,
+                indexed: false,
+                index_name: None,
+            })
+            .collect();
+        if !column_infos.is_empty() {
+            let ids: Vec<i64> = column_infos.iter().map(|col| col.id as i64).collect();
+            let names: Vec<String> = column_infos.iter().map(|col| col.name.clone()).collect();
+            let data_types: Vec<String> = column_infos
+                .iter()
+                .map(|col| col.data_type.clone())
+                .collect();
+            let nullables: Vec<bool> = column_infos.iter().map(|col| col.nullable).collect();
+            let is_pks: Vec<bool> = column_infos.iter().map(|col| col.is_pk).collect();
 
             self.graph()
                 .run(
                     query(
                         "MATCH (t:Table {id: $table_id}) \
-                         CREATE (t)-[:HAS_COLUMN]->(c:Column { \
-                             id: $id, name: $name, data_type: $data_type, \
-                             nullable: $nullable, is_pk: $is_pk, table_id: $table_id \
+                         WITH t, range(0, size($ids) - 1) AS idxs \
+                         UNWIND idxs AS i \
+                         CREATE (t)-[:HAS_COLUMN]->(:Column { \
+                             id: $ids[i], name: $names[i], data_type: $data_types[i], \
+                             nullable: $nullables[i], is_pk: $is_pks[i], table_id: $table_id \
                          })",
                     )
                     .param("table_id", table_id as i64)
-                    .param("id", col_id as i64)
-                    .param("name", col.name.as_str())
-                    .param("data_type", col.data_type.as_str())
-                    .param("nullable", col.nullable)
-                    .param("is_pk", col.is_pk),
+                    .param("ids", ids)
+                    .param("names", names)
+                    .param("data_types", data_types)
+                    .param("nullables", nullables)
+                    .param("is_pks", is_pks),
                 )
                 .await
-                .context("failed to create Column node")?;
+                .context("failed to create Column nodes")?;
         }
 
         info!(
@@ -503,11 +553,12 @@ impl Neo4jConnection {
             cols = columns.len(),
             "table created"
         );
-        Ok(TableInfo {
+        let table = TableInfo {
             id: table_id,
             name: table_name.to_string(),
             db_id: db.id,
-        })
+        };
+        Ok((table, column_infos))
     }
 
     // ── DROP TABLE ──

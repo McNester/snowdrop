@@ -4,15 +4,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
-use tpch_bench::{tpch_markdown_section, BenchmarkOptions, QueryResult};
+use tpch_bench::{
+    read_benchmark_json_report, render_benchmark_results_markdown, tpch_markdown_section,
+    BenchmarkOptions, QueryResult,
+};
 
 const RAW_RESULTS_PATH: &str = "reports/raw/snowdrop-testkit-results.json";
 const REPORT_PATH: &str = "reports/test-report.md";
 const LEGACY_RAW_RESULTS_PATH: &str = "target/snowdrop-testkit/results.json";
 const MIGRATION_REPORT_DIR: &str = "reports/migration";
+const WRITE_DDL_BENCHMARK_JSON_PATH: &str = "reports/benchmarks/write-ddl-results.json";
+const WRITE_DDL_BENCHMARK_MD_PATH: &str = "reports/benchmarks/write-ddl-results.md";
 const PHASE3_RUNTIME_PROBE_DB: &str = "__snowdrop_phase3_probe";
 const SKIP_RUNTIME_PROBE_ENV: &str = "SNOWDROP_SKIP_RUNTIME_PROBE";
 
@@ -26,6 +32,24 @@ struct RuntimeConfig {
     health_port: u16,
     metrics_host: String,
     metrics_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WriteDdlBenchmarkReport {
+    generated_at: String,
+    runtime: RuntimeConfig,
+    database: String,
+    requested_insert_rows: u32,
+    measurements: Vec<WriteDdlMeasurement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WriteDdlMeasurement {
+    name: String,
+    detail: String,
+    rows: Option<u32>,
+    latency_ms: f64,
+    rows_per_second: Option<f64>,
 }
 
 impl RuntimeConfig {
@@ -141,8 +165,11 @@ struct UnifiedResults {
 struct TpchRunMeta {
     scale: usize,
     runs: u32,
+    warmup_runs: u32,
     seed: u64,
     with_indexes: bool,
+    pg_indexes: bool,
+    pg_analyze: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +213,7 @@ struct MigrationWorkflowReport {
     preflight: MigrationPreflightReport,
     summary: MigrationWorkflowSummary,
     table_runs: Vec<MigrationTableRun>,
+    benchmark_results: Vec<MigrationBenchmarkResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +258,9 @@ struct MigrationWorkflowSummary {
     aggregate_matches: usize,
     replay_queries_run: usize,
     replay_queries_matched: usize,
+    benchmark_queries_run: usize,
+    benchmark_queries_matched: usize,
+    benchmark_queries_snowdrop_faster: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,6 +335,7 @@ struct MigrationTableRun {
     ddl_applied: bool,
     load_status: String,
     source_row_count: Option<i64>,
+    load_timings: Option<MigrationLoadTimings>,
     target_row_count: Option<i64>,
     row_count_match: Option<bool>,
     sample_rows_match: Option<bool>,
@@ -313,12 +345,47 @@ struct MigrationTableRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationLoadTimings {
+    export_ms: f64,
+    literal_build_ms: f64,
+    snowdrop_insert_ms: f64,
+    total_ms: f64,
+    chunks: usize,
+    trusted_bulk_load: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LoadTableResult {
+    source_row_count: i64,
+    timings: MigrationLoadTimings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct MigrationReplayCheck {
     name: String,
     source_sql: String,
     target_sql: String,
     matched: Option<bool>,
     note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationBenchmarkCase {
+    name: String,
+    sql: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MigrationBenchmarkResult {
+    name: String,
+    description: Option<String>,
+    sql: String,
+    matched: bool,
+    source_latency_ms: f64,
+    target_latency_ms: f64,
+    speedup_vs_postgres: f64,
+    faster_engine: String,
 }
 
 #[derive(Debug, Clone)]
@@ -385,6 +452,7 @@ struct PreparedMigrationSource {
     logical_name: String,
     postgres_database: String,
     cleanup_database: Option<String>,
+    benchmark_queries_path: Option<PathBuf>,
 }
 
 enum Command {
@@ -400,6 +468,15 @@ enum Command {
         with_tpch: bool,
     },
     Report,
+    BenchmarkReport {
+        input: String,
+        output: String,
+    },
+    WriteDdlBenchmark {
+        rows: u32,
+        output_json: String,
+        output_md: String,
+    },
     MigrationPreflight {
         source: MigrationSourceArg,
         schema: Option<String>,
@@ -482,20 +559,28 @@ async fn async_main() -> Result<()> {
                 let options = BenchmarkOptions {
                     scale: 1,
                     with_indexes: true,
+                    pg_indexes: true,
+                    pg_analyze: true,
                     output_path: None,
                     snowdrop_host: runtime.snowdrop_host.clone(),
                     pg_host: runtime.postgres_host.clone(),
                     snowdrop_port: runtime.snowdrop_port,
                     pg_port: runtime.postgres_port,
                     runs: 3,
+                    warmup_runs: 2,
                     seed: 42,
+                    markdown_output_path: None,
+                    load_batch_size: 1000,
                 };
                 let results = tpch_bench::run_benchmark_suite(&options).await?;
                 let meta = TpchRunMeta {
                     scale: options.scale,
                     runs: options.runs,
+                    warmup_runs: options.warmup_runs,
                     seed: options.seed,
                     with_indexes: options.with_indexes,
+                    pg_indexes: options.pg_indexes,
+                    pg_analyze: options.pg_analyze,
                 };
                 (results, Some(meta))
             } else {
@@ -518,6 +603,22 @@ async fn async_main() -> Result<()> {
             let report = render_report(&results);
             fs::write(repo_root.join(REPORT_PATH), report)?;
             println!("Wrote {}", REPORT_PATH);
+        }
+        Command::BenchmarkReport { input, output } => {
+            let input_path = repo_root.join(&input);
+            let report = read_benchmark_json_report(&input_path.to_string_lossy())?;
+            let markdown = render_benchmark_results_markdown(&report, &input);
+            fs::write(repo_root.join(&output), markdown)?;
+            println!("Wrote {}", output);
+        }
+        Command::WriteDdlBenchmark {
+            rows,
+            output_json,
+            output_md,
+        } => {
+            let report = run_write_ddl_benchmark(&repo_root, &runtime, rows).await?;
+            write_write_ddl_benchmark_artifacts(&repo_root, &report, &output_json, &output_md)?;
+            print_write_ddl_benchmark_summary(&report);
         }
         Command::MigrationPreflight { source, schema } => {
             let report =
@@ -660,6 +761,21 @@ fn parse_command(args: &[String]) -> Result<Command> {
             with_tpch: args.iter().any(|arg| arg == "--with-tpch"),
         }),
         Some("report") => Ok(Command::Report),
+        Some("benchmark-report") => Ok(Command::BenchmarkReport {
+            input: read_flag(args, "--input")
+                .unwrap_or_else(|| "reports/benchmarks/tpch-results.json".into()),
+            output: read_flag(args, "--output")
+                .unwrap_or_else(|| "docs/benchmark-results.md".into()),
+        }),
+        Some("write-ddl-benchmark") => Ok(Command::WriteDdlBenchmark {
+            rows: read_flag(args, "--rows")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(100),
+            output_json: read_flag(args, "--output-json")
+                .unwrap_or_else(|| WRITE_DDL_BENCHMARK_JSON_PATH.into()),
+            output_md: read_flag(args, "--output-md")
+                .unwrap_or_else(|| WRITE_DDL_BENCHMARK_MD_PATH.into()),
+        }),
         Some("migration-preflight") => {
             let source = parse_migration_source(args)?;
             let schema = read_flag(args, "--schema");
@@ -686,7 +802,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         _ => Err(anyhow!(
-            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|migration-preflight|migration-run|migration-auto> [flags]"
+            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|benchmark-report|write-ddl-benchmark|migration-preflight|migration-run|migration-auto> [flags]"
         )),
     }
 }
@@ -1444,6 +1560,7 @@ async fn prepare_migration_source(
             logical_name: database.clone(),
             postgres_database: database.clone(),
             cleanup_database: None,
+            benchmark_queries_path: None,
         }),
         MigrationSourceArg::DumpDir {
             dump_dir,
@@ -1487,9 +1604,19 @@ async fn prepare_migration_source(
                 logical_name: source_database.clone(),
                 postgres_database: staging_database.clone(),
                 cleanup_database: Some(staging_database),
+                benchmark_queries_path: preferred_migration_benchmark_queries(dump_dir),
             })
         }
     }
+}
+
+fn preferred_migration_benchmark_queries(dump_dir: &Path) -> Option<PathBuf> {
+    let favorable = dump_dir.join("benchmark_queries_snowdrop_favorable.json");
+    if favorable.exists() {
+        return Some(favorable);
+    }
+    let gap_suite = dump_dir.join("benchmark_queries.json");
+    gap_suite.exists().then_some(gap_suite)
 }
 
 async fn cleanup_prepared_migration_source(
@@ -1583,6 +1710,7 @@ async fn run_migration_workflow(
         &prepared.postgres_database,
         schema_filter,
         target_database,
+        prepared.benchmark_queries_path.as_deref(),
     )
     .await;
     cleanup_prepared_migration_source(runtime, &prepared).await?;
@@ -1596,6 +1724,7 @@ async fn run_migration_workflow_for_source(
     postgres_database: &str,
     schema_filter: Option<&str>,
     target_database: Option<&str>,
+    benchmark_queries_path: Option<&Path>,
 ) -> Result<MigrationWorkflowReport> {
     let postgres = open_postgres_dataset(runtime, postgres_database).await?;
     let preflight = build_migration_preflight_report(
@@ -1635,6 +1764,7 @@ async fn run_migration_workflow_for_source(
             ddl_applied: false,
             load_status: "pending".into(),
             source_row_count: None,
+            load_timings: None,
             target_row_count: None,
             row_count_match: None,
             sample_rows_match: None,
@@ -1660,10 +1790,11 @@ async fn run_migration_workflow_for_source(
         }
         run.ddl_applied = true;
 
-        match load_table_rows(&postgres, &snowdrop, table).await {
-            Ok(source_row_count) => {
+        match load_table_rows(&postgres, &snowdrop, table, true).await {
+            Ok(load_result) => {
                 run.load_status = "loaded".into();
-                run.source_row_count = Some(source_row_count);
+                run.source_row_count = Some(load_result.source_row_count);
+                run.load_timings = Some(load_result.timings);
             }
             Err(err) => {
                 run.load_status = "load_failed".into();
@@ -1708,6 +1839,7 @@ async fn run_migration_workflow_for_source(
             ddl_applied: false,
             load_status: "blocked".into(),
             source_row_count: None,
+            load_timings: None,
             target_row_count: None,
             row_count_match: None,
             sample_rows_match: None,
@@ -1718,6 +1850,9 @@ async fn run_migration_workflow_for_source(
             ],
         });
     }
+
+    let benchmark_results =
+        run_migration_benchmarks(&postgres, &snowdrop, benchmark_queries_path).await?;
 
     let summary = MigrationWorkflowSummary {
         planned_tables: table_runs
@@ -1755,6 +1890,15 @@ async fn run_migration_workflow_for_source(
             .flat_map(|run| run.replay_checks.iter())
             .filter(|check| check.matched == Some(true))
             .count(),
+        benchmark_queries_run: benchmark_results.len(),
+        benchmark_queries_matched: benchmark_results
+            .iter()
+            .filter(|result| result.matched)
+            .count(),
+        benchmark_queries_snowdrop_faster: benchmark_results
+            .iter()
+            .filter(|result| result.faster_engine == "snowdrop")
+            .count(),
     };
 
     let report = MigrationWorkflowReport {
@@ -1766,6 +1910,7 @@ async fn run_migration_workflow_for_source(
         preflight,
         summary,
         table_runs,
+        benchmark_results,
     };
     write_migration_workflow_artifacts(repo_root, &report)?;
     Ok(report)
@@ -1839,18 +1984,54 @@ async fn run_migration_auto_for_source(
         ));
     }
 
-    let workflow = run_migration_workflow_for_source(
+    let workflow = match run_migration_workflow_for_source(
         repo_root,
         runtime,
         &prepared.logical_name,
         &prepared.postgres_database,
         schema_filter,
         target_database,
+        prepared.benchmark_queries_path.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(workflow) => workflow,
+        Err(err) => {
+            let report = MigrationAutoReport {
+                generated_at: Utc::now().to_rfc3339(),
+                runtime: runtime.clone(),
+                source_mode: migration_source_mode(source).to_string(),
+                source_database: prepared.logical_name.clone(),
+                source_schema_filter: schema_filter.map(str::to_string),
+                target_database: target_database.map(str::to_string),
+                success: false,
+                summary: MigrationAutoSummary {
+                    supported_tables: preflight.summary.supported_tables,
+                    partial_tables: preflight.summary.partial_tables,
+                    blocked_tables: preflight.summary.unsupported_tables
+                        + preflight.summary.ddl_blocked_tables,
+                    verification_passed: false,
+                },
+                blockers: vec![MigrationFinding {
+                    status: "unsupported".into(),
+                    object_kind: "workflow".into(),
+                    object_name: prepared.logical_name.clone(),
+                    category: "migration-run".into(),
+                    message: format!("automatic migration workflow failed: {err:#}"),
+                    recommendation:
+                        "inspect the workflow error, fix the fixture or runtime, then rerun migration-auto".into(),
+                }],
+                skipped_objects,
+                workflow: None,
+            };
+            write_migration_auto_artifacts(repo_root, &report)?;
+            return Err(err);
+        }
+    };
     let success = workflow.summary.planned_tables == workflow.summary.verified_tables
         && workflow.summary.planned_tables == workflow.summary.row_count_matches
-        && workflow.summary.planned_tables == workflow.summary.sample_matches;
+        && workflow.summary.planned_tables == workflow.summary.sample_matches
+        && workflow.summary.benchmark_queries_run == workflow.summary.benchmark_queries_matched;
     let report = MigrationAutoReport {
         generated_at: Utc::now().to_rfc3339(),
         runtime: runtime.clone(),
@@ -1931,6 +2112,9 @@ async fn build_migration_preflight_report(
         for index in indexes.iter().filter(|index| {
             index.schema_name == table.schema_name && index.table_name == table.table_name
         }) {
+            if is_constraint_backed_index(index, &table_report.constraints) {
+                continue;
+            }
             let index_report =
                 analyze_pg_index(&table.schema_name, &table.table_name, index, &mut findings);
             escalate_status(&mut table_report.status, &index_report.status);
@@ -1941,7 +2125,11 @@ async fn build_migration_preflight_report(
             .columns
             .iter()
             .all(|column| column.status == "supported")
-            && table_report.constraints.is_empty()
+            && table_report
+                .constraints
+                .iter()
+                .all(|constraint| constraint.status == "supported")
+            && table_report.indexes.is_empty()
         {
             table_report
                 .notes
@@ -2784,6 +2972,15 @@ fn is_synthesized_not_null_check(constraint: &PgConstraint) -> bool {
         && check_clause.to_lowercase().contains(" is not null")
 }
 
+fn is_constraint_backed_index(index: &PgIndex, constraints: &[MigrationConstraintReport]) -> bool {
+    constraints.iter().any(|constraint| {
+        matches!(
+            constraint.kind.to_uppercase().as_str(),
+            "PRIMARY KEY" | "UNIQUE"
+        ) && constraint.name == index.index_name
+    })
+}
+
 fn analyze_pg_index(
     schema_name: &str,
     table_name: &str,
@@ -3462,18 +3659,27 @@ async fn load_table_rows(
     postgres: &Client,
     snowdrop: &Client,
     table: &MigrationTableReport,
-) -> Result<i64> {
+    trusted_bulk_load: bool,
+) -> Result<LoadTableResult> {
+    let total_started = Instant::now();
+    let export_started = Instant::now();
     let rows = export_table_rows(postgres, table).await?;
+    let export_ms = export_started.elapsed().as_secs_f64() * 1000.0;
     let column_names: Vec<&str> = table
         .columns
         .iter()
         .map(|column| column.column_name.as_str())
         .collect();
 
+    let mut literal_build_ms = 0.0;
+    let mut snowdrop_insert_ms = 0.0;
+    let mut chunks = 0usize;
     for chunk in rows.chunks(1000) {
         if chunk.is_empty() {
             continue;
         }
+        chunks += 1;
+        let literal_started = Instant::now();
         let values = chunk
             .iter()
             .map(|row| {
@@ -3492,8 +3698,13 @@ async fn load_table_rows(
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES {};",
+        let insert_sql = format!(
+            "{}INSERT INTO {} ({}) VALUES {};",
+            if trusted_bulk_load {
+                "/* snowdrop:trusted_bulk_load */ "
+            } else {
+                ""
+            },
             sql_ident(&table.table_name),
             column_names
                 .iter()
@@ -3502,13 +3713,27 @@ async fn load_table_rows(
                 .join(", "),
             values
         );
+        literal_build_ms += literal_started.elapsed().as_secs_f64() * 1000.0;
+
+        let insert_started = Instant::now();
         snowdrop
-            .simple_query(&sql)
+            .simple_query(&insert_sql)
             .await
             .map_err(|err| anyhow!(format_db_error(&err)))?;
+        snowdrop_insert_ms += insert_started.elapsed().as_secs_f64() * 1000.0;
     }
 
-    Ok(rows.len() as i64)
+    Ok(LoadTableResult {
+        source_row_count: rows.len() as i64,
+        timings: MigrationLoadTimings {
+            export_ms,
+            literal_build_ms,
+            snowdrop_insert_ms,
+            total_ms: total_started.elapsed().as_secs_f64() * 1000.0,
+            chunks,
+            trusted_bulk_load,
+        },
+    })
 }
 
 async fn export_table_rows(
@@ -3741,6 +3966,83 @@ async fn verify_table_aggregates(
     Ok(Some(normalize_rows(source) == normalize_rows(target)))
 }
 
+async fn run_migration_benchmarks(
+    postgres: &Client,
+    snowdrop: &Client,
+    benchmark_queries_path: Option<&Path>,
+) -> Result<Vec<MigrationBenchmarkResult>> {
+    let Some(path) = benchmark_queries_path else {
+        return Ok(Vec::new());
+    };
+    let cases = load_migration_benchmark_cases(path)?;
+    let mut results = Vec::new();
+
+    for case in cases {
+        let (source_rows, source_latency_ms) = measure_benchmark_query(postgres, &case.sql, 3)
+            .await
+            .with_context(|| format!("could not benchmark PostgreSQL query '{}'", case.name))?;
+        let (target_rows, target_latency_ms) = measure_benchmark_query(snowdrop, &case.sql, 3)
+            .await
+            .with_context(|| format!("could not benchmark Snowdrop query '{}'", case.name))?;
+        let matched = normalize_rows(source_rows) == normalize_rows(target_rows);
+        let faster_engine = if target_latency_ms < source_latency_ms {
+            "snowdrop"
+        } else if source_latency_ms < target_latency_ms {
+            "postgres"
+        } else {
+            "tie"
+        };
+        let speedup_vs_postgres = if target_latency_ms > 0.0 {
+            source_latency_ms / target_latency_ms
+        } else {
+            0.0
+        };
+        results.push(MigrationBenchmarkResult {
+            name: case.name,
+            description: case.description,
+            sql: case.sql,
+            matched,
+            source_latency_ms,
+            target_latency_ms,
+            speedup_vs_postgres,
+            faster_engine: faster_engine.into(),
+        });
+    }
+
+    Ok(results)
+}
+
+fn load_migration_benchmark_cases(path: &Path) -> Result<Vec<MigrationBenchmarkCase>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("could not read benchmark query suite '{}'", path.display()))?;
+    let cases: Vec<MigrationBenchmarkCase> = serde_json::from_str(&raw)
+        .with_context(|| format!("could not parse benchmark query suite '{}'", path.display()))?;
+    Ok(cases)
+}
+
+async fn measure_benchmark_query(
+    client: &Client,
+    sql: &str,
+    runs: usize,
+) -> Result<(Vec<Vec<String>>, f64)> {
+    let _ = execute_query(client, sql)
+        .await
+        .map_err(|err| anyhow!(err))?;
+    let mut last_rows = Vec::new();
+    let mut total_ms = 0.0;
+
+    for _ in 0..runs {
+        let started = std::time::Instant::now();
+        let rows = execute_query(client, sql)
+            .await
+            .map_err(|err| anyhow!(err))?;
+        total_ms += started.elapsed().as_secs_f64() * 1000.0;
+        last_rows = rows;
+    }
+
+    Ok((last_rows, total_ms / runs as f64))
+}
+
 fn build_numeric_aggregate_sql(table: &MigrationTableReport, source_side: bool) -> String {
     let mut projections = vec!["COUNT(*)".to_string()];
     for column in table.columns.iter().filter(|column| {
@@ -3936,13 +4238,63 @@ fn render_migration_workflow_report(report: &MigrationWorkflowReport) -> String 
         "| Replay queries matched | {} |\n\n",
         report.summary.replay_queries_matched
     ));
+    out.push_str(&format!(
+        "| Benchmark queries run | {} |\n",
+        report.summary.benchmark_queries_run
+    ));
+    out.push_str(&format!(
+        "| Benchmark queries matched | {} |\n",
+        report.summary.benchmark_queries_matched
+    ));
+    out.push_str(&format!(
+        "| Benchmark queries faster on Snowdrop | {} |\n\n",
+        report.summary.benchmark_queries_snowdrop_faster
+    ));
+
+    if !report.benchmark_results.is_empty() {
+        out.push_str("## Post-Migration Benchmark\n\n");
+        out.push_str(
+            "| Query | Matched | PostgreSQL avg ms | Snowdrop avg ms | Speedup | Faster |\n",
+        );
+        out.push_str("|---|---|---|---|---|---|\n");
+        for result in &report.benchmark_results {
+            out.push_str(&format!(
+                "| {} | {} | {:.3} | {:.3} | {:.2}x | {} |\n",
+                result.name,
+                if result.matched { "yes" } else { "no" },
+                result.source_latency_ms,
+                result.target_latency_ms,
+                result.speedup_vs_postgres,
+                result.faster_engine
+            ));
+        }
+        out.push('\n');
+
+        for result in &report.benchmark_results {
+            out.push_str(&format!("### Benchmark `{}`\n\n", result.name));
+            if let Some(description) = result.description.as_deref() {
+                out.push_str(&format!("- {}\n", description));
+            }
+            out.push_str(&format!(
+                "- Result set matched: `{}`\n- PostgreSQL average latency: `{:.3} ms`\n- Snowdrop average latency: `{:.3} ms`\n- Speedup vs PostgreSQL: `{:.2}x`\n- Faster engine: `{}`\n\n",
+                result.matched,
+                result.source_latency_ms,
+                result.target_latency_ms,
+                result.speedup_vs_postgres,
+                result.faster_engine
+            ));
+            out.push_str("```sql\n");
+            out.push_str(&result.sql);
+            out.push_str("\n```\n\n");
+        }
+    }
 
     out.push_str("## Table Runs\n\n");
-    out.push_str("| Schema | Table | Translation | Load status | Source rows | Target rows | Count match | Sample match | Aggregate match |\n");
-    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("| Schema | Table | Translation | Load status | Source rows | Target rows | Load ms | Count match | Sample match | Aggregate match |\n");
+    out.push_str("|---|---|---|---|---|---|---:|---|---|---|\n");
     for run in &report.table_runs {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             run.schema_name,
             run.table_name,
             run.translation_status,
@@ -3952,6 +4304,10 @@ fn render_migration_workflow_report(report: &MigrationWorkflowReport) -> String 
                 .unwrap_or_else(|| "-".into()),
             run.target_row_count
                 .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+            run.load_timings
+                .as_ref()
+                .map(|value| format!("{:.1}", value.total_ms))
                 .unwrap_or_else(|| "-".into()),
             run.row_count_match
                 .map(|value| if value { "yes" } else { "no" })
@@ -3982,6 +4338,17 @@ fn render_migration_workflow_report(report: &MigrationWorkflowReport) -> String 
         }
         if let Some(value) = run.target_row_count {
             out.push_str(&format!("- Target row count: `{}`\n", value));
+        }
+        if let Some(timing) = run.load_timings.as_ref() {
+            out.push_str(&format!(
+                "- Load timing: total `{:.2} ms`, export `{:.2} ms`, literal build `{:.2} ms`, Snowdrop insert `{:.2} ms`, chunks `{}`, trusted bulk load `{}`\n",
+                timing.total_ms,
+                timing.export_ms,
+                timing.literal_build_ms,
+                timing.snowdrop_insert_ms,
+                timing.chunks,
+                timing.trusted_bulk_load
+            ));
         }
         for note in &run.notes {
             out.push_str(&format!("- {}\n", note));
@@ -4149,6 +4516,18 @@ fn print_migration_preflight_summary(report: &MigrationPreflightReport) {
 
 fn print_migration_workflow_summary(report: &MigrationWorkflowReport) {
     println!("\n=== Snowdrop Migration Workflow ===");
+    let completed = report.summary.planned_tables == report.summary.verified_tables
+        && report.summary.planned_tables == report.summary.row_count_matches
+        && report.summary.planned_tables == report.summary.sample_matches
+        && report.summary.blocked_tables == 0;
+    println!(
+        "status={}",
+        if completed {
+            "migration completed"
+        } else {
+            "migration failed or needs attention"
+        }
+    );
     println!("source_database={}", report.source_database);
     println!("target_database={}", report.target_database);
     if let Some(schema) = report.source_schema_filter.as_deref() {
@@ -4170,6 +4549,26 @@ fn print_migration_workflow_summary(report: &MigrationWorkflowReport) {
         report.summary.replay_queries_run,
         report.summary.replay_queries_matched
     );
+    println!(
+        "benchmark_queries_run={} benchmark_queries_matched={} benchmark_queries_snowdrop_faster={}",
+        report.summary.benchmark_queries_run,
+        report.summary.benchmark_queries_matched,
+        report.summary.benchmark_queries_snowdrop_faster
+    );
+    if !report.benchmark_results.is_empty() {
+        println!("\nPost-migration benchmark:");
+        for result in &report.benchmark_results {
+            println!(
+                "- {} matched={} postgres_ms={:.3} snowdrop_ms={:.3} speedup={:.2}x faster={}",
+                result.name,
+                result.matched,
+                result.source_latency_ms,
+                result.target_latency_ms,
+                result.speedup_vs_postgres,
+                result.faster_engine
+            );
+        }
+    }
     let non_green: Vec<&MigrationTableRun> = report
         .table_runs
         .iter()
@@ -4200,6 +4599,16 @@ fn print_migration_workflow_summary(report: &MigrationWorkflowReport) {
 
 fn print_migration_auto_summary(report: &MigrationAutoReport) {
     println!("\n=== Snowdrop Automatic Migration ===");
+    println!(
+        "status={}",
+        if report.success {
+            "migration completed"
+        } else if !report.blockers.is_empty() {
+            "migration blocked"
+        } else {
+            "migration failed"
+        }
+    );
     println!("source_mode={}", report.source_mode);
     println!("source_database={}", report.source_database);
     if let Some(target_database) = report.target_database.as_deref() {
@@ -4297,11 +4706,18 @@ fn normalize_cell(value: impl AsRef<str>) -> String {
     if raw.eq_ignore_ascii_case("false") || raw.eq_ignore_ascii_case("f") {
         return "FALSE".into();
     }
-    if let Ok(num) = raw.parse::<i64>() {
-        return num.to_string();
-    }
     if let Ok(num) = raw.parse::<f64>() {
-        return format!("{:.6}", num);
+        if num.is_finite() && (num.fract().abs() < 0.000_000_5) {
+            return format!("{:.0}", num);
+        }
+        let mut formatted = format!("{:.6}", num);
+        while formatted.contains('.') && formatted.ends_with('0') {
+            formatted.pop();
+        }
+        if formatted.ends_with('.') {
+            formatted.pop();
+        }
+        return formatted;
     }
     raw.to_string()
 }
@@ -4533,17 +4949,23 @@ fn print_console_summary(results: &UnifiedResults) {
     }
 
     if !results.tpch_results.is_empty() {
-        println!("\nTPC-H benchmark (warm averages):");
+        println!("\nTPC-H benchmark (measured-run medians):");
         for (query, label) in [
             ("Q6", "Revenue from discounted shipments"),
             ("Q1", "Pricing summary"),
             ("Q14", "Promotion effect"),
             ("Q3", "Shipping priority"),
         ] {
-            let sd = tpch_bench::warm_avg(&results.tpch_results, query, "Snowdrop", "baseline");
-            let sdi = tpch_bench::warm_avg(&results.tpch_results, query, "Snowdrop", "indexed");
-            let pg =
-                tpch_bench::warm_avg(&results.tpch_results, query, "PostgreSQL 16", "baseline");
+            let sd =
+                tpch_bench::measured_median(&results.tpch_results, query, "Snowdrop", "baseline");
+            let sdi =
+                tpch_bench::measured_median(&results.tpch_results, query, "Snowdrop", "indexed");
+            let pg = tpch_bench::measured_median(
+                &results.tpch_results,
+                query,
+                "PostgreSQL 16",
+                "baseline",
+            );
             let sd_str = if sd > 0.0 {
                 format!("{sd:.1}ms")
             } else {
@@ -4734,14 +5156,17 @@ fn render_report(results: &UnifiedResults) -> String {
     if !results.tpch_results.is_empty() {
         let tpch_meta = results.tpch_options.as_ref().map(|meta| {
             format!(
-                "Runs: `{}`. Seed: `{}`. Indexed phase: `{}`.\n\n",
+                "Measured runs: `{}`. Warmup runs: `{}`. Seed: `{}`. Snowdrop indexed phase: `{}`. PostgreSQL indexes: `{}`. PostgreSQL ANALYZE: `{}`.\n\n",
                 meta.runs,
+                meta.warmup_runs,
                 meta.seed,
                 if meta.with_indexes {
                     "enabled"
                 } else {
                     "disabled"
-                }
+                },
+                if meta.pg_indexes { "enabled" } else { "disabled" },
+                if meta.pg_analyze { "enabled" } else { "disabled" }
             )
         });
         if let Some(meta) = tpch_meta {
@@ -4949,6 +5374,219 @@ async fn http_get_text(host: &str, port: u16, path: &str) -> Result<String> {
     }
 }
 
+async fn run_write_ddl_benchmark(
+    _repo_root: &Path,
+    runtime: &RuntimeConfig,
+    rows: u32,
+) -> Result<WriteDdlBenchmarkReport> {
+    let rows = rows.max(1);
+    let database = "__snowdrop_write_ddl_bench".to_string();
+    let admin = open_snowdrop_admin(runtime).await?;
+    let _ = admin
+        .simple_query(&format!("DROP DATABASE {};", database))
+        .await;
+
+    let mut measurements = Vec::new();
+    measurements.push(
+        measure_simple_query(
+            &admin,
+            "create_database",
+            "CREATE DATABASE for an empty benchmark database",
+            &format!("CREATE DATABASE {};", database),
+            None,
+        )
+        .await?,
+    );
+    admin.simple_query(&format!("USE {};", database)).await?;
+    measurements.push(
+        measure_simple_query(
+            &admin,
+            "create_table",
+            "CREATE TABLE with PK, defaults, numeric/text/boolean/date columns",
+            "CREATE TABLE perf_items (
+                id BIGINT PRIMARY KEY,
+                customer_id BIGINT,
+                status VARCHAR(32) DEFAULT 'new',
+                amount NUMERIC DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_on DATE
+            );",
+            None,
+        )
+        .await?,
+    );
+    measurements.push(
+        measure_simple_query(
+            &admin,
+            "alter_table_add_column",
+            "ALTER TABLE ADD COLUMN with a DEFAULT",
+            "ALTER TABLE perf_items ADD COLUMN region VARCHAR(16) DEFAULT 'KZ';",
+            None,
+        )
+        .await?,
+    );
+    measurements.push(
+        measure_simple_query(
+            &admin,
+            "single_row_insert",
+            "One application-style INSERT statement",
+            "INSERT INTO perf_items (id, customer_id, status, amount, is_active, created_on) VALUES (1, 100, 'paid', 19.95, TRUE, '2026-05-20');",
+            Some(1),
+        )
+        .await?,
+    );
+
+    let started = Instant::now();
+    for idx in 0..rows {
+        let id = idx + 2;
+        let status = if idx % 5 == 0 { "refunded" } else { "paid" };
+        let active = if idx % 7 == 0 { "FALSE" } else { "TRUE" };
+        admin
+            .simple_query(&format!(
+                "INSERT INTO perf_items (id, customer_id, status, amount, is_active, created_on) VALUES ({}, {}, '{}', {}, {}, '2026-05-20');",
+                id,
+                1000 + idx,
+                status,
+                10 + (idx % 500),
+                active
+            ))
+            .await?;
+    }
+    let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+    measurements.push(WriteDdlMeasurement {
+        name: "row_by_row_bulk_insert".into(),
+        detail: "Current migration-style row-by-row insert loop".into(),
+        rows: Some(rows),
+        latency_ms,
+        rows_per_second: Some(rows as f64 / (latency_ms / 1000.0).max(0.001)),
+    });
+
+    let values = (0..rows)
+        .map(|idx| {
+            let id = rows + idx + 2;
+            let status = if idx % 5 == 0 { "refunded" } else { "paid" };
+            let active = if idx % 7 == 0 { "FALSE" } else { "TRUE" };
+            format!(
+                "({}, {}, '{}', {}, {}, '2026-05-20')",
+                id,
+                2000 + idx,
+                status,
+                20 + (idx % 500),
+                active
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let multi_insert_sql = format!(
+        "INSERT INTO perf_items (id, customer_id, status, amount, is_active, created_on) VALUES {};",
+        values
+    );
+    measurements.push(
+        measure_simple_query(
+            &admin,
+            "multi_values_insert",
+            "One INSERT statement with many VALUES rows; this exercises cached insert planning",
+            &multi_insert_sql,
+            Some(rows),
+        )
+        .await?,
+    );
+
+    Ok(WriteDdlBenchmarkReport {
+        generated_at: Utc::now().to_rfc3339(),
+        runtime: runtime.clone(),
+        database,
+        requested_insert_rows: rows,
+        measurements,
+    })
+}
+
+async fn measure_simple_query(
+    client: &Client,
+    name: &str,
+    detail: &str,
+    sql: &str,
+    rows: Option<u32>,
+) -> Result<WriteDdlMeasurement> {
+    let started = Instant::now();
+    client.simple_query(sql).await?;
+    let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(WriteDdlMeasurement {
+        name: name.into(),
+        detail: detail.into(),
+        rows,
+        latency_ms,
+        rows_per_second: rows.map(|count| count as f64 / (latency_ms / 1000.0).max(0.001)),
+    })
+}
+
+fn write_write_ddl_benchmark_artifacts(
+    repo_root: &Path,
+    report: &WriteDdlBenchmarkReport,
+    output_json: &str,
+    output_md: &str,
+) -> Result<()> {
+    if let Some(parent) = repo_root.join(output_json).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = repo_root.join(output_md).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        repo_root.join(output_json),
+        serde_json::to_string_pretty(report)?,
+    )?;
+    fs::write(
+        repo_root.join(output_md),
+        render_write_ddl_benchmark_report(report),
+    )?;
+    println!("Wrote {}", output_json);
+    println!("Wrote {}", output_md);
+    Ok(())
+}
+
+fn render_write_ddl_benchmark_report(report: &WriteDdlBenchmarkReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Snowdrop Write and DDL Benchmark\n\n");
+    out.push_str(&format!("Generated at: `{}`\n\n", report.generated_at));
+    out.push_str(&format!("Benchmark database: `{}`\n\n", report.database));
+    out.push_str("| Measurement | Detail | Rows | Latency | Throughput |\n");
+    out.push_str("|---|---|---:|---:|---:|\n");
+    for measurement in &report.measurements {
+        let rows = measurement
+            .rows
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".into());
+        let throughput = measurement
+            .rows_per_second
+            .map(|value| format!("{value:.1} rows/sec"))
+            .unwrap_or_else(|| "-".into());
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {:.2}ms | {} |\n",
+            measurement.name, measurement.detail, rows, measurement.latency_ms, throughput
+        ));
+    }
+    out.push_str("\n## How To Use This\n\n");
+    out.push_str("- Use this as the baseline before changing schema-cache, Neo4j batching, or migration bulk-load behavior.\n");
+    out.push_str("- The first target is not absolute parity with PostgreSQL; it is measurable improvement against this Snowdrop baseline.\n");
+    out
+}
+
+fn print_write_ddl_benchmark_summary(report: &WriteDdlBenchmarkReport) {
+    println!("\n=== Write/DDL Benchmark Summary ===");
+    println!("database={}", report.database);
+    for measurement in &report.measurements {
+        if let Some(rows_per_second) = measurement.rows_per_second {
+            println!(
+                "{}: {:.2}ms ({:.1} rows/sec)",
+                measurement.name, measurement.latency_ms, rows_per_second
+            );
+        } else {
+            println!("{}: {:.2}ms", measurement.name, measurement.latency_ms);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4998,16 +5636,19 @@ mod tests {
                     runs: vec![
                         RunResult {
                             run: 1,
+                            warmup: true,
                             latency_ms: 10.0,
                             row_count: 1,
                         },
                         RunResult {
                             run: 2,
+                            warmup: false,
                             latency_ms: 1.0,
                             row_count: 1,
                         },
                         RunResult {
                             run: 3,
+                            warmup: false,
                             latency_ms: 1.2,
                             row_count: 1,
                         },
@@ -5019,8 +5660,11 @@ mod tests {
             tpch_options: include_tpch.then_some(TpchRunMeta {
                 scale: 1,
                 runs: 3,
+                warmup_runs: 1,
                 seed: 42,
                 with_indexes: true,
+                pg_indexes: true,
+                pg_analyze: true,
             }),
         }
     }
@@ -5065,7 +5709,52 @@ mod tests {
         let report = render_report(&sample_results(true));
         assert!(report.contains("## TPC-H Benchmark"));
         assert!(report.contains("Q6"));
-        assert!(report.contains("Runs: `3`. Seed: `42`. Indexed phase: `enabled`."));
+        assert!(report.contains("Measured runs: `3`. Warmup runs: `1`. Seed: `42`."));
+    }
+
+    #[test]
+    fn parse_command_supports_benchmark_report() {
+        let args = vec![
+            "snowdrop-testkit".to_string(),
+            "benchmark-report".to_string(),
+            "--input".to_string(),
+            "reports/benchmarks/custom.json".to_string(),
+            "--output".to_string(),
+            "docs/custom-benchmark.md".to_string(),
+        ];
+        match parse_command(&args).unwrap() {
+            Command::BenchmarkReport { input, output } => {
+                assert_eq!(input, "reports/benchmarks/custom.json");
+                assert_eq!(output, "docs/custom-benchmark.md");
+            }
+            _ => panic!("expected benchmark report command"),
+        }
+    }
+
+    #[test]
+    fn parse_command_supports_write_ddl_benchmark() {
+        let args = vec![
+            "snowdrop-testkit".to_string(),
+            "write-ddl-benchmark".to_string(),
+            "--rows".to_string(),
+            "250".to_string(),
+            "--output-json".to_string(),
+            "reports/benchmarks/write.json".to_string(),
+            "--output-md".to_string(),
+            "reports/benchmarks/write.md".to_string(),
+        ];
+        match parse_command(&args).unwrap() {
+            Command::WriteDdlBenchmark {
+                rows,
+                output_json,
+                output_md,
+            } => {
+                assert_eq!(rows, 250);
+                assert_eq!(output_json, "reports/benchmarks/write.json");
+                assert_eq!(output_md, "reports/benchmarks/write.md");
+            }
+            _ => panic!("expected write ddl benchmark command"),
+        }
     }
 
     #[test]
@@ -5186,6 +5875,13 @@ mod tests {
     fn normalize_cell_unifies_postgres_boolean_spellings() {
         assert_eq!(normalize_cell("t"), "TRUE");
         assert_eq!(normalize_cell("false"), "FALSE");
+    }
+
+    #[test]
+    fn normalize_cell_unifies_numeric_spellings() {
+        assert_eq!(normalize_cell("800"), "800");
+        assert_eq!(normalize_cell("800.00"), "800");
+        assert_eq!(normalize_cell("12.340000"), "12.34");
     }
 
     #[test]
@@ -5636,6 +6332,9 @@ mod tests {
                 aggregate_matches: 1,
                 replay_queries_run: 3,
                 replay_queries_matched: 3,
+                benchmark_queries_run: 1,
+                benchmark_queries_matched: 1,
+                benchmark_queries_snowdrop_faster: 1,
             },
             table_runs: vec![MigrationTableRun {
                 schema_name: "public".into(),
@@ -5644,6 +6343,14 @@ mod tests {
                 ddl_applied: true,
                 load_status: "verified".into(),
                 source_row_count: Some(5),
+                load_timings: Some(MigrationLoadTimings {
+                    export_ms: 1.0,
+                    literal_build_ms: 2.0,
+                    snowdrop_insert_ms: 3.0,
+                    total_ms: 6.0,
+                    chunks: 1,
+                    trusted_bulk_load: true,
+                }),
                 target_row_count: Some(5),
                 row_count_match: Some(true),
                 sample_rows_match: Some(true),
@@ -5657,12 +6364,24 @@ mod tests {
                 }],
                 notes: vec!["all verification checks passed".into()],
             }],
+            benchmark_results: vec![MigrationBenchmarkResult {
+                name: "daily_revenue".into(),
+                description: Some("sanity-check revenue rollup".into()),
+                sql: "SELECT 1;".into(),
+                matched: true,
+                source_latency_ms: 4.0,
+                target_latency_ms: 2.0,
+                speedup_vs_postgres: 2.0,
+                faster_engine: "snowdrop".into(),
+            }],
         };
         let rendered = render_migration_workflow_report(&report);
         assert!(rendered.contains("# Snowdrop Migration Workflow"));
         assert!(rendered.contains("Target Snowdrop database: `appdb_snowdrop`"));
         assert!(rendered.contains("| Planned tables | 1 |"));
         assert!(rendered.contains("| Replay queries run | 3 |"));
+        assert!(rendered.contains("| Benchmark queries run | 1 |"));
+        assert!(rendered.contains("## Post-Migration Benchmark"));
         assert!(rendered.contains("### Replay Checks"));
         assert!(rendered.contains("all verification checks passed"));
     }

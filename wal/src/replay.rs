@@ -50,7 +50,17 @@ impl WalFile {
             };
 
             let mut payload_buf = vec![0u8; header.payload_len as usize];
-            reader.read_exact(&mut payload_buf)?;
+            if let Err(err) = reader.read_exact(&mut payload_buf) {
+                if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                    warn!(
+                        offset = file_offset,
+                        entry_id = header.entry_id,
+                        "ignoring truncated WAL tail during scan"
+                    );
+                    break;
+                }
+                return Err(err.into());
+            }
 
             let payload: WalPayload = bincode::deserialize(&payload_buf)?;
 
@@ -138,11 +148,56 @@ impl WalFile {
         Ok((entry_id, file_offset))
     }
 
+    /// Appends multiple entries to the WAL with a single file open and flush.
+    pub fn append_many(&mut self, payloads: Vec<WalPayload>) -> Result<Vec<(u64, u64)>, WalError> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let file = OpenOptions::new()
+            .write(true)
+            .append(false)
+            .open(&self.path)?;
+        let mut writer = BufWriter::new(file);
+        writer.seek(SeekFrom::End(0))?;
+
+        let mut entries = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            let file_offset = writer.stream_position()?;
+            let entry_id = self.next_entry_id;
+            crate::entry::append(&mut writer, entry_id, payload)?;
+            self.next_entry_id += 1;
+            entries.push((entry_id, file_offset));
+        }
+        writer.flush()?;
+
+        Ok(entries)
+    }
+
     /// Updates entry status at a given file offset.
     pub fn update_status(&self, file_offset: u64, status: WalStatus) -> Result<(), WalError> {
         let file = OpenOptions::new().write(true).open(&self.path)?;
         let mut writer = BufWriter::new(file);
         crate::entry::update_status(&mut writer, file_offset, status)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Updates multiple WAL entry statuses with a single file open and flush.
+    pub fn update_status_many(
+        &self,
+        file_offsets: &[u64],
+        status: WalStatus,
+    ) -> Result<(), WalError> {
+        if file_offsets.is_empty() {
+            return Ok(());
+        }
+
+        let file = OpenOptions::new().write(true).open(&self.path)?;
+        let mut writer = BufWriter::new(file);
+        for file_offset in file_offsets {
+            crate::entry::update_status(&mut writer, *file_offset, status)?;
+        }
         writer.flush()?;
         Ok(())
     }

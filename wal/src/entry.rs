@@ -109,6 +109,11 @@ pub enum WalPayloadV1 {
         row_id: String,
         col_ids: Vec<u32>,
     },
+    InsertBatch {
+        db_id: u32,
+        table_id: u32,
+        rows: Vec<(String, Vec<(u32, Vec<u8>)>)>,
+    },
 }
 
 #[derive(Debug)]

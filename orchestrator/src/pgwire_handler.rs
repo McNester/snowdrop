@@ -13,7 +13,7 @@ use pgwire::tokio::process_socket;
 use std::fmt::Debug;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct SnowdropStartupHandler;
 
@@ -35,7 +35,7 @@ impl SimpleQueryHandler for SnowdropQueryHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        info!(query = query_str, "received query");
+        debug!(query_len = query_str.len(), "received query");
 
         // Set current database from pgwire startup parameter if provided
         if let Some(db) = client.metadata().get("database") {

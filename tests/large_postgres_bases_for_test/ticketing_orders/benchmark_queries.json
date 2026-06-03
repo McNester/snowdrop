@@ -1,0 +1,27 @@
+[
+  {
+    "name": "category_revenue_rollup",
+    "description": "Join-heavy revenue rollup by event category over events, shows, and order_items.",
+    "sql": "SELECT e.category, COUNT(*) AS line_count, SUM(oi.line_total) AS gross_revenue FROM events e JOIN shows s ON s.event_id = e.id JOIN order_items oi ON oi.show_id = s.id GROUP BY e.category ORDER BY gross_revenue DESC, e.category;"
+  },
+  {
+    "name": "city_ticket_pressure",
+    "description": "Operational ticket-demand dashboard by city over venues, events, shows, and tickets.",
+    "sql": "SELECT v.city, COUNT(*) AS issued_tickets FROM venues v JOIN events e ON e.venue_id = v.id JOIN shows s ON s.event_id = e.id JOIN tickets t ON t.show_id = s.id WHERE t.ticket_status = 'issued' GROUP BY v.city ORDER BY issued_tickets DESC, v.city;"
+  },
+  {
+    "name": "customer_tier_revenue",
+    "description": "Read-heavy customer rollup across customers, accounts, and orders.",
+    "sql": "SELECT c.tier, COUNT(*) AS order_count, SUM(o.grand_total) AS gross_revenue FROM customers c JOIN accounts a ON a.customer_id = c.id JOIN orders o ON o.account_id = a.id WHERE o.order_status = 'placed' GROUP BY c.tier ORDER BY gross_revenue DESC, c.tier;"
+  },
+  {
+    "name": "promotion_discount_rollup",
+    "description": "LEFT JOIN reporting query that measures order volume and discount usage by promotion activity.",
+    "sql": "SELECT p.active, COUNT(o.id) AS order_count, SUM(o.discount_total) AS total_discount FROM promotions p LEFT JOIN orders o ON o.promo_id = p.id GROUP BY p.active ORDER BY p.active;"
+  },
+  {
+    "name": "audit_day_activity",
+    "description": "High-row-count dashboard query over audit_events for daily activity trends.",
+    "sql": "SELECT event_day, event_kind, COUNT(*) AS activity_count FROM audit_events GROUP BY event_day, event_kind ORDER BY event_day, event_kind LIMIT 60;"
+  }
+]
