@@ -98,6 +98,25 @@ This workflow is intentionally separate from the legacy `docker-compose.yml`
 path. The old path remains the compatibility baseline; the SQLite path is the
 measuring ground for removing Neo4j from hot runtime and DML paths.
 
+### Measured Migration Signal
+
+The Test Flight fixture was migrated through both the legacy Neo4j-backed
+runtime and the new SQLite catalog runtime. The source fixture is the same safe
+8-table demo database; timings below are from the generated migration workflow
+artifacts and focus on the Snowdrop insert stage.
+
+| Runtime path | Tables | Rows verified | Snowdrop insert stage | Total table load time | Result |
+|---|---:|---:|---:|---:|---|
+| Neo4j catalog runtime | 8 | 80,680 | `123.4s` | `127.1s` | baseline |
+| SQLite catalog runtime | 8 | 80,680 | `2.32s` | `5.74s` | `~53x faster insert stage` |
+
+This is strong evidence that moving catalog-sensitive DML and migration load
+off the Neo4j runtime path is the correct architecture direction. The remaining
+time in the SQLite run is now mostly PostgreSQL export and SQL literal build,
+not Snowdrop catalog round-trips. The next migration-load optimization should
+therefore target binary/bulk input and less expensive SQL literal construction,
+not another Neo4j workaround.
+
 ## Phase B: Catalog Migration
 
 Move schema operations behind `CatalogStore` one group at a time:
