@@ -67,11 +67,14 @@ Status: started.
 - `DELETE` now has the first embedded-catalog path as well. SQLite catalog mode
   resolves table metadata and referencing foreign-key checks from `CatalogStore`,
   then calls `delete_with_metadata(...)` without requiring a Neo4j connection.
+- WAL storage replay now has an embedded-catalog metadata path. Startup in
+  SQLite catalog mode can replay `Neo4jCommitted` storage mutations using
+  `CatalogStore` metadata instead of requiring a Neo4j connection.
 
-Important boundary: some unsupported DDL and WAL replay still require
-`Neo4jConnection`. SQLite catalog mode now owns basic database/table lifecycle
-metadata plus the first plan-based INSERT, UPDATE, and DELETE paths, but Snowdrop
-is not yet fully Neo4j-free.
+Important boundary: some unsupported DDL and catalog-level recovery semantics
+still require the legacy path. SQLite catalog mode now owns basic database/table
+lifecycle metadata plus the first plan-based INSERT, UPDATE, DELETE, and storage
+WAL replay paths, but Snowdrop is not yet fully Neo4j-free.
 
 ## Phase B: Catalog Migration
 
@@ -88,7 +91,8 @@ Move schema operations behind `CatalogStore` one group at a time:
 - non-key UPDATE: wired for SQLite catalog mode
 - key-changing UPDATE: wired for SQLite catalog mode with catalog-derived FK
   target and referencing-table checks
-- write replay: still legacy Neo4j-backed
+- write replay: storage replay wired for SQLite catalog mode; broader
+  catalog-level recovery semantics still need a dedicated pass
 - DELETE: wired for SQLite catalog mode with catalog-derived referencing FK
   checks
 - migration artifact recording

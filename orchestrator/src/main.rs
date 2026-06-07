@@ -154,13 +154,13 @@ async fn main() -> Result<()> {
     if embedded_catalog_only {
         warn!(
             "SNOWDROP_CATALOG_BACKEND=sqlite enables embedded catalog reads and basic \
-             database/table DDL; Neo4j is still required for legacy ALTER/write/replay paths"
+             database/table DDL; Neo4j is still required for unsupported legacy DDL paths"
         );
     }
 
     // Step 4: Verify Neo4j connectivity when the selected mode still needs the
-    // legacy catalog. SQLite mode can start without Neo4j as long as WAL replay
-    // is not pending.
+    // legacy catalog. SQLite mode can start without Neo4j and replays storage
+    // WAL entries through the embedded catalog metadata path.
     let neo4j_uri =
         std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let neo4j_user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
@@ -209,19 +209,33 @@ async fn main() -> Result<()> {
 
     // Step 6: Re-execute writes for Neo4jCommitted entries
     if !needs_replay.is_empty() {
-        let Some(neo4j_ref) = neo4j.as_ref() else {
-            anyhow::bail!(
-                "WAL replay has {} pending entries, but Neo4j is disabled by SNOWDROP_CATALOG_BACKEND=sqlite; start with neo4j|mirror mode or clear/recover the WAL before embedded-only startup",
-                needs_replay.len()
-            );
-        };
         info!(
             count = needs_replay.len(),
             "replaying WAL entries to storage"
         );
-        executor::replay_wal_entries(storage.as_ref(), neo4j_ref, &needs_replay, &wal)
+        if embedded_catalog_only {
+            let Some(catalog) = catalog_store.as_ref() else {
+                anyhow::bail!("SQLite catalog backend selected but embedded catalog is missing");
+            };
+            executor::replay_wal_entries_with_catalog(
+                storage.as_ref(),
+                catalog.as_ref(),
+                &needs_replay,
+                &wal,
+            )
             .await
-            .context("WAL replay failed")?;
+            .context("embedded catalog WAL replay failed")?;
+        } else {
+            let Some(neo4j_ref) = neo4j.as_ref() else {
+                anyhow::bail!(
+                    "WAL replay has {} pending entries, but Neo4j is unavailable",
+                    needs_replay.len()
+                );
+            };
+            executor::replay_wal_entries(storage.as_ref(), neo4j_ref, &needs_replay, &wal)
+                .await
+                .context("WAL replay failed")?;
+        }
     }
 
     // Step 7: Mark ready, begin accepting pgwire connections

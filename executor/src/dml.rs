@@ -4,8 +4,8 @@ use crate::storage::StorageBackend;
 use anyhow::{bail, Context, Result};
 use keys::{build_row_key, encode_row_id};
 use schema::{
-    ColumnInfo, DatabaseInfo, ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo,
-    TableInfo, UniqueConstraintInfo,
+    CatalogStore, ColumnInfo, DatabaseInfo, ForeignKeyConstraintInfo, Neo4jConnection,
+    TableConstraintsInfo, TableInfo, UniqueConstraintInfo,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -1977,6 +1977,97 @@ pub async fn replay_wal_entries(
     entries: &[wal::WalEntry],
     wal_file: &WalFile,
 ) -> Result<()> {
+    replay_wal_entries_with_metadata(storage, ReplayMetadata::Neo4j(neo4j), entries, wal_file).await
+}
+
+pub async fn replay_wal_entries_with_catalog(
+    storage: &dyn StorageBackend,
+    catalog: &dyn CatalogStore,
+    entries: &[wal::WalEntry],
+    wal_file: &WalFile,
+) -> Result<()> {
+    replay_wal_entries_with_metadata(storage, ReplayMetadata::Catalog(catalog), entries, wal_file)
+        .await
+}
+
+enum ReplayMetadata<'a> {
+    Neo4j(&'a Neo4jConnection),
+    Catalog(&'a dyn CatalogStore),
+}
+
+impl<'a> ReplayMetadata<'a> {
+    async fn indexed_cols(
+        &self,
+        cache: &mut HashMap<(u32, u32), Vec<ColumnInfo>>,
+        db_id: u32,
+        table_id: u32,
+    ) -> Result<Vec<ColumnInfo>> {
+        match self {
+            ReplayMetadata::Neo4j(neo4j) => {
+                lookup_indexed_cols(neo4j, cache, db_id, table_id).await
+            }
+            ReplayMetadata::Catalog(catalog) => {
+                if let Some(cached) = cache.get(&(db_id, table_id)) {
+                    return Ok(cached.clone());
+                }
+                let indexed = catalog
+                    .list_columns(table_id)
+                    .await?
+                    .into_iter()
+                    .filter(|column| column.indexed)
+                    .collect::<Vec<_>>();
+                cache.insert((db_id, table_id), indexed.clone());
+                Ok(indexed)
+            }
+        }
+    }
+
+    async fn schema_cols(
+        &self,
+        cache: &mut HashMap<(u32, u32), Vec<ColumnInfo>>,
+        db_id: u32,
+        table_id: u32,
+    ) -> Result<Vec<ColumnInfo>> {
+        match self {
+            ReplayMetadata::Neo4j(neo4j) => lookup_schema_cols(neo4j, cache, db_id, table_id).await,
+            ReplayMetadata::Catalog(catalog) => {
+                if let Some(cached) = cache.get(&(db_id, table_id)) {
+                    return Ok(cached.clone());
+                }
+                let columns = catalog.list_columns(table_id).await?;
+                cache.insert((db_id, table_id), columns.clone());
+                Ok(columns)
+            }
+        }
+    }
+
+    async fn constraints(
+        &self,
+        cache: &mut HashMap<(u32, u32), TableConstraintsInfo>,
+        db_id: u32,
+        table_id: u32,
+    ) -> Result<TableConstraintsInfo> {
+        match self {
+            ReplayMetadata::Neo4j(neo4j) => lookup_constraints(neo4j, cache, db_id, table_id).await,
+            ReplayMetadata::Catalog(catalog) => {
+                if let Some(cached) = cache.get(&(db_id, table_id)) {
+                    return Ok(cached.clone());
+                }
+                let constraints = catalog.get_constraints(table_id).await?;
+                cache.insert((db_id, table_id), constraints.clone());
+                Ok(constraints)
+            }
+        }
+    }
+}
+
+/// Replay WAL entries to storage using the selected metadata backend.
+async fn replay_wal_entries_with_metadata(
+    storage: &dyn StorageBackend,
+    metadata: ReplayMetadata<'_>,
+    entries: &[wal::WalEntry],
+    wal_file: &WalFile,
+) -> Result<()> {
     let mut idx_cache: HashMap<(u32, u32), Vec<ColumnInfo>> = HashMap::new();
     let mut schema_cache: HashMap<(u32, u32), Vec<ColumnInfo>> = HashMap::new();
     let mut constraints_cache: HashMap<(u32, u32), TableConstraintsInfo> = HashMap::new();
@@ -1993,10 +2084,12 @@ pub async fn replay_wal_entries(
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
                 let row_value = serialize_columns(columns);
                 let mut pairs = vec![(row_key, row_value)];
-                let schema_cols =
-                    lookup_schema_cols(neo4j, &mut schema_cache, *db_id, *table_id).await?;
-                let constraints =
-                    lookup_constraints(neo4j, &mut constraints_cache, *db_id, *table_id).await?;
+                let schema_cols = metadata
+                    .schema_cols(&mut schema_cache, *db_id, *table_id)
+                    .await?;
+                let constraints = metadata
+                    .constraints(&mut constraints_cache, *db_id, *table_id)
+                    .await?;
 
                 let pk_key = build_primary_key_mapping_key_from_columns(
                     *db_id,
@@ -2016,7 +2109,9 @@ pub async fn replay_wal_entries(
                 )?);
 
                 // Replay index entries
-                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                let indexed = metadata
+                    .indexed_cols(&mut idx_cache, *db_id, *table_id)
+                    .await?;
                 if !indexed.is_empty() {
                     pairs.extend(build_index_entries_for_row(
                         *db_id, *table_id, row_id_raw, columns, &indexed,
@@ -2031,11 +2126,15 @@ pub async fn replay_wal_entries(
                 table_id,
                 rows,
             }) => {
-                let schema_cols =
-                    lookup_schema_cols(neo4j, &mut schema_cache, *db_id, *table_id).await?;
-                let constraints =
-                    lookup_constraints(neo4j, &mut constraints_cache, *db_id, *table_id).await?;
-                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                let schema_cols = metadata
+                    .schema_cols(&mut schema_cache, *db_id, *table_id)
+                    .await?;
+                let constraints = metadata
+                    .constraints(&mut constraints_cache, *db_id, *table_id)
+                    .await?;
+                let indexed = metadata
+                    .indexed_cols(&mut idx_cache, *db_id, *table_id)
+                    .await?;
                 let mut pairs = Vec::new();
 
                 for (row_id, columns) in rows {
@@ -2083,10 +2182,12 @@ pub async fn replay_wal_entries(
             }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
-                let schema_cols =
-                    lookup_schema_cols(neo4j, &mut schema_cache, *db_id, *table_id).await?;
-                let constraints =
-                    lookup_constraints(neo4j, &mut constraints_cache, *db_id, *table_id).await?;
+                let schema_cols = metadata
+                    .schema_cols(&mut schema_cache, *db_id, *table_id)
+                    .await?;
+                let constraints = metadata
+                    .constraints(&mut constraints_cache, *db_id, *table_id)
+                    .await?;
 
                 let mut existing = if let Some(data) = storage.get(&row_key).await? {
                     deserialize_columns(&data)
@@ -2109,7 +2210,9 @@ pub async fn replay_wal_entries(
                 )?;
 
                 // Delete old index entries
-                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                let indexed = metadata
+                    .indexed_cols(&mut idx_cache, *db_id, *table_id)
+                    .await?;
                 if !indexed.is_empty() {
                     let old_keys = build_index_keys_for_row(
                         *db_id, *table_id, row_id_raw, &existing, &indexed,
@@ -2170,13 +2273,17 @@ pub async fn replay_wal_entries(
             }) => {
                 let row_id_raw = keys::decode_base62(row_id)?;
                 let row_key = build_row_key(*db_id, *table_id, row_id_raw)?;
-                let schema_cols =
-                    lookup_schema_cols(neo4j, &mut schema_cache, *db_id, *table_id).await?;
-                let constraints =
-                    lookup_constraints(neo4j, &mut constraints_cache, *db_id, *table_id).await?;
+                let schema_cols = metadata
+                    .schema_cols(&mut schema_cache, *db_id, *table_id)
+                    .await?;
+                let constraints = metadata
+                    .constraints(&mut constraints_cache, *db_id, *table_id)
+                    .await?;
 
                 // Delete index entries before deleting row
-                let indexed = lookup_indexed_cols(neo4j, &mut idx_cache, *db_id, *table_id).await?;
+                let indexed = metadata
+                    .indexed_cols(&mut idx_cache, *db_id, *table_id)
+                    .await?;
                 if !indexed.is_empty() {
                     if let Some(data) = storage.get(&row_key).await? {
                         let existing = deserialize_columns(&data);
@@ -2397,6 +2504,84 @@ mod tests {
         let vals = vec![b"val".to_vec()];
 
         assert!(resolve_columns(&cols, &names, &vals).is_err());
+    }
+
+    #[tokio::test]
+    async fn replay_wal_entries_with_catalog_replays_insert_without_neo4j() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = schema::SQLiteCatalogStore::open(&catalog_path).unwrap();
+        catalog.init_catalog().await.unwrap();
+        catalog.create_database("default").await.unwrap();
+        let (table, columns) = catalog
+            .create_table(
+                "default",
+                "items",
+                vec![
+                    schema::ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    schema::ColumnDefinition {
+                        name: "name".to_string(),
+                        data_type: "TEXT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let id_col = columns.iter().find(|column| column.name == "id").unwrap();
+        let name_col = columns.iter().find(|column| column.name == "name").unwrap();
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = crate::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap();
+        let wal_path = dir.path().join("wal.log");
+        let mut wal = WalFile::open(&wal_path).unwrap();
+        let row_id = encode_row_id(1).unwrap();
+        let columns = vec![(id_col.id, b"1".to_vec()), (name_col.id, b"alpha".to_vec())];
+        wal.append_with_status(
+            WalPayload::V1(WalPayloadV1::Insert {
+                db_id: table.db_id,
+                table_id: table.id,
+                row_id: row_id.clone(),
+                columns: columns.clone(),
+            }),
+            WalStatus::Neo4jCommitted,
+        )
+        .unwrap();
+        let needs_replay = wal.replay().unwrap();
+        assert_eq!(needs_replay.len(), 1);
+
+        replay_wal_entries_with_catalog(&storage, &catalog, &needs_replay, &wal)
+            .await
+            .unwrap();
+
+        let row_key = build_row_key(table.db_id, table.id, 1).unwrap();
+        assert!(storage.get(&row_key).await.unwrap().is_some());
+
+        let pk_key = build_primary_key_mapping_key_from_columns(
+            table.db_id,
+            table.id,
+            &catalog.list_columns(table.id).await.unwrap(),
+            &catalog.get_constraints(table.id).await.unwrap(),
+            &columns,
+        )
+        .unwrap();
+        assert_eq!(
+            storage.get(&pk_key).await.unwrap().unwrap(),
+            row_id.as_bytes().to_vec()
+        );
+
+        let entries = wal.scan_all().unwrap();
+        assert_eq!(entries[0].header.status, WalStatus::Committed as u8);
     }
 
     #[test]
