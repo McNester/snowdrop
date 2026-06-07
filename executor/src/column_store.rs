@@ -182,7 +182,13 @@ impl TableColumns {
 
     /// Retrieve a typed value for a specific row and column (for building Row objects).
     pub fn get_typed_value(&self, row_idx: usize, col: &ColumnInfo) -> TypedValue {
-        if let Some((typed_col, null_bm)) = self.columns.get(&col.id) {
+        self.get_typed_value_by_id(row_idx, col.id)
+    }
+
+    /// Same as [`get_typed_value`], keyed directly by column id. Lets hot loops
+    /// resolve a pre-known column without re-scanning the schema by name.
+    pub fn get_typed_value_by_id(&self, row_idx: usize, col_id: u32) -> TypedValue {
+        if let Some((typed_col, null_bm)) = self.columns.get(&col_id) {
             if null_bm.is_null(row_idx) {
                 return TypedValue::Null;
             }

@@ -8690,9 +8690,6 @@ fn compute_columnar_aggregate_rows(
     bitmap: &Bitmap,
     schema_cols: &[ColumnInfo],
 ) -> PgWireResult<Vec<Row>> {
-    if let Some(rows) = try_compute_tpch_q1_aggregate_rows(plan, table_cols, bitmap, schema_cols)? {
-        return Ok(rows);
-    }
     if let Some(rows) =
         try_compute_simple_grouped_columnar_aggregate_rows(plan, table_cols, bitmap, schema_cols)
     {
@@ -8724,24 +8721,26 @@ fn compute_columnar_aggregate_rows(
         )]);
     }
 
-    let mut buckets: HashMap<Vec<String>, AggregateBucket> = HashMap::new();
+    let mut buckets: HashMap<String, AggregateBucket> = HashMap::new();
+    let mut key = String::new();
     for idx in bitmap.iter_set_bits() {
-        let key: Vec<String> = plan
-            .group_exprs
-            .iter()
-            .map(|expr| {
-                typed_value_to_group_key(&resolve_columnar_value(
-                    expr,
-                    idx,
-                    table_cols,
-                    schema_cols,
-                ))
-            })
-            .collect();
-        let bucket = buckets.entry(key).or_insert_with(|| AggregateBucket {
-            first_row_idx: Some(idx),
-            states: plan.state_specs.iter().map(init_aggregate_state).collect(),
-        });
+        key.clear();
+        for expr in &plan.group_exprs {
+            let value = resolve_columnar_value(expr, idx, table_cols, schema_cols);
+            append_typed_value_group_key(&mut key, &value);
+        }
+        let bucket = if let Some(bucket) = buckets.get_mut(&key) {
+            bucket
+        } else {
+            buckets.insert(
+                key.clone(),
+                AggregateBucket {
+                    first_row_idx: Some(idx),
+                    states: plan.state_specs.iter().map(init_aggregate_state).collect(),
+                },
+            );
+            buckets.get_mut(&key).unwrap()
+        };
         update_aggregate_states(
             &mut bucket.states,
             &plan.state_specs,
@@ -8755,6 +8754,209 @@ fn compute_columnar_aggregate_rows(
         .values()
         .map(|bucket| aggregate_bucket_to_row(plan, bucket, table_cols, schema_cols))
         .collect())
+}
+
+// ── Compiled numeric kernels for aggregate arguments ──
+//
+// An aggregate argument such as `l_extendedprice * (1 - l_discount)` is compiled
+// once into a tree of column references and literals that borrow the columnar
+// arrays directly. Evaluating it per row is then a few array reads and float
+// ops — no per-row schema lookup, no TypedValue boxing. NULL propagates: if any
+// column operand is NULL the whole expression is NULL.
+
+enum ColData<'a> {
+    Float(&'a [f64], &'a column_store::NullBitmap),
+    Int(&'a [i64], &'a column_store::NullBitmap),
+}
+
+impl ColData<'_> {
+    #[inline]
+    fn get(&self, idx: usize) -> Option<f64> {
+        match self {
+            ColData::Float(values, nulls) => (!nulls.is_null(idx)).then(|| values[idx]),
+            ColData::Int(values, nulls) => (!nulls.is_null(idx)).then(|| values[idx] as f64),
+        }
+    }
+}
+
+enum NumKernel<'a> {
+    Col(ColData<'a>),
+    Lit(f64),
+    Neg(Box<NumKernel<'a>>),
+    Binary {
+        op: sqlparser::ast::BinaryOperator,
+        left: Box<NumKernel<'a>>,
+        right: Box<NumKernel<'a>>,
+    },
+}
+
+impl NumKernel<'_> {
+    #[inline]
+    fn eval(&self, idx: usize) -> Option<f64> {
+        match self {
+            NumKernel::Col(col) => col.get(idx),
+            NumKernel::Lit(value) => Some(*value),
+            NumKernel::Neg(inner) => inner.eval(idx).map(|v| -v),
+            NumKernel::Binary { op, left, right } => {
+                use sqlparser::ast::BinaryOperator as B;
+                let a = left.eval(idx)?;
+                let b = right.eval(idx)?;
+                match op {
+                    B::Plus => Some(a + b),
+                    B::Minus => Some(a - b),
+                    B::Multiply => Some(a * b),
+                    B::Divide => (b != 0.0).then(|| a / b),
+                    B::Modulo => (b != 0.0).then(|| a % b),
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
+/// Compile a numeric aggregate argument into a [`NumKernel`] borrowing the
+/// columnar arrays. Returns None for anything not a numeric column / literal /
+/// supported arithmetic — caller falls back to the general aggregate loop.
+fn compile_num_kernel<'a>(
+    expr: &Expr,
+    table_cols: &'a TableColumns,
+    schema_cols: &[ColumnInfo],
+) -> Option<NumKernel<'a>> {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
+            let col_id = column_id_for_expr(expr, schema_cols)?;
+            match table_cols.columns.get(&col_id)? {
+                (TypedColumn::Float64(values), nulls) => {
+                    Some(NumKernel::Col(ColData::Float(values, nulls)))
+                }
+                (TypedColumn::Int64(values), nulls) => {
+                    Some(NumKernel::Col(ColData::Int(values, nulls)))
+                }
+                _ => None,
+            }
+        }
+        Expr::Value(_) => resolve_literal(expr)?.as_f64().map(NumKernel::Lit),
+        Expr::UnaryOp {
+            op: sqlparser::ast::UnaryOperator::Minus,
+            expr,
+        } => Some(NumKernel::Neg(Box::new(compile_num_kernel(
+            expr,
+            table_cols,
+            schema_cols,
+        )?))),
+        Expr::BinaryOp { left, op, right } => {
+            use sqlparser::ast::BinaryOperator as B;
+            if !matches!(
+                op,
+                B::Plus | B::Minus | B::Multiply | B::Divide | B::Modulo
+            ) {
+                return None;
+            }
+            Some(NumKernel::Binary {
+                op: op.clone(),
+                left: Box::new(compile_num_kernel(left, table_cols, schema_cols)?),
+                right: Box::new(compile_num_kernel(right, table_cols, schema_cols)?),
+            })
+        }
+        Expr::Nested(inner) => compile_num_kernel(inner, table_cols, schema_cols),
+        _ => None,
+    }
+}
+
+/// One compiled aggregate accumulator, resolved once before the row loop.
+enum AggKernel<'a> {
+    CountStar,
+    CountCol(u32),
+    Sum(NumKernel<'a>),
+    Avg(NumKernel<'a>),
+    Min(u32),
+    Max(u32),
+}
+
+fn compile_agg_kernel<'a>(
+    spec: &AggregateSpec,
+    table_cols: &'a TableColumns,
+    schema_cols: &[ColumnInfo],
+) -> Option<AggKernel<'a>> {
+    match spec.func_name.as_str() {
+        "COUNT" => match spec.arg_expr.as_ref() {
+            None => Some(AggKernel::CountStar),
+            Some(expr) => Some(AggKernel::CountCol(column_id_for_expr(expr, schema_cols)?)),
+        },
+        "SUM" => Some(AggKernel::Sum(compile_num_kernel(
+            spec.arg_expr.as_ref()?,
+            table_cols,
+            schema_cols,
+        )?)),
+        "AVG" => Some(AggKernel::Avg(compile_num_kernel(
+            spec.arg_expr.as_ref()?,
+            table_cols,
+            schema_cols,
+        )?)),
+        // MIN/MAX accept any orderable column (numeric, text, date); compare via
+        // TypedValue. Expression arguments are not supported here.
+        "MIN" => Some(AggKernel::Min(column_id_for_expr(
+            spec.arg_expr.as_ref()?,
+            schema_cols,
+        )?)),
+        "MAX" => Some(AggKernel::Max(column_id_for_expr(
+            spec.arg_expr.as_ref()?,
+            schema_cols,
+        )?)),
+        _ => None,
+    }
+}
+
+#[inline]
+fn update_state_with_kernel(
+    state: &mut AggregateState,
+    kernel: &AggKernel,
+    table_cols: &TableColumns,
+    idx: usize,
+) {
+    match (state, kernel) {
+        (AggregateState::Count(count), AggKernel::CountStar) => *count += 1,
+        (AggregateState::Count(count), AggKernel::CountCol(col_id)) => {
+            if !columnar_is_null_by_id(table_cols, *col_id, idx) {
+                *count += 1;
+            }
+        }
+        (AggregateState::Sum { sum, has_value }, AggKernel::Sum(kernel)) => {
+            if let Some(value) = kernel.eval(idx) {
+                *sum += value;
+                *has_value = true;
+            }
+        }
+        (AggregateState::Avg { sum, count }, AggKernel::Avg(kernel)) => {
+            if let Some(value) = kernel.eval(idx) {
+                *sum += value;
+                *count += 1;
+            }
+        }
+        (AggregateState::Min(current), AggKernel::Min(col_id)) => {
+            let val = table_cols.get_typed_value_by_id(idx, *col_id);
+            if !val.is_null() {
+                let next = match current.take() {
+                    Some(existing) if existing.sql_lt(&val) => existing,
+                    _ => val,
+                };
+                *current = Some(next);
+            }
+        }
+        (AggregateState::Max(current), AggKernel::Max(col_id)) => {
+            let val = table_cols.get_typed_value_by_id(idx, *col_id);
+            if !val.is_null() {
+                let next = match current.take() {
+                    Some(existing) if existing.sql_gt(&val) => existing,
+                    _ => val,
+                };
+                *current = Some(next);
+            }
+        }
+        // init_aggregate_state aligns each state with its spec, so state/kernel
+        // pairs always match; any mismatch is a no-op rather than a panic.
+        _ => {}
+    }
 }
 
 fn try_compute_simple_grouped_columnar_aggregate_rows(
@@ -8772,64 +8974,46 @@ fn try_compute_simple_grouped_columnar_aggregate_rows(
         .iter()
         .map(|expr| column_id_for_expr(expr, schema_cols))
         .collect::<Option<Vec<_>>>()?;
-    let aggregate_arg_col_ids = plan
+
+    // Compile every aggregate argument once. An unsupported aggregate (e.g. a
+    // non-numeric SUM, or MIN of an expression) bails the whole fast path back
+    // to the general aggregate loop.
+    let agg_kernels = plan
         .state_specs
         .iter()
-        .map(|spec| match spec.func_name.as_str() {
-            "COUNT" => Some(
-                spec.arg_expr
-                    .as_ref()
-                    .and_then(|expr| column_id_for_expr(expr, schema_cols)),
-            ),
-            "SUM" => Some(Some(
-                spec.arg_expr
-                    .as_ref()
-                    .and_then(|expr| column_id_for_expr(expr, schema_cols))?,
-            )),
-            _ => None,
-        })
+        .map(|spec| compile_agg_kernel(spec, table_cols, schema_cols))
         .collect::<Option<Vec<_>>>()?;
 
+    // Scalar projections must be plain columns (read back via first_row_idx).
     for item in &plan.items {
         if let ColumnarProjectionItem::Scalar { expr, .. } = item {
             column_id_for_expr(expr, schema_cols)?;
         }
     }
 
-    let mut buckets: HashMap<Vec<String>, AggregateBucket> = HashMap::new();
+    let mut buckets: HashMap<String, AggregateBucket> = HashMap::new();
+    let mut key = String::new();
     for idx in bitmap.iter_set_bits() {
-        let key = group_col_ids
-            .iter()
-            .map(|col_id| columnar_group_key_by_id(table_cols, *col_id, idx))
-            .collect::<Vec<_>>();
-        let bucket = buckets.entry(key).or_insert_with(|| AggregateBucket {
-            first_row_idx: Some(idx),
-            states: plan.state_specs.iter().map(init_aggregate_state).collect(),
-        });
+        key.clear();
+        for col_id in &group_col_ids {
+            append_columnar_group_key(&mut key, table_cols, *col_id, idx);
+        }
+        // Reuse the buffer across rows; only clone into the map on a new group.
+        let bucket = if let Some(bucket) = buckets.get_mut(&key) {
+            bucket
+        } else {
+            buckets.insert(
+                key.clone(),
+                AggregateBucket {
+                    first_row_idx: Some(idx),
+                    states: plan.state_specs.iter().map(init_aggregate_state).collect(),
+                },
+            );
+            buckets.get_mut(&key).unwrap()
+        };
 
-        for ((state, spec), arg_col_id) in bucket
-            .states
-            .iter_mut()
-            .zip(plan.state_specs.iter())
-            .zip(aggregate_arg_col_ids.iter())
-        {
-            match (state, spec.func_name.as_str(), arg_col_id) {
-                (AggregateState::Count(count), "COUNT", None) => {
-                    *count += 1;
-                }
-                (AggregateState::Count(count), "COUNT", Some(col_id)) => {
-                    if !columnar_is_null_by_id(table_cols, *col_id, idx) {
-                        *count += 1;
-                    }
-                }
-                (AggregateState::Sum { sum, has_value }, "SUM", Some(col_id)) => {
-                    if let Some(value) = columnar_numeric_by_id(table_cols, *col_id, idx) {
-                        *sum += value;
-                        *has_value = true;
-                    }
-                }
-                _ => return None,
-            }
+        for (state, kernel) in bucket.states.iter_mut().zip(agg_kernels.iter()) {
+            update_state_with_kernel(state, kernel, table_cols, idx);
         }
     }
 
@@ -8861,156 +9045,41 @@ fn columnar_is_null_by_id(table_cols: &TableColumns, col_id: u32, row_idx: usize
         .unwrap_or(true)
 }
 
-fn columnar_group_key_by_id(table_cols: &TableColumns, col_id: u32, row_idx: usize) -> String {
-    let Some((typed_col, nulls)) = table_cols.columns.get(&col_id) else {
-        return "NULL".into();
-    };
-    if nulls.is_null(row_idx) {
-        return "NULL".into();
-    }
-    match typed_col {
-        TypedColumn::Int64(values) => values[row_idx].to_string(),
-        TypedColumn::Float64(values) => values[row_idx].to_string(),
-        TypedColumn::Decimal(values) => values[row_idx].clone(),
-        TypedColumn::DateDays(values) => column_store::days_to_date(values[row_idx]),
-        TypedColumn::Text(values) => values[row_idx].clone(),
-        TypedColumn::Boolean(values) => values[row_idx].to_string(),
-    }
-}
+/// Field separator for composite group keys. 0x01 (SOH) does not occur in the
+/// SQL value text this database stores, so it disambiguates concatenated fields.
+const GROUP_KEY_SEP: char = '\u{1}';
 
-fn columnar_numeric_by_id(table_cols: &TableColumns, col_id: u32, row_idx: usize) -> Option<f64> {
-    let (typed_col, nulls) = table_cols.columns.get(&col_id)?;
-    if nulls.is_null(row_idx) {
-        return None;
-    }
-    match typed_col {
-        TypedColumn::Int64(values) => Some(values[row_idx] as f64),
-        TypedColumn::Float64(values) => Some(values[row_idx]),
-        TypedColumn::Decimal(values) => values[row_idx].parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
-#[derive(Default)]
-struct TpchQ1Bucket {
-    returnflag: String,
-    linestatus: String,
-    sum_qty: f64,
-    sum_base_price: f64,
-    sum_disc_price: f64,
-    sum_discount: f64,
-    qty_count: i64,
-    price_count: i64,
-    discount_count: i64,
-    count_order: i64,
-}
-
-fn try_compute_tpch_q1_aggregate_rows(
-    plan: &ColumnarAggregatePlan,
+/// Append one column's group-key text for `row_idx` into a reused `buf`, then a
+/// field separator. Writing into a caller-owned buffer avoids the per-row
+/// `String`/`Vec` allocation that dominated grouped-aggregate cost. The key only
+/// needs to be unique per group — output values are read back via first_row_idx —
+/// so dates use raw day counts and booleans a single byte.
+fn append_columnar_group_key(
+    buf: &mut String,
     table_cols: &TableColumns,
-    bitmap: &Bitmap,
-    schema_cols: &[ColumnInfo],
-) -> PgWireResult<Option<Vec<Row>>> {
-    if !is_tpch_q1_projection(plan) {
-        return Ok(None);
-    }
-
-    let returnflag = match text_column_view(table_cols, schema_cols, "l_returnflag") {
-        Some(view) => view,
-        None => return Ok(None),
-    };
-    let linestatus = match text_column_view(table_cols, schema_cols, "l_linestatus") {
-        Some(view) => view,
-        None => return Ok(None),
-    };
-    let quantity = match numeric_column_view(table_cols, schema_cols, "l_quantity") {
-        Some(view) => view,
-        None => return Ok(None),
-    };
-    let extendedprice = match numeric_column_view(table_cols, schema_cols, "l_extendedprice") {
-        Some(view) => view,
-        None => return Ok(None),
-    };
-    let discount = match numeric_column_view(table_cols, schema_cols, "l_discount") {
-        Some(view) => view,
-        None => return Ok(None),
-    };
-
-    let mut buckets: HashMap<(String, String), TpchQ1Bucket> = HashMap::new();
-    for idx in bitmap.iter_set_bits() {
-        let (Some(flag), Some(status)) = (returnflag.value(idx), linestatus.value(idx)) else {
-            continue;
-        };
-
-        let bucket = buckets
-            .entry((flag.to_string(), status.to_string()))
-            .or_insert_with(|| TpchQ1Bucket {
-                returnflag: flag.to_string(),
-                linestatus: status.to_string(),
-                ..Default::default()
-            });
-        bucket.count_order += 1;
-
-        if let Some(qty) = quantity.value(idx) {
-            bucket.sum_qty += qty;
-            bucket.qty_count += 1;
-        }
-        if let Some(price) = extendedprice.value(idx) {
-            bucket.sum_base_price += price;
-            bucket.price_count += 1;
-
-            if let Some(discount) = discount.value(idx) {
-                bucket.sum_disc_price += price * (1.0 - discount);
+    col_id: u32,
+    row_idx: usize,
+) {
+    use std::fmt::Write;
+    match table_cols.columns.get(&col_id) {
+        Some((typed_col, nulls)) if !nulls.is_null(row_idx) => match typed_col {
+            TypedColumn::Int64(v) => {
+                let _ = write!(buf, "{}", v[row_idx]);
             }
-        }
-        if let Some(discount) = discount.value(idx) {
-            bucket.sum_discount += discount;
-            bucket.discount_count += 1;
-        }
+            TypedColumn::Float64(v) => {
+                let _ = write!(buf, "{}", v[row_idx]);
+            }
+            TypedColumn::Decimal(v) => buf.push_str(&v[row_idx]),
+            TypedColumn::DateDays(v) => {
+                let _ = write!(buf, "{}", v[row_idx]);
+            }
+            TypedColumn::Text(v) => buf.push_str(&v[row_idx]),
+            TypedColumn::Boolean(v) => buf.push(if v[row_idx] { '1' } else { '0' }),
+        },
+        // Missing column or NULL: NUL marker keeps NULL distinct from empty string.
+        _ => buf.push('\u{0}'),
     }
-
-    Ok(Some(
-        buckets.into_values().map(tpch_q1_bucket_to_row).collect(),
-    ))
-}
-
-fn is_tpch_q1_projection(plan: &ColumnarAggregatePlan) -> bool {
-    let expected_fields = [
-        "l_returnflag",
-        "l_linestatus",
-        "sum_qty",
-        "sum_base_price",
-        "sum_disc_price",
-        "avg_qty",
-        "avg_price",
-        "avg_disc",
-        "count_order",
-    ];
-    if plan.field_names.len() != expected_fields.len()
-        || !plan
-            .field_names
-            .iter()
-            .zip(expected_fields)
-            .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
-    {
-        return false;
-    }
-
-    let expected_groups = ["l_returnflag", "l_linestatus"];
-    plan.group_exprs.len() == expected_groups.len()
-        && plan
-            .group_exprs
-            .iter()
-            .zip(expected_groups)
-            .all(|(expr, expected)| columnar_expr_name(expr).is_some_and(|name| name == expected))
-}
-
-fn columnar_expr_name(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Identifier(ident) => Some(ident.value.to_lowercase()),
-        Expr::CompoundIdentifier(parts) => parts.last().map(|part| part.value.to_lowercase()),
-        _ => None,
-    }
+    buf.push(GROUP_KEY_SEP);
 }
 
 struct TextColumnView<'a> {
@@ -9080,49 +9149,6 @@ fn numeric_column_view<'a>(
         (TypedColumn::Float64(values), nulls) => Some(NumericColumnView::Float(values, nulls)),
         (TypedColumn::Int64(values), nulls) => Some(NumericColumnView::Int(values, nulls)),
         _ => None,
-    }
-}
-
-fn tpch_q1_bucket_to_row(bucket: TpchQ1Bucket) -> Row {
-    let mut row = Row::new();
-    row.insert(
-        "l_returnflag".into(),
-        TypedValue::Text(bucket.returnflag.clone()),
-    );
-    row.insert(
-        "l_linestatus".into(),
-        TypedValue::Text(bucket.linestatus.clone()),
-    );
-    row.insert("sum_qty".into(), TypedValue::Float(bucket.sum_qty));
-    row.insert(
-        "sum_base_price".into(),
-        TypedValue::Float(bucket.sum_base_price),
-    );
-    row.insert(
-        "sum_disc_price".into(),
-        TypedValue::Float(bucket.sum_disc_price),
-    );
-    row.insert(
-        "avg_qty".into(),
-        avg_or_null(bucket.sum_qty, bucket.qty_count),
-    );
-    row.insert(
-        "avg_price".into(),
-        avg_or_null(bucket.sum_base_price, bucket.price_count),
-    );
-    row.insert(
-        "avg_disc".into(),
-        avg_or_null(bucket.sum_discount, bucket.discount_count),
-    );
-    row.insert("count_order".into(), TypedValue::Int(bucket.count_order));
-    row
-}
-
-fn avg_or_null(sum: f64, count: i64) -> TypedValue {
-    if count == 0 {
-        TypedValue::Null
-    } else {
-        TypedValue::Float(sum / count as f64)
     }
 }
 
@@ -9699,6 +9725,19 @@ fn typed_value_to_group_key(val: &TypedValue) -> String {
     } else {
         val.to_string()
     }
+}
+
+/// Append a resolved group-by value into a reused key buffer, alloc-free for the
+/// buffer, followed by a field separator. NULL uses a NUL marker so it stays
+/// distinct from an empty string. See [`append_columnar_group_key`].
+fn append_typed_value_group_key(buf: &mut String, val: &TypedValue) {
+    use std::fmt::Write;
+    if val.is_null() {
+        buf.push('\u{0}');
+    } else {
+        let _ = write!(buf, "{}", val);
+    }
+    buf.push(GROUP_KEY_SEP);
 }
 
 fn query_offset_limit(query: &sqlparser::ast::Query) -> (usize, Option<usize>) {
