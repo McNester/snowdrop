@@ -4,7 +4,8 @@ use executor::typed_value::EMPTY_TEXT_SENTINEL;
 use executor::{
     bytes_to_row, bytes_to_row_ref, clear_foreign_key_existence_cache, deserialize_columns,
     evaluate_predicate, evaluate_predicate_view, resolve_value, serialize_columns, InsertPlan,
-    ResolvedForeignKeyTarget, Row, StorageBackend, TypedValue, WriteEngine,
+    ReferencingForeignKeyCheck, ResolvedForeignKeyTarget, Row, StorageBackend, TypedValue,
+    WriteEngine,
 };
 use futures::{future::BoxFuture, stream, FutureExt};
 use keys::table_scan_prefix;
@@ -946,6 +947,44 @@ impl QueryRouter {
             });
         }
         Ok(targets)
+    }
+
+    async fn cached_referencing_fk_checks(
+        &self,
+        db_name: &str,
+        table_name: &str,
+        constraints: &TableConstraintsInfo,
+    ) -> PgWireResult<Vec<ReferencingForeignKeyCheck>> {
+        let catalog = self.embedded_catalog()?;
+        let databases = catalog.list_databases().await.map_err(to_err)?;
+        let mut checks = Vec::new();
+
+        for database in databases {
+            let tables = catalog.list_tables(database.id).await.map_err(to_err)?;
+            for table in tables {
+                let table_constraints = catalog.get_constraints(table.id).await.map_err(to_err)?;
+                for fk in &table_constraints.foreign_keys {
+                    if fk.ref_table_name != table_name {
+                        continue;
+                    }
+                    if fk.ref_db_name.as_deref().unwrap_or(db_name) != db_name {
+                        continue;
+                    }
+                    if fk.ref_columns != constraints.primary_key_columns {
+                        continue;
+                    }
+
+                    checks.push(ReferencingForeignKeyCheck {
+                        db_id: database.id,
+                        table_id: table.id,
+                        schema_cols: catalog.list_columns(table.id).await.map_err(to_err)?,
+                        fk: fk.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(checks)
     }
 
     pub async fn route<'a>(&self, query_str: &'a str) -> PgWireResult<Vec<Response<'a>>> {
@@ -2047,24 +2086,48 @@ impl QueryRouter {
 
         let (where_col, where_val) = parse_simple_where(selection)?;
 
-        let neo4j = self.legacy_neo4j().await?;
+        let db_info = self
+            .cached_get_database(&db_name)
+            .await?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let tbl_info = self
+            .cached_get_table(&db_name, &table_name)
+            .await?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+        let schema_cols = self.cached_describe_table(&db_name, &table_name).await?;
+        let constraints = self
+            .cached_get_table_constraints(&db_name, &table_name)
+            .await?;
         let mut wal = self.wal.write().await;
-        let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
-        let n = engine
-            .delete(&db_name, &table_name, &where_col, &where_val)
-            .await
-            .map_err(to_err)?;
-
-        if let (Some(db_info), Some(tbl_info)) = (
-            self.cached_get_database(&db_name).await.ok().flatten(),
-            self.cached_get_table(&db_name, &table_name)
+        let n = if self.catalog_backend == CatalogBackend::Sqlite {
+            let referencing_checks = self
+                .cached_referencing_fk_checks(&db_name, &table_name, &constraints)
+                .await?;
+            let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
+            engine
+                .delete_with_metadata(
+                    &db_name,
+                    &table_name,
+                    &where_col,
+                    &where_val,
+                    &db_info,
+                    &tbl_info,
+                    &schema_cols,
+                    &constraints,
+                    &referencing_checks,
+                )
                 .await
-                .ok()
-                .flatten(),
-        ) {
-            if n > 0 {
-                clear_foreign_key_existence_cache();
-            }
+        } else {
+            let neo4j = self.legacy_neo4j().await?;
+            let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
+            engine
+                .delete(&db_name, &table_name, &where_col, &where_val)
+                .await
+        }
+        .map_err(to_err)?;
+
+        if n > 0 {
+            clear_foreign_key_existence_cache();
             self.invalidate_column_cache(db_info.id, tbl_info.id).await;
         }
 
@@ -11686,6 +11749,113 @@ mod tests {
         assert!(names.contains(&b"gamma".to_vec()));
         assert!(names.contains(&b"beta".to_vec()));
         assert!(!names.contains(&b"alpha".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn sqlite_catalog_mode_deletes_without_neo4j_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = Arc::new(schema::SQLiteCatalogStore::open(&catalog_path).unwrap());
+        catalog.init_catalog().await.unwrap();
+        catalog.create_database("default").await.unwrap();
+        let (parent_table, _) = catalog
+            .create_table(
+                "default",
+                "parents",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "name".to_string(),
+                        data_type: "TEXT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        catalog
+            .create_table(
+                "default",
+                "children",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "parent_id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    foreign_keys: vec![ForeignKeyConstraintInfo {
+                        name: "children_parent_id_fkey".to_string(),
+                        columns: vec!["parent_id".to_string()],
+                        ref_db_name: None,
+                        ref_table_name: "parents".to_string(),
+                        ref_columns: vec!["id".to_string()],
+                        on_delete: "NO ACTION".to_string(),
+                        on_update: "NO ACTION".to_string(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = Arc::new(executor::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap());
+        let wal_path = dir.path().join("wal.log");
+        let wal = wal::WalFile::open(wal_path.to_str().unwrap()).unwrap();
+
+        let router = QueryRouter::new_with_catalog(
+            None,
+            storage.clone(),
+            wal,
+            CatalogBackend::Sqlite,
+            Some(catalog),
+        );
+        router.warm_schema_cache().await.unwrap();
+
+        router
+            .route("INSERT INTO parents (id, name) VALUES (1, 'alpha');")
+            .await
+            .unwrap();
+        router
+            .route("INSERT INTO children (id, parent_id) VALUES (10, 1);")
+            .await
+            .unwrap();
+
+        let parent_delete = router.route("DELETE FROM parents WHERE id = 1;").await;
+        assert!(parent_delete.is_err());
+
+        router
+            .route("DELETE FROM children WHERE id = 10;")
+            .await
+            .unwrap();
+        router
+            .route("DELETE FROM parents WHERE id = 1;")
+            .await
+            .unwrap();
+
+        let prefix = keys::table_scan_prefix(parent_table.db_id, parent_table.id).unwrap();
+        let rows = storage.scan_prefix(&prefix).await.unwrap();
+        assert!(rows.is_empty());
     }
 
     #[test]

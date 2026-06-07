@@ -15,7 +15,7 @@ pub use columnar_segments::{
 };
 pub use dml::{
     clear_foreign_key_existence_cache, deserialize_columns, replay_wal_entries, serialize_columns,
-    InsertPlan, ResolvedForeignKeyTarget, WriteEngine,
+    InsertPlan, ReferencingForeignKeyCheck, ResolvedForeignKeyTarget, WriteEngine,
 };
 pub use filter::{
     bytes_to_row, bytes_to_row_ref, evaluate_predicate, evaluate_predicate_view, resolve_value, Row,
