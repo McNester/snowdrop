@@ -60,14 +60,18 @@ Status: started.
   catalog mode, `QueryRouter` resolves table metadata from `CatalogStore` and
   calls `update_with_metadata(...)` through `WriteEngine::new_plan_only(...)`
   for updates that do not need legacy cross-table referential checks.
+- Key-changing `UPDATE` now also has a SQLite catalog path for the supported FK
+  subset. `QueryRouter` resolves referenced FK targets and referencing-table
+  checks from `CatalogStore`, so parent PK updates and child FK updates can be
+  validated without calling Neo4j.
 - `DELETE` now has the first embedded-catalog path as well. SQLite catalog mode
   resolves table metadata and referencing foreign-key checks from `CatalogStore`,
   then calls `delete_with_metadata(...)` without requiring a Neo4j connection.
 
-Important boundary: key-changing UPDATE, some unsupported DDL, and WAL replay
-still require `Neo4jConnection`. SQLite catalog mode now owns basic
-database/table lifecycle metadata plus the first plan-based INSERT, non-key
-UPDATE, and DELETE paths, but Snowdrop is not yet fully Neo4j-free.
+Important boundary: some unsupported DDL and WAL replay still require
+`Neo4jConnection`. SQLite catalog mode now owns basic database/table lifecycle
+metadata plus the first plan-based INSERT, UPDATE, and DELETE paths, but Snowdrop
+is not yet fully Neo4j-free.
 
 ## Phase B: Catalog Migration
 
@@ -82,7 +86,9 @@ Move schema operations behind `CatalogStore` one group at a time:
 - information_schema / pg_catalog introspection: partially wired
 - plan-based INSERT VALUES: wired for SQLite catalog mode
 - non-key UPDATE: wired for SQLite catalog mode
-- key-changing UPDATE/write replay: still legacy Neo4j-backed
+- key-changing UPDATE: wired for SQLite catalog mode with catalog-derived FK
+  target and referencing-table checks
+- write replay: still legacy Neo4j-backed
 - DELETE: wired for SQLite catalog mode with catalog-derived referencing FK
   checks
 - migration artifact recording

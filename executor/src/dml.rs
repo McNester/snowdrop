@@ -506,6 +506,8 @@ impl<'a> WriteEngine<'a> {
             &table,
             &schema_cols,
             &constraints,
+            &[],
+            &[],
         )
         .await
     }
@@ -521,6 +523,8 @@ impl<'a> WriteEngine<'a> {
         table: &TableInfo,
         schema_cols: &[ColumnInfo],
         constraints: &TableConstraintsInfo,
+        fk_targets: &[ResolvedForeignKeyTarget],
+        referencing_checks: &[ReferencingForeignKeyCheck],
     ) -> Result<u64> {
         let t_total = std::time::Instant::now();
 
@@ -684,14 +688,24 @@ impl<'a> WriteEngine<'a> {
                 )?;
                 if new_pk_key != old_pk_key {
                     let t = std::time::Instant::now();
-                    self.validate_no_referencing_rows(
-                        db_name,
-                        table_name,
-                        &schema_cols,
-                        &constraints,
-                        &existing_before_update,
-                    )
-                    .await?;
+                    if self.neo4j.is_some() && referencing_checks.is_empty() {
+                        self.validate_no_referencing_rows(
+                            db_name,
+                            table_name,
+                            &schema_cols,
+                            &constraints,
+                            &existing_before_update,
+                        )
+                        .await?;
+                    } else {
+                        self.validate_no_referencing_rows_with_checks(
+                            &schema_cols,
+                            &constraints,
+                            &existing_before_update,
+                            referencing_checks,
+                        )
+                        .await?;
+                    }
                     self.check_constraint_key_available(&new_pk_key, Some(row_id_str.as_str()))
                         .await?;
                     validate_ms += t.elapsed().as_secs_f64() * 1000.0;
@@ -712,13 +726,31 @@ impl<'a> WriteEngine<'a> {
                 }
                 if touches_fk {
                     let t = std::time::Instant::now();
-                    self.validate_foreign_keys_from_columns(
-                        db_name,
-                        &schema_cols,
-                        &constraints,
-                        &existing,
-                    )
-                    .await?;
+                    if self.neo4j.is_some() && fk_targets.is_empty() {
+                        self.validate_foreign_keys_from_columns(
+                            db_name,
+                            &schema_cols,
+                            &constraints,
+                            &existing,
+                        )
+                        .await?;
+                    } else {
+                        let resolved_existing = schema_cols
+                            .iter()
+                            .filter_map(|col| {
+                                existing
+                                    .iter()
+                                    .find(|(col_id, _)| *col_id == col.id)
+                                    .map(|(_, value)| (col.clone(), value.clone()))
+                            })
+                            .collect::<Vec<_>>();
+                        self.validate_foreign_keys_with_targets(
+                            &schema_cols,
+                            fk_targets,
+                            &resolved_existing,
+                        )
+                        .await?;
+                    }
                     validate_ms += t.elapsed().as_secs_f64() * 1000.0;
                 }
             }

@@ -1998,6 +1998,31 @@ impl QueryRouter {
             .await?;
         let mut wal = self.wal.write().await;
         let n = if self.catalog_backend == CatalogBackend::Sqlite {
+            let set_col_names = set_pairs
+                .iter()
+                .map(|(name, _)| name.to_ascii_lowercase())
+                .collect::<HashSet<_>>();
+            let touches_pk = constraints
+                .primary_key_columns
+                .iter()
+                .any(|column| set_col_names.contains(&column.to_ascii_lowercase()));
+            let touches_fk = constraints.foreign_keys.iter().any(|fk| {
+                fk.columns
+                    .iter()
+                    .any(|column| set_col_names.contains(&column.to_ascii_lowercase()))
+            });
+            let fk_targets = if touches_fk {
+                self.resolve_cached_fk_targets(&db_name, &constraints)
+                    .await?
+            } else {
+                Vec::new()
+            };
+            let referencing_checks = if touches_pk {
+                self.cached_referencing_fk_checks(&db_name, &table_name, &constraints)
+                    .await?
+            } else {
+                Vec::new()
+            };
             let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
             engine
                 .update_with_metadata(
@@ -2010,6 +2035,8 @@ impl QueryRouter {
                     &tbl_info,
                     &schema_cols,
                     &constraints,
+                    &fk_targets,
+                    &referencing_checks,
                 )
                 .await
         } else {
@@ -2026,6 +2053,8 @@ impl QueryRouter {
                     &tbl_info,
                     &schema_cols,
                     &constraints,
+                    &[],
+                    &[],
                 )
                 .await
         }
@@ -11749,6 +11778,138 @@ mod tests {
         assert!(names.contains(&b"gamma".to_vec()));
         assert!(names.contains(&b"beta".to_vec()));
         assert!(!names.contains(&b"alpha".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn sqlite_catalog_mode_updates_key_columns_with_fk_checks_without_neo4j_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = Arc::new(schema::SQLiteCatalogStore::open(&catalog_path).unwrap());
+        catalog.init_catalog().await.unwrap();
+        catalog.create_database("default").await.unwrap();
+        let (parent_table, _) = catalog
+            .create_table(
+                "default",
+                "parents",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "name".to_string(),
+                        data_type: "TEXT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let parent_columns = catalog.list_columns(parent_table.id).await.unwrap();
+        let parent_id_col_id = parent_columns
+            .iter()
+            .find(|column| column.name == "id")
+            .unwrap()
+            .id;
+        catalog
+            .create_table(
+                "default",
+                "children",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "parent_id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    foreign_keys: vec![ForeignKeyConstraintInfo {
+                        name: "children_parent_id_fkey".to_string(),
+                        columns: vec!["parent_id".to_string()],
+                        ref_db_name: None,
+                        ref_table_name: "parents".to_string(),
+                        ref_columns: vec!["id".to_string()],
+                        on_delete: "NO ACTION".to_string(),
+                        on_update: "NO ACTION".to_string(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = Arc::new(executor::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap());
+        let wal_path = dir.path().join("wal.log");
+        let wal = wal::WalFile::open(wal_path.to_str().unwrap()).unwrap();
+
+        let router = QueryRouter::new_with_catalog(
+            None,
+            storage.clone(),
+            wal,
+            CatalogBackend::Sqlite,
+            Some(catalog),
+        );
+        router.warm_schema_cache().await.unwrap();
+
+        router
+            .route("INSERT INTO parents (id, name) VALUES (1, 'alpha');")
+            .await
+            .unwrap();
+        router
+            .route("INSERT INTO children (id, parent_id) VALUES (10, 1);")
+            .await
+            .unwrap();
+
+        let parent_pk_update = router
+            .route("UPDATE parents SET id = 2 WHERE id = 1;")
+            .await;
+        assert!(parent_pk_update.is_err());
+
+        let missing_parent_update = router
+            .route("UPDATE children SET parent_id = 2 WHERE id = 10;")
+            .await;
+        assert!(missing_parent_update.is_err());
+
+        router
+            .route("INSERT INTO parents (id, name) VALUES (2, 'beta');")
+            .await
+            .unwrap();
+        router
+            .route("UPDATE children SET parent_id = 2 WHERE id = 10;")
+            .await
+            .unwrap();
+        router
+            .route("UPDATE parents SET id = 3 WHERE id = 1;")
+            .await
+            .unwrap();
+
+        let prefix = keys::table_scan_prefix(parent_table.db_id, parent_table.id).unwrap();
+        let rows = storage.scan_prefix(&prefix).await.unwrap();
+        let parent_ids = rows
+            .iter()
+            .filter_map(|(_, row)| executor::RowView::new(row))
+            .filter_map(|view| view.find_col(parent_id_col_id).map(Vec::from))
+            .collect::<Vec<_>>();
+
+        assert!(parent_ids.contains(&b"2".to_vec()));
+        assert!(parent_ids.contains(&b"3".to_vec()));
+        assert!(!parent_ids.contains(&b"1".to_vec()));
     }
 
     #[tokio::test]
