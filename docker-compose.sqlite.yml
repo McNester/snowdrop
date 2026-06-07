@@ -1,0 +1,41 @@
+services:
+  orchestrator-sqlite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${SNOWDROP_SQLITE_HOST_PG_PORT:-15432}:${PGWIRE_PORT:-5432}"
+      - "${SNOWDROP_SQLITE_HOST_HEALTH_PORT:-18080}:${HEALTH_PORT:-8080}"
+      - "${SNOWDROP_SQLITE_HOST_METRICS_PORT:-19090}:${METRICS_PORT:-9090}"
+    environment:
+      SNOWDROP_CATALOG_BACKEND: sqlite
+      SQLITE_CATALOG_PATH: /data/catalog/catalog.sqlite
+      WAL_PATH: /data/wal
+      ROCKS_PATH: /data/rocks
+      STORAGE_BACKEND: rocksdb
+      SNOWDROP_ENABLE_TRUSTED_BULK_LOAD: "1"
+      RUST_LOG: info
+      PGWIRE_PORT: ${PGWIRE_PORT:-5432}
+      HEALTH_PORT: ${HEALTH_PORT:-8080}
+      METRICS_PORT: ${METRICS_PORT:-9090}
+    volumes:
+      - wal_sqlite_data:/data/wal
+      - rocks_sqlite_data:/data/rocks
+      - catalog_sqlite_data:/data/catalog
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "${POSTGRES_SQLITE_HOST_PORT:-55433}:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tpch
+    volumes:
+      - pg_sqlite_data:/var/lib/postgresql/data
+
+volumes:
+  wal_sqlite_data: {}
+  rocks_sqlite_data: {}
+  catalog_sqlite_data: {}
+  pg_sqlite_data: {}

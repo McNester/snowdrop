@@ -76,6 +76,28 @@ still require the legacy path. SQLite catalog mode now owns basic database/table
 lifecycle metadata plus the first plan-based INSERT, UPDATE, DELETE, and storage
 WAL replay paths, but Snowdrop is not yet fully Neo4j-free.
 
+### SQLite Catalog Docker Smoke Workflow
+
+The embedded-catalog runtime can be started without Neo4j through the dedicated
+compose file:
+
+```powershell
+docker compose -f docker-compose.sqlite.yml up -d --build orchestrator-sqlite
+```
+
+It exposes Snowdrop on host port `15432` by default and persists the local
+catalog at `/data/catalog/catalog.sqlite` inside the container volume. A minimal
+smoke check:
+
+```powershell
+docker run --rm --platform linux/amd64 --network snowdrop-1_default -e PGPASSWORD=postgres postgres:16 psql -h snowdrop-1-orchestrator-sqlite-1 -p 5432 -U postgres -d postgres -c "CREATE DATABASE sqlite_smoke;"
+docker run --rm --platform linux/amd64 --network snowdrop-1_default -e PGPASSWORD=postgres postgres:16 psql -h snowdrop-1-orchestrator-sqlite-1 -p 5432 -U postgres -d sqlite_smoke -c "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(120) UNIQUE, role VARCHAR(30) DEFAULT 'user'); INSERT INTO users (id, email) VALUES (1, 'demo@snowdrop.local'); SELECT id, email, role FROM users ORDER BY id;"
+```
+
+This workflow is intentionally separate from the legacy `docker-compose.yml`
+path. The old path remains the compatibility baseline; the SQLite path is the
+measuring ground for removing Neo4j from hot runtime and DML paths.
+
 ## Phase B: Catalog Migration
 
 Move schema operations behind `CatalogStore` one group at a time:

@@ -6,9 +6,9 @@ This document is the compact benchmark snapshot for presentations, PR review, an
 
 | Field | Value |
 |---|---|
-| Timestamp | `2026-05-25T20:22:21.025649480+00:00` |
-| Git branch | `phase6-postgresql-migration-workflow` |
-| Git commit | `44a8fa3` |
+| Timestamp | `2026-06-07T17:55:42.105234847+00:00` |
+| Git branch | `codex/tpch-migration-demo-acceleration` |
+| Git commit | `3339d3a` |
 | Host OS / arch | `linux` / `x86_64` |
 | CPU count | `12` |
 | Container mode | `docker` |
@@ -27,10 +27,10 @@ Headline values are measured-run medians; warmup runs are excluded. Compare Snow
 
 | Query | Snowdrop baseline median | Snowdrop indexed median | PostgreSQL median | Snowdrop result | p90 / stddev signal |
 |---|---:|---:|---:|---|---|
-| Q6 | `0.79ms` | `0.74ms` | `1.15ms` | Snowdrop is `1.57x faster` | SD p90 `0.99ms` / stddev `0.15ms`; PG p90 `1.25ms` / stddev `0.10ms` |
-| Q1 | `1.57ms` | `1.55ms` | `3.91ms` | Snowdrop is `2.52x faster` | SD p90 `1.94ms` / stddev `0.26ms`; PG p90 `4.26ms` / stddev `0.38ms` |
-| Q14 | `0.73ms` | `0.71ms` | `0.88ms` | Snowdrop is `1.24x faster` | SD p90 `0.73ms` / stddev `0.06ms`; PG p90 `0.93ms` / stddev `0.11ms` |
-| Q3 | `1.06ms` | `1.05ms` | `1.62ms` | Snowdrop is `1.55x faster` | SD p90 `1.22ms` / stddev `0.22ms`; PG p90 `1.67ms` / stddev `0.13ms` |
+| Q6 | `0.76ms` | `0.78ms` | `0.93ms` | Snowdrop is `1.22x faster` | SD p90 `1.01ms` / stddev `0.16ms`; PG p90 `1.13ms` / stddev `0.22ms` |
+| Q1 | `1.90ms` | `2.18ms` | `4.17ms` | Snowdrop is `2.20x faster` | SD p90 `2.38ms` / stddev `0.33ms`; PG p90 `4.53ms` / stddev `0.28ms` |
+| Q14 | `0.81ms` | `1.04ms` | `0.92ms` | Snowdrop is `1.13x faster` | SD p90 `0.93ms` / stddev `0.08ms`; PG p90 `1.20ms` / stddev `0.19ms` |
+| Q3 | `1.04ms` | `1.15ms` | `1.70ms` | Snowdrop is `1.64x faster` | SD p90 `1.21ms` / stddev `0.23ms`; PG p90 `1.91ms` / stddev `0.28ms` |
 
 ## Query Meaning
 
