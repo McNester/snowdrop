@@ -1496,15 +1496,13 @@ impl QueryRouter {
             }
         };
 
+        // Q6 (single-table SUM of an expression) is handled by the general
+        // columnar aggregate path. Q14/Q3 are joins the general path is still
+        // slow on, so they keep dedicated fast paths.
         if !select.from.is_empty()
-            && (is_tpch_q6_select(&select)
-                || is_tpch_q14_select(&select)
-                || is_tpch_q3_select(&select))
+            && (is_tpch_q14_select(&select) || is_tpch_q3_select(&select))
         {
             let current_db = self.current_db.read().await.clone();
-            if let Some(response) = self.try_fast_tpch_q6_response(&current_db, &select).await? {
-                return Ok(response);
-            }
             if let Some(response) = self
                 .try_fast_tpch_q14_response(&current_db, &select)
                 .await?
@@ -2125,34 +2123,6 @@ impl QueryRouter {
         let mut row = Row::new();
         row.insert("promo_revenue".into(), TypedValue::Float(promo_revenue.0));
         row.insert("total_revenue".into(), TypedValue::Float(promo_revenue.1));
-        self.named_rows_to_response(&[row], &fields).map(Some)
-    }
-
-    async fn try_fast_tpch_q6_response<'a>(
-        &self,
-        current_db: &str,
-        select: &sqlparser::ast::Select,
-    ) -> PgWireResult<Option<Response<'a>>> {
-        if !is_tpch_q6_select(select) {
-            return Ok(None);
-        }
-
-        let (lineitem_name, _) = extract_table_info(&select.from[0].relation)?;
-        let lineitem = self
-            .ensure_columnar_table(current_db, &lineitem_name)
-            .await?;
-        let cache = self.column_cache.read().await;
-        let lineitem_cols = cache
-            .get(&(lineitem.0, lineitem.1))
-            .ok_or_else(|| user_error("lineitem column cache is missing".to_string()))?;
-
-        let revenue = compute_tpch_q6_revenue(lineitem_cols, &lineitem.2)
-            .ok_or_else(|| user_error("TPC-H Q6 fast path column layout mismatch".to_string()))?;
-        metrics::counter!("snowdrop_query_plans_total", "kind" => "tpch_q6", "value" => "columnar")
-            .increment(1);
-        let fields = vec!["revenue".to_string()];
-        let mut row = Row::new();
-        row.insert("revenue".into(), TypedValue::Float(revenue));
         self.named_rows_to_response(&[row], &fields).map(Some)
     }
 
@@ -9152,71 +9122,6 @@ fn numeric_column_view<'a>(
     }
 }
 
-fn is_tpch_q6_select(select: &sqlparser::ast::Select) -> bool {
-    if select.from.len() != 1 || !select.from[0].joins.is_empty() {
-        return false;
-    }
-    let Ok((table_name, _)) = extract_table_info(&select.from[0].relation) else {
-        return false;
-    };
-    if !object_name_last(&table_name).eq_ignore_ascii_case("lineitem") {
-        return false;
-    }
-
-    let projection_sql = select
-        .projection
-        .iter()
-        .map(|item| item.to_string().to_lowercase())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !projection_sql.contains("sum")
-        || !projection_sql.contains("l_extendedprice")
-        || !projection_sql.contains("l_discount")
-        || !projection_sql.contains("revenue")
-    {
-        return false;
-    }
-
-    let Some(selection) = select.selection.as_ref() else {
-        return false;
-    };
-    let selection_sql = selection.to_string().to_lowercase();
-    selection_sql.contains("l_shipdate")
-        && selection_sql.contains("1994-01-01")
-        && selection_sql.contains("1995-01-01")
-        && selection_sql.contains("l_discount")
-        && selection_sql.contains("0.05")
-        && selection_sql.contains("0.07")
-        && selection_sql.contains("l_quantity")
-        && selection_sql.contains("24")
-}
-
-fn compute_tpch_q6_revenue(table_cols: &TableColumns, schema_cols: &[ColumnInfo]) -> Option<f64> {
-    let shipdate = text_column_view(table_cols, schema_cols, "l_shipdate")?;
-    let discount = numeric_column_view(table_cols, schema_cols, "l_discount")?;
-    let quantity = numeric_column_view(table_cols, schema_cols, "l_quantity")?;
-    let extendedprice = numeric_column_view(table_cols, schema_cols, "l_extendedprice")?;
-
-    let mut revenue = 0.0;
-    for idx in 0..table_cols.row_count {
-        let Some(shipdate) = shipdate.value(idx) else {
-            continue;
-        };
-        if shipdate < "1994-01-01" || shipdate >= "1995-01-01" {
-            continue;
-        }
-        let discount_value = discount.value(idx)?;
-        if !(0.05..=0.07).contains(&discount_value) {
-            continue;
-        }
-        if quantity.value(idx)? >= 24.0 {
-            continue;
-        }
-        revenue += extendedprice.value(idx)? * discount_value;
-    }
-    Some(revenue)
-}
-
 fn is_tpch_q14_select(select: &sqlparser::ast::Select) -> bool {
     if select.from.len() != 1 || select.from[0].joins.len() != 1 {
         return false;
@@ -10972,11 +10877,13 @@ mod tests {
             .find(|row| lookup_row_value(row, "l_returnflag") == TypedValue::Text("A".into()))
             .unwrap();
 
+        // The general aggregate path collapses whole-number sums to Int so they
+        // render identically to PostgreSQL (which prints 30.0 as "30").
         assert_eq!(lookup_row_value(af, "count_order"), TypedValue::Int(2));
-        assert_eq!(lookup_row_value(af, "sum_qty"), TypedValue::Float(30.0));
+        assert_eq!(lookup_row_value(af, "sum_qty"), TypedValue::Int(30));
         assert_eq!(
             lookup_row_value(af, "sum_disc_price"),
-            TypedValue::Float(250.0)
+            TypedValue::Int(250)
         );
     }
 
@@ -11070,72 +10977,6 @@ mod tests {
 
         assert_eq!(promo, 90.0);
         assert_eq!(total, 250.0);
-    }
-
-    #[test]
-    fn tpch_q6_fast_path_computes_discount_revenue() {
-        let sql = "SELECT SUM(l_extendedprice * l_discount) AS revenue \
-         FROM tpch.lineitem \
-         WHERE l_shipdate >= '1994-01-01' AND l_shipdate < '1995-01-01' \
-         AND l_discount >= 0.05 AND l_discount <= 0.07 \
-         AND l_quantity < 24;";
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let Statement::Query(query) = &stmts[0] else {
-            panic!("expected query");
-        };
-        let SetExpr::Select(select) = query.body.as_ref() else {
-            panic!("expected select");
-        };
-        assert!(is_tpch_q6_select(select));
-
-        let schema_cols = vec![
-            test_column(1, "l_shipdate", "VARCHAR"),
-            test_column(2, "l_discount", "FLOAT"),
-            test_column(3, "l_quantity", "FLOAT"),
-            test_column(4, "l_extendedprice", "FLOAT"),
-        ];
-        let table_cols = TableColumns {
-            row_count: 4,
-            row_keys: vec!["l1".into(), "l2".into(), "l3".into(), "l4".into()],
-            columns: HashMap::from([
-                (
-                    1,
-                    (
-                        TypedColumn::Text(vec![
-                            "1994-01-10".into(),
-                            "1994-06-01".into(),
-                            "1995-01-01".into(),
-                            "1994-02-01".into(),
-                        ]),
-                        executor::column_store::NullBitmap::new(4),
-                    ),
-                ),
-                (
-                    2,
-                    (
-                        TypedColumn::Float64(vec![0.06, 0.08, 0.06, 0.05]),
-                        executor::column_store::NullBitmap::new(4),
-                    ),
-                ),
-                (
-                    3,
-                    (
-                        TypedColumn::Float64(vec![10.0, 10.0, 10.0, 30.0]),
-                        executor::column_store::NullBitmap::new(4),
-                    ),
-                ),
-                (
-                    4,
-                    (
-                        TypedColumn::Float64(vec![100.0, 200.0, 300.0, 400.0]),
-                        executor::column_store::NullBitmap::new(4),
-                    ),
-                ),
-            ]),
-        };
-
-        let revenue = compute_tpch_q6_revenue(&table_cols, &schema_cols).unwrap();
-        assert_eq!(revenue, 6.0);
     }
 
     #[test]
