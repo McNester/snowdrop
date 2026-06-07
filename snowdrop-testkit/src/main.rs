@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use schema::CatalogStore;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -261,6 +262,7 @@ struct MigrationWorkflowSummary {
     benchmark_queries_run: usize,
     benchmark_queries_matched: usize,
     benchmark_queries_snowdrop_faster: usize,
+    load_timing_totals: MigrationLoadTimingTotals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,6 +354,19 @@ struct MigrationLoadTimings {
     total_ms: f64,
     chunks: usize,
     trusted_bulk_load: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct MigrationLoadTimingTotals {
+    loaded_rows: i64,
+    export_ms: f64,
+    literal_build_ms: f64,
+    snowdrop_insert_ms: f64,
+    total_ms: f64,
+    chunks: usize,
+    trusted_bulk_load_all: bool,
+    rows_per_second_total: f64,
+    rows_per_second_snowdrop_insert: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -476,6 +491,9 @@ enum Command {
         rows: u32,
         output_json: String,
         output_md: String,
+    },
+    CatalogInit {
+        path: PathBuf,
     },
     MigrationPreflight {
         source: MigrationSourceArg,
@@ -619,6 +637,12 @@ async fn async_main() -> Result<()> {
             let report = run_write_ddl_benchmark(&repo_root, &runtime, rows).await?;
             write_write_ddl_benchmark_artifacts(&repo_root, &report, &output_json, &output_md)?;
             print_write_ddl_benchmark_summary(&report);
+        }
+        Command::CatalogInit { path } => {
+            let catalog = schema::SQLiteCatalogStore::open(&path)?;
+            catalog.init_catalog().await?;
+            catalog.ping().await?;
+            println!("SQLite catalog initialized at {}", path.display());
         }
         Command::MigrationPreflight { source, schema } => {
             let report =
@@ -776,6 +800,11 @@ fn parse_command(args: &[String]) -> Result<Command> {
             output_md: read_flag(args, "--output-md")
                 .unwrap_or_else(|| WRITE_DDL_BENCHMARK_MD_PATH.into()),
         }),
+        Some("catalog-init") => Ok(Command::CatalogInit {
+            path: read_flag(args, "--path")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/snowdrop/catalog/catalog.sqlite")),
+        }),
         Some("migration-preflight") => {
             let source = parse_migration_source(args)?;
             let schema = read_flag(args, "--schema");
@@ -802,7 +831,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         _ => Err(anyhow!(
-            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|benchmark-report|write-ddl-benchmark|migration-preflight|migration-run|migration-auto> [flags]"
+            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|benchmark-report|write-ddl-benchmark|catalog-init|migration-preflight|migration-run|migration-auto> [flags]"
         )),
     }
 }
@@ -1853,6 +1882,7 @@ async fn run_migration_workflow_for_source(
 
     let benchmark_results =
         run_migration_benchmarks(&postgres, &snowdrop, benchmark_queries_path).await?;
+    let load_timing_totals = aggregate_load_timing_totals(&table_runs);
 
     let summary = MigrationWorkflowSummary {
         planned_tables: table_runs
@@ -1899,6 +1929,7 @@ async fn run_migration_workflow_for_source(
             .iter()
             .filter(|result| result.faster_engine == "snowdrop")
             .count(),
+        load_timing_totals,
     };
 
     let report = MigrationWorkflowReport {
@@ -3736,6 +3767,41 @@ async fn load_table_rows(
     })
 }
 
+fn aggregate_load_timing_totals(table_runs: &[MigrationTableRun]) -> MigrationLoadTimingTotals {
+    let mut totals = MigrationLoadTimingTotals {
+        trusted_bulk_load_all: true,
+        ..MigrationLoadTimingTotals::default()
+    };
+    let mut saw_loaded_table = false;
+
+    for run in table_runs {
+        let Some(timing) = run.load_timings.as_ref() else {
+            continue;
+        };
+        saw_loaded_table = true;
+        totals.loaded_rows += run.source_row_count.unwrap_or(0);
+        totals.export_ms += timing.export_ms;
+        totals.literal_build_ms += timing.literal_build_ms;
+        totals.snowdrop_insert_ms += timing.snowdrop_insert_ms;
+        totals.total_ms += timing.total_ms;
+        totals.chunks += timing.chunks;
+        totals.trusted_bulk_load_all &= timing.trusted_bulk_load;
+    }
+
+    if !saw_loaded_table {
+        totals.trusted_bulk_load_all = false;
+    }
+    if totals.total_ms > 0.0 {
+        totals.rows_per_second_total = totals.loaded_rows as f64 / (totals.total_ms / 1000.0);
+    }
+    if totals.snowdrop_insert_ms > 0.0 {
+        totals.rows_per_second_snowdrop_insert =
+            totals.loaded_rows as f64 / (totals.snowdrop_insert_ms / 1000.0);
+    }
+
+    totals
+}
+
 async fn export_table_rows(
     postgres: &Client,
     table: &MigrationTableReport,
@@ -4250,6 +4316,45 @@ fn render_migration_workflow_report(report: &MigrationWorkflowReport) -> String 
         "| Benchmark queries faster on Snowdrop | {} |\n\n",
         report.summary.benchmark_queries_snowdrop_faster
     ));
+    out.push_str(&format!(
+        "| Loaded rows | {} |\n",
+        report.summary.load_timing_totals.loaded_rows
+    ));
+    out.push_str(&format!(
+        "| Load total ms | {:.2} |\n",
+        report.summary.load_timing_totals.total_ms
+    ));
+    out.push_str(&format!(
+        "| PostgreSQL export ms | {:.2} |\n",
+        report.summary.load_timing_totals.export_ms
+    ));
+    out.push_str(&format!(
+        "| SQL literal build ms | {:.2} |\n",
+        report.summary.load_timing_totals.literal_build_ms
+    ));
+    out.push_str(&format!(
+        "| Snowdrop insert ms | {:.2} |\n",
+        report.summary.load_timing_totals.snowdrop_insert_ms
+    ));
+    out.push_str(&format!(
+        "| Load chunks | {} |\n",
+        report.summary.load_timing_totals.chunks
+    ));
+    out.push_str(&format!(
+        "| Trusted bulk load for all loaded tables | `{}` |\n",
+        report.summary.load_timing_totals.trusted_bulk_load_all
+    ));
+    out.push_str(&format!(
+        "| Rows/sec total | {:.1} |\n",
+        report.summary.load_timing_totals.rows_per_second_total
+    ));
+    out.push_str(&format!(
+        "| Rows/sec Snowdrop insert stage | {:.1} |\n\n",
+        report
+            .summary
+            .load_timing_totals
+            .rows_per_second_snowdrop_insert
+    ));
 
     if !report.benchmark_results.is_empty() {
         out.push_str("## Post-Migration Benchmark\n\n");
@@ -4554,6 +4659,20 @@ fn print_migration_workflow_summary(report: &MigrationWorkflowReport) {
         report.summary.benchmark_queries_run,
         report.summary.benchmark_queries_matched,
         report.summary.benchmark_queries_snowdrop_faster
+    );
+    println!(
+        "load_rows={} load_total_ms={:.2} export_ms={:.2} literal_build_ms={:.2} snowdrop_insert_ms={:.2} chunks={} rows_per_sec_total={:.1} rows_per_sec_insert={:.1}",
+        report.summary.load_timing_totals.loaded_rows,
+        report.summary.load_timing_totals.total_ms,
+        report.summary.load_timing_totals.export_ms,
+        report.summary.load_timing_totals.literal_build_ms,
+        report.summary.load_timing_totals.snowdrop_insert_ms,
+        report.summary.load_timing_totals.chunks,
+        report.summary.load_timing_totals.rows_per_second_total,
+        report
+            .summary
+            .load_timing_totals
+            .rows_per_second_snowdrop_insert
     );
     if !report.benchmark_results.is_empty() {
         println!("\nPost-migration benchmark:");
@@ -5758,6 +5877,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_command_supports_catalog_init() {
+        let args = vec![
+            "snowdrop-testkit".to_string(),
+            "catalog-init".to_string(),
+            "--path".to_string(),
+            "target/catalog/test.sqlite".to_string(),
+        ];
+        match parse_command(&args).unwrap() {
+            Command::CatalogInit { path } => {
+                assert_eq!(path, PathBuf::from("target/catalog/test.sqlite"));
+            }
+            _ => panic!("expected catalog init command"),
+        }
+    }
+
+    #[test]
     fn stale_runtime_detector_recognizes_old_phase3_boundaries() {
         assert!(looks_like_stale_phase3_runtime(
             "ERROR: WITH / CTE queries are not supported yet"
@@ -6335,6 +6470,17 @@ mod tests {
                 benchmark_queries_run: 1,
                 benchmark_queries_matched: 1,
                 benchmark_queries_snowdrop_faster: 1,
+                load_timing_totals: MigrationLoadTimingTotals {
+                    loaded_rows: 5,
+                    export_ms: 1.0,
+                    literal_build_ms: 2.0,
+                    snowdrop_insert_ms: 3.0,
+                    total_ms: 6.0,
+                    chunks: 1,
+                    trusted_bulk_load_all: true,
+                    rows_per_second_total: 833.3333333333334,
+                    rows_per_second_snowdrop_insert: 1666.6666666666667,
+                },
             },
             table_runs: vec![MigrationTableRun {
                 schema_name: "public".into(),
@@ -6381,6 +6527,9 @@ mod tests {
         assert!(rendered.contains("| Planned tables | 1 |"));
         assert!(rendered.contains("| Replay queries run | 3 |"));
         assert!(rendered.contains("| Benchmark queries run | 1 |"));
+        assert!(rendered.contains("| Loaded rows | 5 |"));
+        assert!(rendered.contains("| Snowdrop insert ms | 3.00 |"));
+        assert!(rendered.contains("| Rows/sec Snowdrop insert stage | 1666.7 |"));
         assert!(rendered.contains("## Post-Migration Benchmark"));
         assert!(rendered.contains("### Replay Checks"));
         assert!(rendered.contains("all verification checks passed"));

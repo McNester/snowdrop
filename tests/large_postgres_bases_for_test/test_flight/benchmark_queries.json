@@ -1,0 +1,27 @@
+[
+  {
+    "name": "flight_search_kyiv_warsaw",
+    "description": "Customer-facing route search over the denormalized flight read model.",
+    "sql": "SELECT flight_status, COUNT(*) AS flights, SUM(seats_available) AS seats FROM flights WHERE from_city = 'Kyiv' AND to_city = 'Warsaw' GROUP BY flight_status ORDER BY flight_status;"
+  },
+  {
+    "name": "route_dashboard_top_routes",
+    "description": "Read-heavy dashboard over pre-aggregated route facts.",
+    "sql": "SELECT from_city, to_city, SUM(search_count) AS searches, SUM(booking_count) AS bookings, SUM(revenue) AS revenue FROM route_daily_stats GROUP BY from_city, to_city ORDER BY searches DESC, revenue DESC LIMIT 20;"
+  },
+  {
+    "name": "route_origin_demand",
+    "description": "Route demand summary over pre-aggregated route facts.",
+    "sql": "SELECT from_city, SUM(search_count) AS searches FROM route_daily_stats GROUP BY from_city ORDER BY searches DESC LIMIT 20;"
+  },
+  {
+    "name": "booking_status_distribution",
+    "description": "Booking fact status distribution.",
+    "sql": "SELECT status, COUNT(*) AS bookings, SUM(total_price) AS gross FROM bookings GROUP BY status ORDER BY status;"
+  },
+  {
+    "name": "user_role_distribution",
+    "description": "User role distribution over the account table.",
+    "sql": "SELECT role, COUNT(*) AS users FROM users GROUP BY role ORDER BY role;"
+  }
+]

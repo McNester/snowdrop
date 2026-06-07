@@ -133,6 +133,15 @@ impl WalFile {
 
     /// Appends a new entry to the WAL.
     pub fn append(&mut self, payload: WalPayload) -> Result<(u64, u64), WalError> {
+        self.append_with_status(payload, WalStatus::Pending)
+    }
+
+    /// Appends a new entry to the WAL with an explicit initial status.
+    pub fn append_with_status(
+        &mut self,
+        payload: WalPayload,
+        status: WalStatus,
+    ) -> Result<(u64, u64), WalError> {
         let file = OpenOptions::new()
             .write(true)
             .append(false)
@@ -141,7 +150,7 @@ impl WalFile {
 
         let file_offset = writer.seek(SeekFrom::End(0))?;
         let entry_id = self.next_entry_id;
-        crate::entry::append(&mut writer, entry_id, payload)?;
+        crate::entry::append_with_status(&mut writer, entry_id, payload, status)?;
         writer.flush()?;
 
         self.next_entry_id += 1;

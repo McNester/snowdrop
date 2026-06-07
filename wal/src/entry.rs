@@ -141,6 +141,16 @@ pub fn append<W: Write + Seek>(
     next_entry_id: u64,
     payload: WalPayload,
 ) -> Result<u64, WalError> {
+    append_with_status(writer, next_entry_id, payload, WalStatus::Pending)
+}
+
+/// Appends a new WAL entry with an explicit initial status.
+pub fn append_with_status<W: Write + Seek>(
+    writer: &mut W,
+    next_entry_id: u64,
+    payload: WalPayload,
+    status: WalStatus,
+) -> Result<u64, WalError> {
     let payload_bytes = bincode::serialize(&payload)?;
 
     let now = std::time::SystemTime::now()
@@ -151,7 +161,7 @@ pub fn append<W: Write + Seek>(
     let header = WalHeader {
         entry_id: next_entry_id,
         timestamp: now,
-        status: WalStatus::Pending as u8,
+        status: status as u8,
         payload_len: payload_bytes.len() as u32,
     };
 

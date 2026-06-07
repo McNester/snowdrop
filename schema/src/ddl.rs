@@ -75,7 +75,10 @@ pub struct TableConstraintsInfo {
     pub check_constraints: Vec<CheckConstraintInfo>,
 }
 
-fn check_constraint_references_column(expr_sql: &str, column_name: &str) -> Result<bool> {
+pub(crate) fn check_constraint_references_column(
+    expr_sql: &str,
+    column_name: &str,
+) -> Result<bool> {
     let sql = format!("SELECT {expr_sql}");
     let statements = Parser::parse_sql(&PostgreSqlDialect {}, &sql)
         .with_context(|| format!("failed to parse CHECK expression '{expr_sql}'"))?;

@@ -1,7 +1,9 @@
+pub mod catalog;
 pub mod ddl;
 pub mod neo4j;
 pub mod types;
 
+pub use catalog::{CatalogBackend, CatalogConfig, CatalogStore, SQLiteCatalogStore};
 pub use ddl::{
     CheckConstraintInfo, ColumnDefinition, ColumnInfo, DatabaseInfo, ForeignKeyConstraintInfo,
     TableConstraintsInfo, TableInfo, UniqueConstraintInfo,
