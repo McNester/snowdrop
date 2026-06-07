@@ -41,12 +41,30 @@ impl NullBitmap {
 
     #[inline]
     pub fn set_null(&mut self, index: usize) {
+        self.ensure_index(index);
         self.words[index / 64] |= 1u64 << (index % 64);
     }
 
     #[inline]
+    pub fn clear_null(&mut self, index: usize) {
+        self.ensure_index(index);
+        self.words[index / 64] &= !(1u64 << (index % 64));
+    }
+
+    #[inline]
     pub fn is_null(&self, index: usize) -> bool {
+        if index / 64 >= self.words.len() {
+            return false;
+        }
         (self.words[index / 64] >> (index % 64)) & 1 == 1
+    }
+
+    #[inline]
+    fn ensure_index(&mut self, index: usize) {
+        let needed = index / 64 + 1;
+        if self.words.len() < needed {
+            self.words.resize(needed, 0);
+        }
     }
 }
 
@@ -201,9 +219,187 @@ impl TableColumns {
             TypedValue::Null
         }
     }
+
+    pub fn append_encoded_row(
+        &mut self,
+        row_key: String,
+        row_data: &[u8],
+        schema_cols: &[ColumnInfo],
+    ) {
+        let row_idx = self.row_count;
+        self.row_keys.push(row_key);
+        self.row_count += 1;
+
+        let legacy_cols;
+        let view = RowView::new(row_data);
+        if view.is_none() {
+            legacy_cols = bincode::deserialize::<Vec<(u32, Vec<u8>)>>(row_data).unwrap_or_default();
+        } else {
+            legacy_cols = Vec::new();
+        }
+
+        for sc in schema_cols {
+            let value = view
+                .as_ref()
+                .and_then(|row_view| row_view.find_col(sc.id))
+                .map(|bytes| bytes.to_vec())
+                .or_else(|| {
+                    legacy_cols
+                        .iter()
+                        .find(|(id, _)| *id == sc.id)
+                        .map(|(_, bytes)| bytes.clone())
+                });
+            if let Some((typed_col, nulls)) = self.columns.get_mut(&sc.id) {
+                append_typed_value(typed_col, nulls, row_idx, value.as_deref());
+            }
+        }
+    }
+
+    pub fn update_rows_by_value(
+        &mut self,
+        schema_cols: &[ColumnInfo],
+        where_col: &str,
+        where_val: &str,
+        updates: &[(String, Vec<u8>)],
+    ) -> bool {
+        let Some(where_schema) = schema_cols
+            .iter()
+            .find(|col| col.name.eq_ignore_ascii_case(where_col))
+        else {
+            return false;
+        };
+
+        let mut update_cols = Vec::with_capacity(updates.len());
+        for (name, value) in updates {
+            let Some(col) = schema_cols
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(name))
+            else {
+                return false;
+            };
+            update_cols.push((col.id, value.as_slice()));
+        }
+
+        let mut matched = false;
+        for row_idx in 0..self.row_count {
+            if self.get_typed_value(row_idx, where_schema).to_string() == where_val {
+                matched = true;
+                for (col_id, value) in &update_cols {
+                    let Some((typed_col, nulls)) = self.columns.get_mut(col_id) else {
+                        return false;
+                    };
+                    if !set_typed_value(typed_col, nulls, row_idx, Some(value)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        matched
+    }
+}
+
+fn append_typed_value(
+    typed_col: &mut TypedColumn,
+    nulls: &mut NullBitmap,
+    row_idx: usize,
+    value: Option<&[u8]>,
+) {
+    match value {
+        Some(bytes) if !bytes.is_empty() => {
+            nulls.clear_null(row_idx);
+            let s = std::str::from_utf8(bytes).unwrap_or("");
+            match typed_col {
+                TypedColumn::Int64(values) => values.push(s.parse::<i64>().unwrap_or(0)),
+                TypedColumn::Float64(values) => values.push(s.parse::<f64>().unwrap_or(0.0)),
+                TypedColumn::Decimal(values) => values.push(s.to_string()),
+                TypedColumn::DateDays(values) => values.push(date_to_days(s).unwrap_or(0)),
+                TypedColumn::Text(values) => values.push(if s == EMPTY_TEXT_SENTINEL {
+                    String::new()
+                } else {
+                    s.to_string()
+                }),
+                TypedColumn::Boolean(values) => values.push(matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "true" | "t" | "1"
+                )),
+            }
+        }
+        _ => {
+            nulls.set_null(row_idx);
+            match typed_col {
+                TypedColumn::Int64(values) => values.push(0),
+                TypedColumn::Float64(values) => values.push(0.0),
+                TypedColumn::Decimal(values) => values.push(String::new()),
+                TypedColumn::DateDays(values) => values.push(0),
+                TypedColumn::Text(values) => values.push(String::new()),
+                TypedColumn::Boolean(values) => values.push(false),
+            }
+        }
+    }
 }
 
 // ── Column builder (accumulates values during construction) ──
+
+fn set_typed_value(
+    typed_col: &mut TypedColumn,
+    nulls: &mut NullBitmap,
+    row_idx: usize,
+    value: Option<&[u8]>,
+) -> bool {
+    match value {
+        Some(bytes) if !bytes.is_empty() => {
+            nulls.clear_null(row_idx);
+            let s = std::str::from_utf8(bytes).unwrap_or("");
+            match typed_col {
+                TypedColumn::Int64(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = s.parse::<i64>().unwrap_or(0);
+                }
+                TypedColumn::Float64(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = s.parse::<f64>().unwrap_or(0.0);
+                }
+                TypedColumn::Decimal(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = s.to_string();
+                }
+                TypedColumn::DateDays(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = date_to_days(s).unwrap_or(0);
+                }
+                TypedColumn::Text(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = if s == EMPTY_TEXT_SENTINEL {
+                        String::new()
+                    } else {
+                        s.to_string()
+                    };
+                }
+                TypedColumn::Boolean(values) => {
+                    let Some(slot) = values.get_mut(row_idx) else {
+                        return false;
+                    };
+                    *slot = matches!(s.to_ascii_lowercase().as_str(), "true" | "t" | "1");
+                }
+            }
+        }
+        _ => {
+            nulls.set_null(row_idx);
+        }
+    }
+    true
+}
 
 struct ColumnBuilder {
     kind: ColumnKind,

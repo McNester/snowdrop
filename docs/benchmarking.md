@@ -88,6 +88,41 @@ docker run --rm --platform linux/amd64 --network snowdrop-1_default `
   bash -lc "export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && cargo run -p snowdrop-testkit -- write-ddl-benchmark --rows 100"
 ```
 
+## Test Flight Product Demo
+
+Use this when you need a business-facing local demo instead of a synthetic TPC-H run. It starts the same Test Flight site twice:
+
+- PostgreSQL source site: `http://localhost:8110`
+- Snowdrop migrated site: `http://localhost:8120`
+
+The demo uses the Snowdrop-safe fixture in [tests/large_postgres_bases_for_test/test_flight/README.md](/e:/snowdrop-1/tests/large_postgres_bases_for_test/test_flight/README.md:1) and the runnable app in [demo/test-flight-speed-demo/README.md](/e:/snowdrop-1/demo/test-flight-speed-demo/README.md:1).
+
+Short workflow:
+
+```powershell
+docker compose up -d --build orchestrator postgres neo4j
+```
+
+Then follow [demo/test-flight-speed-demo/RUNBOOK.md](/e:/snowdrop-1/demo/test-flight-speed-demo/RUNBOOK.md:1) to reset PostgreSQL, run `migration-auto`, and start both demo sites.
+
+Interpretation rule:
+
+- flight search and dashboards are the Snowdrop-friendly read-heavy story
+- register, booking, and cancellation are included to prove full CRUD works, but they may expose current write-path bottlenecks
+
+Action benchmark:
+
+```powershell
+docker run --rm --platform linux/amd64 --network snowdrop-1_default -e POSTGRES_BASE_URL=http://test-flight-postgres-site:8110 -e SNOWDROP_BASE_URL=http://test-flight-snowdrop-site:8120 -e RUNS=7 -v E:\snowdrop-1:/app -w /app/demo/test-flight-speed-demo node:22-bookworm-slim node scripts/compare-actions.mjs
+```
+
+Artifacts:
+
+- `reports/test-flight-demo/action-comparison.json`
+- `reports/test-flight-demo/action-comparison.md`
+
+The action benchmark separates read-path and write-path behavior. Search and dashboard reads are the intended Snowdrop-friendly story; booking create/cancel remains an explicit write-path bottleneck.
+
 Outputs:
 
 - [write-ddl-results.json](/e:/snowdrop-1/reports/benchmarks/write-ddl-results.json:1)

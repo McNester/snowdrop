@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use schema::CatalogStore;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -477,6 +478,9 @@ enum Command {
         output_json: String,
         output_md: String,
     },
+    CatalogInit {
+        path: PathBuf,
+    },
     MigrationPreflight {
         source: MigrationSourceArg,
         schema: Option<String>,
@@ -619,6 +623,12 @@ async fn async_main() -> Result<()> {
             let report = run_write_ddl_benchmark(&repo_root, &runtime, rows).await?;
             write_write_ddl_benchmark_artifacts(&repo_root, &report, &output_json, &output_md)?;
             print_write_ddl_benchmark_summary(&report);
+        }
+        Command::CatalogInit { path } => {
+            let catalog = schema::SQLiteCatalogStore::open(&path)?;
+            catalog.init_catalog().await?;
+            catalog.ping().await?;
+            println!("SQLite catalog initialized at {}", path.display());
         }
         Command::MigrationPreflight { source, schema } => {
             let report =
@@ -776,6 +786,11 @@ fn parse_command(args: &[String]) -> Result<Command> {
             output_md: read_flag(args, "--output-md")
                 .unwrap_or_else(|| WRITE_DDL_BENCHMARK_MD_PATH.into()),
         }),
+        Some("catalog-init") => Ok(Command::CatalogInit {
+            path: read_flag(args, "--path")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/snowdrop/catalog/catalog.sqlite")),
+        }),
         Some("migration-preflight") => {
             let source = parse_migration_source(args)?;
             let schema = read_flag(args, "--schema");
@@ -802,7 +817,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         _ => Err(anyhow!(
-            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|benchmark-report|write-ddl-benchmark|migration-preflight|migration-run|migration-auto> [flags]"
+            "usage: snowdrop-testkit <list-datasets|load|run|run-all|report|benchmark-report|write-ddl-benchmark|catalog-init|migration-preflight|migration-run|migration-auto> [flags]"
         )),
     }
 }
@@ -5754,6 +5769,22 @@ mod tests {
                 assert_eq!(output_md, "reports/benchmarks/write.md");
             }
             _ => panic!("expected write ddl benchmark command"),
+        }
+    }
+
+    #[test]
+    fn parse_command_supports_catalog_init() {
+        let args = vec![
+            "snowdrop-testkit".to_string(),
+            "catalog-init".to_string(),
+            "--path".to_string(),
+            "target/catalog/test.sqlite".to_string(),
+        ];
+        match parse_command(&args).unwrap() {
+            Command::CatalogInit { path } => {
+                assert_eq!(path, PathBuf::from("target/catalog/test.sqlite"));
+            }
+            _ => panic!("expected catalog init command"),
         }
     }
 

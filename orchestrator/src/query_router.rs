@@ -2,9 +2,9 @@ use executor::column_store::{self, Bitmap, CmpOp, TableColumns, TypedColumn};
 use executor::index::{self, encode_index_value};
 use executor::typed_value::EMPTY_TEXT_SENTINEL;
 use executor::{
-    bytes_to_row, bytes_to_row_ref, deserialize_columns, evaluate_predicate,
-    evaluate_predicate_view, resolve_value, serialize_columns, Row, StorageBackend, TypedValue,
-    WriteEngine,
+    bytes_to_row, bytes_to_row_ref, clear_foreign_key_existence_cache, deserialize_columns,
+    evaluate_predicate, evaluate_predicate_view, resolve_value, serialize_columns, InsertPlan,
+    ResolvedForeignKeyTarget, Row, StorageBackend, TypedValue, WriteEngine,
 };
 use futures::{future::BoxFuture, stream, FutureExt};
 use keys::table_scan_prefix;
@@ -12,8 +12,8 @@ use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use schema::{
-    CheckConstraintInfo, ColumnDefinition, ColumnInfo, ColumnType, DatabaseInfo,
-    ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo, TableInfo,
+    CatalogBackend, CatalogStore, CheckConstraintInfo, ColumnDefinition, ColumnInfo, ColumnType,
+    DatabaseInfo, ForeignKeyConstraintInfo, Neo4jConnection, TableConstraintsInfo, TableInfo,
     UniqueConstraintInfo,
 };
 use sqlparser::ast::{
@@ -25,7 +25,7 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockReadGuard};
 use tracing::warn;
 use wal::WalFile;
 
@@ -35,6 +35,7 @@ struct SchemaCache {
     databases: HashMap<String, DatabaseInfo>,
     tables: HashMap<(String, String), TableInfo>,
     columns: HashMap<(String, String), Vec<ColumnInfo>>,
+    constraints: HashMap<(String, String), TableConstraintsInfo>,
 }
 
 impl SchemaCache {
@@ -43,6 +44,7 @@ impl SchemaCache {
             databases: HashMap::new(),
             tables: HashMap::new(),
             columns: HashMap::new(),
+            constraints: HashMap::new(),
         }
     }
 
@@ -50,12 +52,15 @@ impl SchemaCache {
         self.databases.remove(db_name);
         self.tables.retain(|(d, _), _| d != db_name);
         self.columns.retain(|(d, _), _| d != db_name);
+        self.constraints.retain(|(d, _), _| d != db_name);
     }
 
     fn invalidate_table(&mut self, db_name: &str, table_name: &str) {
         self.tables
             .remove(&(db_name.to_string(), table_name.to_string()));
         self.columns
+            .remove(&(db_name.to_string(), table_name.to_string()));
+        self.constraints
             .remove(&(db_name.to_string(), table_name.to_string()));
     }
 }
@@ -500,7 +505,9 @@ impl RelationContext {
 }
 
 pub struct QueryRouter {
-    neo4j: Arc<RwLock<Neo4jConnection>>,
+    neo4j: Option<Arc<RwLock<Neo4jConnection>>>,
+    catalog_backend: CatalogBackend,
+    catalog: Option<Arc<dyn CatalogStore>>,
     storage: Arc<dyn StorageBackend>,
     wal: Arc<RwLock<WalFile>>,
     current_db: Arc<RwLock<String>>,
@@ -511,9 +518,22 @@ pub struct QueryRouter {
 }
 
 impl QueryRouter {
+    #[allow(dead_code)]
     pub fn new(neo4j: Neo4jConnection, storage: Arc<dyn StorageBackend>, wal: WalFile) -> Self {
+        Self::new_with_catalog(Some(neo4j), storage, wal, CatalogBackend::Neo4j, None)
+    }
+
+    pub fn new_with_catalog(
+        neo4j: Option<Neo4jConnection>,
+        storage: Arc<dyn StorageBackend>,
+        wal: WalFile,
+        catalog_backend: CatalogBackend,
+        catalog: Option<Arc<dyn CatalogStore>>,
+    ) -> Self {
         Self {
-            neo4j: Arc::new(RwLock::new(neo4j)),
+            neo4j: neo4j.map(|connection| Arc::new(RwLock::new(connection))),
+            catalog_backend,
+            catalog,
             storage,
             wal: Arc::new(RwLock::new(wal)),
             current_db: Arc::new(RwLock::new("default".to_string())),
@@ -530,7 +550,37 @@ impl QueryRouter {
 
     /// Load all existing schemas into cache on startup.
     pub async fn warm_schema_cache(&self) -> PgWireResult<()> {
-        let neo4j = self.neo4j.read().await;
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            if let Some(catalog) = self.catalog.as_ref() {
+                let dbs = catalog.list_databases().await.map_err(to_err)?;
+                let mut cache = self.schema_cache.write().await;
+                for db in &dbs {
+                    cache.databases.insert(db.name.clone(), db.clone());
+                    let tables = catalog.list_tables(db.id).await.map_err(to_err)?;
+                    for tbl in &tables {
+                        cache
+                            .tables
+                            .insert((db.name.clone(), tbl.name.clone()), tbl.clone());
+                        let cols = catalog.list_columns(tbl.id).await.map_err(to_err)?;
+                        cache
+                            .columns
+                            .insert((db.name.clone(), tbl.name.clone()), cols);
+                        let constraints = catalog.get_constraints(tbl.id).await.map_err(to_err)?;
+                        cache
+                            .constraints
+                            .insert((db.name.clone(), tbl.name.clone()), constraints);
+                    }
+                }
+                tracing::info!(
+                    databases = cache.databases.len(),
+                    tables = cache.tables.len(),
+                    "schema cache warmed from embedded catalog"
+                );
+                return Ok(());
+            }
+        }
+
+        let neo4j = self.legacy_neo4j().await?;
         let dbs = neo4j.show_databases().await.map_err(to_err)?;
         let mut cache = self.schema_cache.write().await;
         for db in &dbs {
@@ -547,13 +597,119 @@ impl QueryRouter {
                 cache
                     .columns
                     .insert((db.name.clone(), tbl.name.clone()), cols);
+                let constraints = neo4j
+                    .get_table_constraints(&db.name, &tbl.name)
+                    .await
+                    .map_err(to_err)?;
+                cache
+                    .constraints
+                    .insert((db.name.clone(), tbl.name.clone()), constraints);
             }
         }
+        drop(cache);
+        if matches!(
+            self.catalog_backend,
+            CatalogBackend::Mirror | CatalogBackend::Sqlite
+        ) {
+            self.mirror_neo4j_catalog_snapshot(&dbs).await?;
+        }
+        let cache = self.schema_cache.read().await;
         tracing::info!(
             databases = cache.databases.len(),
             tables = cache.tables.len(),
             "schema cache warmed"
         );
+        Ok(())
+    }
+
+    async fn mirror_neo4j_catalog_snapshot(&self, dbs: &[DatabaseInfo]) -> PgWireResult<()> {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return Ok(());
+        };
+        let neo4j = self.legacy_neo4j().await?;
+        for db in dbs {
+            catalog.put_database(db).await.map_err(to_err)?;
+            let tables = neo4j.show_tables(&db.name).await.map_err(to_err)?;
+            for table in tables {
+                catalog.put_table(&table).await.map_err(to_err)?;
+                let cols = neo4j
+                    .describe_table(&db.name, &table.name)
+                    .await
+                    .map_err(to_err)?;
+                catalog
+                    .replace_columns(table.id, &cols)
+                    .await
+                    .map_err(to_err)?;
+                let constraints = neo4j
+                    .get_table_constraints(&db.name, &table.name)
+                    .await
+                    .map_err(to_err)?;
+                catalog
+                    .put_constraints(table.id, &constraints)
+                    .await
+                    .map_err(to_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn mirror_database_to_catalog(&self, db: &DatabaseInfo) -> PgWireResult<()> {
+        if let Some(catalog) = self.catalog.as_ref() {
+            catalog.put_database(db).await.map_err(to_err)?;
+        }
+        Ok(())
+    }
+
+    async fn mirror_table_to_catalog(
+        &self,
+        table: &TableInfo,
+        columns: &[ColumnInfo],
+        constraints: &TableConstraintsInfo,
+    ) -> PgWireResult<()> {
+        if let Some(catalog) = self.catalog.as_ref() {
+            catalog.put_table(table).await.map_err(to_err)?;
+            catalog
+                .replace_columns(table.id, columns)
+                .await
+                .map_err(to_err)?;
+            catalog
+                .put_constraints(table.id, constraints)
+                .await
+                .map_err(to_err)?;
+        }
+        Ok(())
+    }
+
+    fn embedded_catalog(&self) -> PgWireResult<&Arc<dyn CatalogStore>> {
+        self.catalog
+            .as_ref()
+            .ok_or_else(|| user_error("embedded catalog is not configured".to_string()))
+    }
+
+    async fn legacy_neo4j(&self) -> PgWireResult<RwLockReadGuard<'_, Neo4jConnection>> {
+        let Some(neo4j) = self.neo4j.as_ref() else {
+            return Err(user_error(
+                "Neo4j catalog is not available in this runtime mode; use supported embedded-catalog operations or start Snowdrop with SNOWDROP_CATALOG_BACKEND=neo4j|mirror".to_string(),
+            ));
+        };
+        Ok(neo4j.read().await)
+    }
+
+    async fn delete_database_from_catalog(&self, db_name: &str) -> PgWireResult<()> {
+        if let Some(catalog) = self.catalog.as_ref() {
+            catalog.delete_database(db_name).await.map_err(to_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete_table_from_catalog(&self, db_name: &str, table_name: &str) -> PgWireResult<()> {
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(db) = self.cached_get_database(db_name).await? {
+                if let Some(table) = catalog.get_table(db.id, table_name).await.map_err(to_err)? {
+                    catalog.delete_table(table.id).await.map_err(to_err)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -565,11 +721,24 @@ impl QueryRouter {
                 return Ok(Some(db.clone()));
             }
         }
-        let neo4j = self.neo4j.read().await;
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(db) = catalog.get_database(db_name).await.map_err(to_err)? {
+                let mut cache = self.schema_cache.write().await;
+                cache.databases.insert(db_name.to_string(), db.clone());
+                return Ok(Some(db));
+            }
+        }
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            return Ok(None);
+        }
+        let neo4j = self.legacy_neo4j().await?;
         let db = neo4j.get_database(db_name).await.map_err(to_err)?;
         if let Some(ref db_info) = db {
             let mut cache = self.schema_cache.write().await;
             cache.databases.insert(db_name.to_string(), db_info.clone());
+            if let Some(catalog) = self.catalog.as_ref() {
+                catalog.put_database(db_info).await.map_err(to_err)?;
+            }
         }
         Ok(db)
     }
@@ -587,11 +756,26 @@ impl QueryRouter {
                 return Ok(Some(tbl.clone()));
             }
         }
-        let neo4j = self.neo4j.read().await;
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(db) = self.cached_get_database(db_name).await? {
+                if let Some(tbl) = catalog.get_table(db.id, table_name).await.map_err(to_err)? {
+                    let mut cache = self.schema_cache.write().await;
+                    cache.tables.insert(key.clone(), tbl.clone());
+                    return Ok(Some(tbl));
+                }
+            }
+        }
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            return Ok(None);
+        }
+        let neo4j = self.legacy_neo4j().await?;
         let tbl = neo4j.get_table(db_name, table_name).await.map_err(to_err)?;
         if let Some(ref tbl_info) = tbl {
             let mut cache = self.schema_cache.write().await;
             cache.tables.insert(key, tbl_info.clone());
+            if let Some(catalog) = self.catalog.as_ref() {
+                catalog.put_table(tbl_info).await.map_err(to_err)?;
+            }
         }
         Ok(tbl)
     }
@@ -609,14 +793,159 @@ impl QueryRouter {
                 return Ok(cols.clone());
             }
         }
-        let neo4j = self.neo4j.read().await;
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(table) = self.cached_get_table(db_name, table_name).await? {
+                let cols = catalog.list_columns(table.id).await.map_err(to_err)?;
+                if !cols.is_empty() {
+                    let mut cache = self.schema_cache.write().await;
+                    cache.columns.insert(key.clone(), cols.clone());
+                    return Ok(cols);
+                }
+            }
+        }
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            return Err(user_error(format!(
+                "table '{}.{}' does not exist",
+                db_name, table_name
+            )));
+        }
+        let neo4j = self.legacy_neo4j().await?;
         let cols = neo4j
             .describe_table(db_name, table_name)
             .await
             .map_err(to_err)?;
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(table) = self.cached_get_table(db_name, table_name).await? {
+                catalog
+                    .replace_columns(table.id, &cols)
+                    .await
+                    .map_err(to_err)?;
+            }
+        }
         let mut cache = self.schema_cache.write().await;
         cache.columns.insert(key, cols.clone());
         Ok(cols)
+    }
+
+    async fn cached_get_table_constraints(
+        &self,
+        db_name: &str,
+        table_name: &str,
+    ) -> PgWireResult<TableConstraintsInfo> {
+        let key = (db_name.to_string(), table_name.to_string());
+        {
+            let cache = self.schema_cache.read().await;
+            if let Some(constraints) = cache.constraints.get(&key) {
+                return Ok(constraints.clone());
+            }
+        }
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(table) = self.cached_get_table(db_name, table_name).await? {
+                let constraints = catalog.get_constraints(table.id).await.map_err(to_err)?;
+                if !constraints.primary_key_columns.is_empty()
+                    || self.catalog_backend == CatalogBackend::Sqlite
+                {
+                    let mut cache = self.schema_cache.write().await;
+                    cache.constraints.insert(key.clone(), constraints.clone());
+                    return Ok(constraints);
+                }
+            }
+        }
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            return Err(user_error(format!(
+                "table '{}.{}' does not exist",
+                db_name, table_name
+            )));
+        }
+        let neo4j = self.legacy_neo4j().await?;
+        let constraints = neo4j
+            .get_table_constraints(db_name, table_name)
+            .await
+            .map_err(to_err)?;
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(table) = self.cached_get_table(db_name, table_name).await? {
+                catalog
+                    .put_constraints(table.id, &constraints)
+                    .await
+                    .map_err(to_err)?;
+            }
+        }
+        let mut cache = self.schema_cache.write().await;
+        cache.constraints.insert(key, constraints.clone());
+        Ok(constraints)
+    }
+
+    async fn cached_insert_plan(
+        &self,
+        db_name: &str,
+        table_name: &str,
+    ) -> PgWireResult<InsertPlan> {
+        let db = self
+            .cached_get_database(db_name)
+            .await?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let table = self
+            .cached_get_table(db_name, table_name)
+            .await?
+            .ok_or_else(|| {
+                user_error(format!(
+                    "table '{}' does not exist in database '{}'",
+                    table_name, db_name
+                ))
+            })?;
+        let schema_cols = self.cached_describe_table(db_name, table_name).await?;
+        let constraints = self
+            .cached_get_table_constraints(db_name, table_name)
+            .await?;
+        let fk_targets = self
+            .resolve_cached_fk_targets(db_name, &constraints)
+            .await?;
+        Ok(InsertPlan {
+            db,
+            table,
+            schema_cols,
+            constraints,
+            fk_targets,
+        })
+    }
+
+    async fn resolve_cached_fk_targets(
+        &self,
+        db_name: &str,
+        constraints: &TableConstraintsInfo,
+    ) -> PgWireResult<Vec<ResolvedForeignKeyTarget>> {
+        let mut targets = Vec::with_capacity(constraints.foreign_keys.len());
+        for fk in &constraints.foreign_keys {
+            let ref_db_name = fk.ref_db_name.as_deref().unwrap_or(db_name);
+            let ref_db = self
+                .cached_get_database(ref_db_name)
+                .await?
+                .ok_or_else(|| user_error(format!("database '{}' does not exist", ref_db_name)))?;
+            let ref_table = self
+                .cached_get_table(ref_db_name, &fk.ref_table_name)
+                .await?
+                .ok_or_else(|| {
+                    user_error(format!(
+                        "referenced table '{}.{}' does not exist",
+                        ref_db_name, fk.ref_table_name
+                    ))
+                })?;
+            let ref_constraints = self
+                .cached_get_table_constraints(ref_db_name, &fk.ref_table_name)
+                .await?;
+            if ref_constraints.primary_key_columns != fk.ref_columns {
+                return Err(user_error(format!(
+                    "FOREIGN KEY '{}' currently supports references to the referenced table primary key only",
+                    fk.name
+                )));
+            }
+            targets.push(ResolvedForeignKeyTarget {
+                fk: fk.clone(),
+                ref_db_id: ref_db.id,
+                ref_table_id: ref_table.id,
+            });
+        }
+        Ok(targets)
     }
 
     pub async fn route<'a>(&self, query_str: &'a str) -> PgWireResult<Vec<Response<'a>>> {
@@ -804,21 +1133,43 @@ impl QueryRouter {
     // ── DDL handlers (unchanged from M2) ──
 
     async fn handle_create_database<'a>(&self, name: &str) -> PgWireResult<Response<'a>> {
-        let neo4j = self.neo4j.read().await;
-        neo4j.create_database(name).await.map_err(to_err)?;
-        // Warm cache for the new database
-        if let Ok(Some(db)) = neo4j.get_database(name).await {
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            let db = self
+                .embedded_catalog()?
+                .create_database(name)
+                .await
+                .map_err(to_err)?;
             let mut cache = self.schema_cache.write().await;
             cache.databases.insert(name.to_string(), db);
+            return Ok(Response::Execution(Tag::new("CREATE DATABASE")));
         }
+
+        let neo4j = self.legacy_neo4j().await?;
+        let db = neo4j.create_database(name).await.map_err(to_err)?;
+        // Warm cache for the new database
+        let mut cache = self.schema_cache.write().await;
+        cache.databases.insert(name.to_string(), db.clone());
+        drop(cache);
+        self.mirror_database_to_catalog(&db).await?;
         Ok(Response::Execution(Tag::new("CREATE DATABASE")))
     }
 
     async fn handle_drop_database<'a>(&self, name: &str) -> PgWireResult<Response<'a>> {
-        let neo4j = self.neo4j.read().await;
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            self.delete_database_from_catalog(name).await?;
+            let mut cache = self.schema_cache.write().await;
+            cache.invalidate_database(name);
+            clear_foreign_key_existence_cache();
+            return Ok(Response::Execution(Tag::new("DROP DATABASE")));
+        }
+
+        let neo4j = self.legacy_neo4j().await?;
         neo4j.drop_database(name).await.map_err(to_err)?;
         let mut cache = self.schema_cache.write().await;
         cache.invalidate_database(name);
+        clear_foreign_key_existence_cache();
+        drop(cache);
+        self.delete_database_from_catalog(name).await?;
         Ok(Response::Execution(Tag::new("DROP DATABASE")))
     }
 
@@ -834,9 +1185,29 @@ impl QueryRouter {
                 self.resolve_table_name(name, &current_db)
             })?;
 
-        let neo4j = self.neo4j.read().await;
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            let (tbl, cols) = self
+                .embedded_catalog()?
+                .create_table(&db_name, &table_name, col_defs, constraints.clone())
+                .await
+                .map_err(to_err)?;
+            let mut cache = self.schema_cache.write().await;
+            cache
+                .tables
+                .insert((db_name.clone(), table_name.clone()), tbl);
+            cache
+                .columns
+                .insert((db_name.clone(), table_name.clone()), cols);
+            cache
+                .constraints
+                .insert((db_name.clone(), table_name.clone()), constraints);
+            clear_foreign_key_existence_cache();
+            return Ok(Response::Execution(Tag::new("CREATE TABLE")));
+        }
+
+        let neo4j = self.legacy_neo4j().await?;
         let (tbl, cols) = neo4j
-            .create_table(&db_name, &table_name, col_defs, constraints)
+            .create_table(&db_name, &table_name, col_defs, constraints.clone())
             .await
             .map_err(to_err)?;
 
@@ -844,8 +1215,17 @@ impl QueryRouter {
         let mut cache = self.schema_cache.write().await;
         cache
             .tables
-            .insert((db_name.clone(), table_name.clone()), tbl);
-        cache.columns.insert((db_name, table_name), cols);
+            .insert((db_name.clone(), table_name.clone()), tbl.clone());
+        cache
+            .columns
+            .insert((db_name.clone(), table_name.clone()), cols.clone());
+        cache
+            .constraints
+            .insert((db_name.clone(), table_name.clone()), constraints.clone());
+        clear_foreign_key_existence_cache();
+        drop(cache);
+        self.mirror_table_to_catalog(&tbl, &cols, &constraints)
+            .await?;
 
         Ok(Response::Execution(Tag::new("CREATE TABLE")))
     }
@@ -859,13 +1239,38 @@ impl QueryRouter {
             _ => (current_db.as_str(), name),
         };
 
-        let neo4j = self.neo4j.read().await;
+        let table_before_drop = self.cached_get_table(db_name, table_name).await?;
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            let Some(table) = table_before_drop else {
+                return Err(user_error(format!(
+                    "table '{}.{}' does not exist",
+                    db_name, table_name
+                )));
+            };
+            self.embedded_catalog()?
+                .delete_table(table.id)
+                .await
+                .map_err(to_err)?;
+            let mut cache = self.schema_cache.write().await;
+            cache.invalidate_table(db_name, table_name);
+            clear_foreign_key_existence_cache();
+            drop(cache);
+            self.invalidate_column_cache(table.db_id, table.id).await;
+            return Ok(Response::Execution(Tag::new("DROP TABLE")));
+        }
+
+        let neo4j = self.legacy_neo4j().await?;
         neo4j
             .drop_table(db_name, table_name)
             .await
             .map_err(to_err)?;
         let mut cache = self.schema_cache.write().await;
         cache.invalidate_table(db_name, table_name);
+        clear_foreign_key_existence_cache();
+        drop(cache);
+        if table_before_drop.is_some() {
+            self.delete_table_from_catalog(db_name, table_name).await?;
+        }
         Ok(Response::Execution(Tag::new("DROP TABLE")))
     }
 
@@ -921,30 +1326,57 @@ impl QueryRouter {
                     ));
                 }
 
-                let neo4j = self.neo4j.read().await;
-                let new_column = neo4j
-                    .add_column(
-                        &db_name,
-                        &table_name,
-                        &column_def.name.value,
-                        &col_type,
-                        nullable,
-                    )
-                    .await
-                    .map_err(to_err)?;
-
-                if let Some(default_expr) = default_expr {
-                    neo4j
-                        .set_column_default(
+                let new_column = if self.catalog_backend == CatalogBackend::Sqlite {
+                    let col_type_name = col_type.as_str();
+                    let new_column = self
+                        .embedded_catalog()?
+                        .add_column(
                             &db_name,
                             &table_name,
                             &column_def.name.value,
-                            Some(default_expr.to_string()),
+                            &col_type_name,
+                            nullable,
                         )
                         .await
                         .map_err(to_err)?;
-                }
-                drop(neo4j);
+                    if let Some(default_expr) = default_expr {
+                        self.embedded_catalog()?
+                            .set_column_default(
+                                &db_name,
+                                &table_name,
+                                &column_def.name.value,
+                                Some(default_expr.to_string()),
+                            )
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    new_column
+                } else {
+                    let neo4j = self.legacy_neo4j().await?;
+                    let new_column = neo4j
+                        .add_column(
+                            &db_name,
+                            &table_name,
+                            &column_def.name.value,
+                            &col_type,
+                            nullable,
+                        )
+                        .await
+                        .map_err(to_err)?;
+
+                    if let Some(default_expr) = default_expr {
+                        neo4j
+                            .set_column_default(
+                                &db_name,
+                                &table_name,
+                                &column_def.name.value,
+                                Some(default_expr.to_string()),
+                            )
+                            .await
+                            .map_err(to_err)?;
+                    }
+                    new_column
+                };
 
                 if let (Some(db), Some(table), Some(default_bytes)) = (
                     db_info.as_ref(),
@@ -976,6 +1408,7 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                clear_foreign_key_existence_cache();
                 drop(cache);
                 if let (Some(db), Some(table)) = (db_info, table_info) {
                     self.invalidate_column_cache(db.id, table.id).await;
@@ -989,19 +1422,32 @@ impl QueryRouter {
             } => {
                 let db_info = self.cached_get_database(&db_name).await?;
                 let table_info = self.cached_get_table(&db_name, &table_name).await?;
-                let neo4j = self.neo4j.read().await;
-                neo4j
-                    .rename_column(
-                        &db_name,
-                        &table_name,
-                        &old_column_name.value,
-                        &new_column_name.value,
-                    )
-                    .await
-                    .map_err(to_err)?;
+                if self.catalog_backend == CatalogBackend::Sqlite {
+                    self.embedded_catalog()?
+                        .rename_column(
+                            &db_name,
+                            &table_name,
+                            &old_column_name.value,
+                            &new_column_name.value,
+                        )
+                        .await
+                        .map_err(to_err)?;
+                } else {
+                    let neo4j = self.legacy_neo4j().await?;
+                    neo4j
+                        .rename_column(
+                            &db_name,
+                            &table_name,
+                            &old_column_name.value,
+                            &new_column_name.value,
+                        )
+                        .await
+                        .map_err(to_err)?;
+                }
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                clear_foreign_key_existence_cache();
                 drop(cache);
                 if let (Some(db), Some(table)) = (db_info, table_info) {
                     self.invalidate_column_cache(db.id, table.id).await;
@@ -1011,14 +1457,22 @@ impl QueryRouter {
             AlterTableOperation::DropColumn { column_name, .. } => {
                 let db_info = self.cached_get_database(&db_name).await?;
                 let table_info = self.cached_get_table(&db_name, &table_name).await?;
-                let neo4j = self.neo4j.read().await;
-                neo4j
-                    .drop_column(&db_name, &table_name, &column_name.value)
-                    .await
-                    .map_err(to_err)?;
+                if self.catalog_backend == CatalogBackend::Sqlite {
+                    self.embedded_catalog()?
+                        .drop_column(&db_name, &table_name, &column_name.value)
+                        .await
+                        .map_err(to_err)?;
+                } else {
+                    let neo4j = self.legacy_neo4j().await?;
+                    neo4j
+                        .drop_column(&db_name, &table_name, &column_name.value)
+                        .await
+                        .map_err(to_err)?;
+                }
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                clear_foreign_key_existence_cache();
                 drop(cache);
                 if let (Some(db), Some(table)) = (db_info, table_info) {
                     self.invalidate_column_cache(db.id, table.id).await;
@@ -1028,25 +1482,45 @@ impl QueryRouter {
             AlterTableOperation::AlterColumn { column_name, op } => {
                 let db_info = self.cached_get_database(&db_name).await?;
                 let table_info = self.cached_get_table(&db_name, &table_name).await?;
-                let neo4j = self.neo4j.read().await;
                 match op {
                     AlterColumnOperation::SetDefault { value } => {
                         validate_supported_default_expr(&value)?;
-                        neo4j
-                            .set_column_default(
-                                &db_name,
-                                &table_name,
-                                &column_name.value,
-                                Some(value.to_string()),
-                            )
-                            .await
-                            .map_err(to_err)?;
+                        if self.catalog_backend == CatalogBackend::Sqlite {
+                            self.embedded_catalog()?
+                                .set_column_default(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    Some(value.to_string()),
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        } else {
+                            let neo4j = self.legacy_neo4j().await?;
+                            neo4j
+                                .set_column_default(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    Some(value.to_string()),
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        }
                     }
                     AlterColumnOperation::DropDefault => {
-                        neo4j
-                            .set_column_default(&db_name, &table_name, &column_name.value, None)
-                            .await
-                            .map_err(to_err)?;
+                        if self.catalog_backend == CatalogBackend::Sqlite {
+                            self.embedded_catalog()?
+                                .set_column_default(&db_name, &table_name, &column_name.value, None)
+                                .await
+                                .map_err(to_err)?;
+                        } else {
+                            let neo4j = self.legacy_neo4j().await?;
+                            neo4j
+                                .set_column_default(&db_name, &table_name, &column_name.value, None)
+                                .await
+                                .map_err(to_err)?;
+                        }
                     }
                     AlterColumnOperation::SetNotNull => {
                         if let (Some(db), Some(table)) = (&db_info, &table_info) {
@@ -1061,21 +1535,52 @@ impl QueryRouter {
                             self.ensure_no_existing_nulls(db.id, table.id, column.id)
                                 .await?;
                         }
-                        neo4j
-                            .set_column_nullability(
-                                &db_name,
-                                &table_name,
-                                &column_name.value,
-                                false,
-                            )
-                            .await
-                            .map_err(to_err)?;
+                        if self.catalog_backend == CatalogBackend::Sqlite {
+                            self.embedded_catalog()?
+                                .set_column_nullability(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    false,
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        } else {
+                            let neo4j = self.legacy_neo4j().await?;
+                            neo4j
+                                .set_column_nullability(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    false,
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        }
                     }
                     AlterColumnOperation::DropNotNull => {
-                        neo4j
-                            .set_column_nullability(&db_name, &table_name, &column_name.value, true)
-                            .await
-                            .map_err(to_err)?;
+                        if self.catalog_backend == CatalogBackend::Sqlite {
+                            self.embedded_catalog()?
+                                .set_column_nullability(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    true,
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        } else {
+                            let neo4j = self.legacy_neo4j().await?;
+                            neo4j
+                                .set_column_nullability(
+                                    &db_name,
+                                    &table_name,
+                                    &column_name.value,
+                                    true,
+                                )
+                                .await
+                                .map_err(to_err)?;
+                        }
                     }
                     other => {
                         return Err(user_error(format!(
@@ -1087,6 +1592,7 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&db_name, &table_name);
+                clear_foreign_key_existence_cache();
                 drop(cache);
                 if let (Some(db), Some(table)) = (db_info, table_info) {
                     self.invalidate_column_cache(db.id, table.id).await;
@@ -1100,7 +1606,7 @@ impl QueryRouter {
         }
     }
 
-    // ── Index DDL handlers (M7) ──
+    // в”Ђв”Ђ Index DDL handlers (M7) в”Ђв”Ђ
 
     async fn handle_create_index<'a>(
         &self,
@@ -1123,12 +1629,18 @@ impl QueryRouter {
         }
         let col_name = ci.columns[0].expr.to_string();
 
-        // Mark column as indexed in Neo4j
-        let neo4j = self.neo4j.read().await;
-        let col = neo4j
-            .create_index(&db_name, &table_name, &index_name, &col_name)
-            .await
-            .map_err(to_err)?;
+        let col = if self.catalog_backend == CatalogBackend::Sqlite {
+            self.embedded_catalog()?
+                .create_index(&db_name, &table_name, &index_name, &col_name)
+                .await
+                .map_err(to_err)?
+        } else {
+            let neo4j = self.legacy_neo4j().await?;
+            neo4j
+                .create_index(&db_name, &table_name, &index_name, &col_name)
+                .await
+                .map_err(to_err)?
+        };
 
         // Get table info for backfill
         let table = self
@@ -1158,6 +1670,7 @@ impl QueryRouter {
         // Invalidate caches
         let mut cache = self.schema_cache.write().await;
         cache.invalidate_table(&db_name, &table_name);
+        clear_foreign_key_existence_cache();
         drop(cache);
         self.invalidate_column_cache(db.id, table.id).await;
 
@@ -1168,8 +1681,10 @@ impl QueryRouter {
         let current_db = self.current_db.read().await.clone();
 
         // Need to find which table this index belongs to by searching all tables
-        let neo4j = self.neo4j.read().await;
+        let neo4j = self.legacy_neo4j().await?;
         let tables = neo4j.show_tables(&current_db).await.map_err(to_err)?;
+
+        // ── Index DDL handlers (M7) ──
 
         for table in &tables {
             let indexes = neo4j
@@ -1195,6 +1710,7 @@ impl QueryRouter {
 
                 let mut cache = self.schema_cache.write().await;
                 cache.invalidate_table(&current_db, &table.name);
+                clear_foreign_key_existence_cache();
                 drop(cache);
                 self.invalidate_column_cache(db.id, table.id).await;
 
@@ -1216,24 +1732,21 @@ impl QueryRouter {
         let (db_name, table_name) = self.resolve_table_name(&table_name_obj, &current_db);
 
         let mut total_inserted = 0u64;
-        let neo4j = self.neo4j.read().await;
         let target_schema = self.cached_describe_table(&db_name, &table_name).await?;
         let column_names: Vec<String> = if insert.columns.is_empty() {
             target_schema.iter().map(|col| col.name.clone()).collect()
         } else {
             insert.columns.iter().map(|c| c.value.clone()).collect()
         };
+        let mut column_cache_updated = false;
 
         // Extract values from the INSERT source
         match insert.source.as_ref() {
             Some(query) => match query.body.as_ref() {
                 SetExpr::Values(Values { rows, .. }) => {
+                    let plan = self.cached_insert_plan(&db_name, &table_name).await?;
                     let mut wal = self.wal.write().await;
-                    let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
-                    let plan = engine
-                        .prepare_insert_plan(&db_name, &table_name)
-                        .await
-                        .map_err(to_err)?;
+                    let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
                     let value_rows: Vec<Vec<Vec<u8>>> = rows
                         .iter()
                         .map(|row| {
@@ -1246,6 +1759,23 @@ impl QueryRouter {
                         .insert_many_with_plan(&db_name, &column_names, &value_rows, &plan)
                         .await
                         .map_err(to_err)?;
+                    if let (Some(db_info), Some(tbl_info)) = (
+                        self.cached_get_database(&db_name).await.ok().flatten(),
+                        self.cached_get_table(&db_name, &table_name)
+                            .await
+                            .ok()
+                            .flatten(),
+                    ) {
+                        column_cache_updated = self
+                            .append_inserted_rows_to_column_cache(
+                                db_info.id,
+                                tbl_info.id,
+                                &target_schema,
+                                &column_names,
+                                &value_rows,
+                            )
+                            .await;
+                    }
                 }
                 SetExpr::Select(_) | SetExpr::SetOperation { .. } | SetExpr::Query(_) => {
                     let relation = self.execute_query_to_relation(query.as_ref()).await?;
@@ -1282,12 +1812,9 @@ impl QueryRouter {
                         validate_insert_select_row_compatibility(values, &target_columns)?;
                     }
 
+                    let plan = self.cached_insert_plan(&db_name, &table_name).await?;
                     let mut wal = self.wal.write().await;
-                    let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
-                    let plan = engine
-                        .prepare_insert_plan(&db_name, &table_name)
-                        .await
-                        .map_err(to_err)?;
+                    let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
                     let value_rows: Vec<Vec<Vec<u8>>> = materialized_rows
                         .iter()
                         .map(|values| values.iter().map(typed_value_to_bytes).collect())
@@ -1308,14 +1835,16 @@ impl QueryRouter {
         }
 
         // Invalidate column cache for this table
-        if let (Some(db_info), Some(tbl_info)) = (
-            self.cached_get_database(&db_name).await.ok().flatten(),
-            self.cached_get_table(&db_name, &table_name)
-                .await
-                .ok()
-                .flatten(),
-        ) {
-            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+        if !column_cache_updated {
+            if let (Some(db_info), Some(tbl_info)) = (
+                self.cached_get_database(&db_name).await.ok().flatten(),
+                self.cached_get_table(&db_name, &table_name)
+                    .await
+                    .ok()
+                    .flatten(),
+            ) {
+                self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+            }
         }
 
         Ok(Response::Execution(
@@ -1344,13 +1873,9 @@ impl QueryRouter {
             parsed.column_names
         };
 
-        let neo4j = self.neo4j.read().await;
+        let plan = self.cached_insert_plan(&db_name, &table_name).await?;
         let mut wal = self.wal.write().await;
-        let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
-        let plan = engine
-            .prepare_insert_plan(&db_name, &table_name)
-            .await
-            .map_err(to_err)?;
+        let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
         let total_inserted = if trusted_bulk_load {
             engine
                 .insert_many_trusted_with_plan(&db_name, &column_names, &parsed.rows, &plan)
@@ -1362,7 +1887,6 @@ impl QueryRouter {
         }
         .map_err(to_err)?;
         drop(wal);
-        drop(neo4j);
 
         if let (Some(db_info), Some(tbl_info)) = (
             self.cached_get_database(&db_name).await.ok().flatten(),
@@ -1371,7 +1895,18 @@ impl QueryRouter {
                 .ok()
                 .flatten(),
         ) {
-            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+            if !self
+                .append_inserted_rows_to_column_cache(
+                    db_info.id,
+                    tbl_info.id,
+                    &target_schema,
+                    &column_names,
+                    &parsed.rows,
+                )
+                .await
+            {
+                self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+            }
         }
 
         Ok(Some(Response::Execution(
@@ -1410,22 +1945,77 @@ impl QueryRouter {
         // Parse WHERE clause (simple col = val for M3)
         let (where_col, where_val) = parse_simple_where(selection)?;
 
-        let neo4j = self.neo4j.read().await;
+        let db_info = self
+            .cached_get_database(&db_name)
+            .await?
+            .ok_or_else(|| user_error(format!("database '{}' does not exist", db_name)))?;
+        let tbl_info = self
+            .cached_get_table(&db_name, &table_name)
+            .await?
+            .ok_or_else(|| user_error(format!("table '{}' does not exist", table_name)))?;
+        let schema_cols = self.cached_describe_table(&db_name, &table_name).await?;
+        let constraints = self
+            .cached_get_table_constraints(&db_name, &table_name)
+            .await?;
         let mut wal = self.wal.write().await;
-        let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
-        let n = engine
-            .update(&db_name, &table_name, &set_pairs, &where_col, &where_val)
-            .await
-            .map_err(to_err)?;
-
-        if let (Some(db_info), Some(tbl_info)) = (
-            self.cached_get_database(&db_name).await.ok().flatten(),
-            self.cached_get_table(&db_name, &table_name)
+        let n = if self.catalog_backend == CatalogBackend::Sqlite {
+            let mut engine = WriteEngine::new_plan_only(self.storage.as_ref(), &mut wal);
+            engine
+                .update_with_metadata(
+                    &db_name,
+                    &table_name,
+                    &set_pairs,
+                    &where_col,
+                    &where_val,
+                    &db_info,
+                    &tbl_info,
+                    &schema_cols,
+                    &constraints,
+                )
                 .await
-                .ok()
-                .flatten(),
-        ) {
-            self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+        } else {
+            let neo4j = self.legacy_neo4j().await?;
+            let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
+            engine
+                .update_with_metadata(
+                    &db_name,
+                    &table_name,
+                    &set_pairs,
+                    &where_col,
+                    &where_val,
+                    &db_info,
+                    &tbl_info,
+                    &schema_cols,
+                    &constraints,
+                )
+                .await
+        }
+        .map_err(to_err)?;
+
+        if n > 0 {
+            let updated_columns = set_pairs
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<HashSet<_>>();
+            if schema_cols
+                .iter()
+                .any(|col| col.is_pk && updated_columns.contains(col.name.as_str()))
+            {
+                clear_foreign_key_existence_cache();
+            }
+            if !self
+                .update_column_cache_rows(
+                    db_info.id,
+                    tbl_info.id,
+                    &schema_cols,
+                    &where_col,
+                    &where_val,
+                    &set_pairs,
+                )
+                .await
+            {
+                self.invalidate_column_cache(db_info.id, tbl_info.id).await;
+            }
         }
 
         Ok(Response::Execution(
@@ -1457,7 +2047,7 @@ impl QueryRouter {
 
         let (where_col, where_val) = parse_simple_where(selection)?;
 
-        let neo4j = self.neo4j.read().await;
+        let neo4j = self.legacy_neo4j().await?;
         let mut wal = self.wal.write().await;
         let mut engine = WriteEngine::new(self.storage.as_ref(), &neo4j, &mut wal);
         let n = engine
@@ -1472,6 +2062,9 @@ impl QueryRouter {
                 .ok()
                 .flatten(),
         ) {
+            if n > 0 {
+                clear_foreign_key_existence_cache();
+            }
             self.invalidate_column_cache(db_info.id, tbl_info.id).await;
         }
 
@@ -2407,6 +3000,22 @@ impl QueryRouter {
             return Ok(None);
         }
 
+        let total_rows_hint = {
+            let cache = self.column_cache.read().await;
+            cache.get(&(db_id, table_id)).map(|table| table.row_count)
+        };
+        if matches!(total_rows_hint, Some(total_rows) if total_rows < 10_000) {
+            // On small warmed tables a columnar filter is cheaper than doing an
+            // index round-trip first and then materializing the same narrow rows.
+            tracing::debug!(
+                col = col.name,
+                op,
+                total_rows = total_rows_hint.unwrap_or(0),
+                "index scan skipped before lookup on small cached table"
+            );
+            return Ok(None);
+        }
+
         let t_index = std::time::Instant::now();
 
         // Execute index scan
@@ -2491,10 +3100,6 @@ impl QueryRouter {
             return Ok(Some(Vec::new()));
         }
 
-        let total_rows_hint = {
-            let cache = self.column_cache.read().await;
-            cache.get(&(db_id, table_id)).map(|table| table.row_count)
-        };
         record_cardinality("index_candidate_rows", row_ids.len());
         if !should_use_index_scan(&op, row_ids.len(), total_rows_hint) {
             tracing::info!(
@@ -2559,6 +3164,67 @@ impl QueryRouter {
     async fn invalidate_column_cache(&self, db_id: u32, table_id: u32) {
         let mut cache = self.column_cache.write().await;
         cache.remove(&(db_id, table_id));
+    }
+
+    async fn append_inserted_rows_to_column_cache(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+        column_names: &[String],
+        rows: &[Vec<Vec<u8>>],
+    ) -> bool {
+        if rows.is_empty() {
+            return true;
+        }
+
+        let mut cache = self.column_cache.write().await;
+        let Some(table_cols) = cache.get_mut(&(db_id, table_id)) else {
+            return false;
+        };
+
+        let mut target_cols = Vec::with_capacity(column_names.len());
+        for name in column_names {
+            let Some(col) = schema_cols
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(name))
+            else {
+                return false;
+            };
+            target_cols.push(col.id);
+        }
+
+        for row in rows {
+            if row.len() != target_cols.len() {
+                return false;
+            }
+            let columns = target_cols
+                .iter()
+                .zip(row.iter())
+                .map(|(col_id, value)| (*col_id, value.clone()))
+                .collect::<Vec<_>>();
+            let row_key = format!("cache-only:{}:{}:{}", db_id, table_id, table_cols.row_count);
+            let row_value = serialize_columns(&columns);
+            table_cols.append_encoded_row(row_key, &row_value, schema_cols);
+        }
+
+        true
+    }
+
+    async fn update_column_cache_rows(
+        &self,
+        db_id: u32,
+        table_id: u32,
+        schema_cols: &[ColumnInfo],
+        where_col: &str,
+        where_val: &str,
+        set_pairs: &[(String, Vec<u8>)],
+    ) -> bool {
+        let mut cache = self.column_cache.write().await;
+        let Some(table_cols) = cache.get_mut(&(db_id, table_id)) else {
+            return false;
+        };
+        table_cols.update_rows_by_value(schema_cols, where_col, where_val, set_pairs)
     }
 
     async fn count_table_rows(&self, db_id: u32, table_id: u32) -> PgWireResult<usize> {
@@ -3741,15 +4407,52 @@ impl QueryRouter {
         Ok(Some(relation))
     }
 
+    async fn catalog_tables_for_db(&self, db_name: &str) -> PgWireResult<Vec<TableInfo>> {
+        if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(db) = self.cached_get_database(db_name).await? {
+                let tables = catalog.list_tables(db.id).await.map_err(to_err)?;
+                if !tables.is_empty() || self.catalog_backend == CatalogBackend::Sqlite {
+                    return Ok(tables);
+                }
+            }
+        }
+
+        {
+            let cache = self.schema_cache.read().await;
+            let mut tables = cache
+                .tables
+                .iter()
+                .filter(|((cached_db, _), _)| cached_db == db_name)
+                .map(|(_, table)| table.clone())
+                .collect::<Vec<_>>();
+            if !tables.is_empty() {
+                tables.sort_by(|left, right| left.name.cmp(&right.name));
+                return Ok(tables);
+            }
+        }
+
+        if self.catalog_backend == CatalogBackend::Sqlite {
+            return Ok(Vec::new());
+        }
+
+        let neo4j = self.legacy_neo4j().await?;
+        let tables = neo4j.show_tables(db_name).await.map_err(to_err)?;
+        drop(neo4j);
+        if let Some(catalog) = self.catalog.as_ref() {
+            for table in &tables {
+                catalog.put_table(table).await.map_err(to_err)?;
+            }
+        }
+        Ok(tables)
+    }
+
     async fn build_pg_tables_relation(&self, current_db: &str) -> PgWireResult<RelationResult> {
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(current_db).await.map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(current_db).await?;
         let mut rows = Vec::new();
         for table in tables {
-            let constraints = neo4j
-                .get_table_constraints(current_db, &table.name)
-                .await
-                .map_err(to_err)?;
+            let constraints = self
+                .cached_get_table_constraints(current_db, &table.name)
+                .await?;
             let has_indexes = !constraints.primary_key_columns.is_empty()
                 || !constraints.unique_constraints.is_empty()
                 || self
@@ -3785,8 +4488,7 @@ impl QueryRouter {
     }
 
     async fn build_pg_class_relation(&self, current_db: &str) -> PgWireResult<RelationResult> {
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(current_db).await.map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(current_db).await?;
         let mut rows = Vec::new();
         for table in tables {
             rows.push(row_from_pairs(vec![
@@ -3805,8 +4507,7 @@ impl QueryRouter {
     }
 
     async fn build_pg_type_relation(&self, current_db: &str) -> PgWireResult<RelationResult> {
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(current_db).await.map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(current_db).await?;
         let mut seen = HashSet::new();
         let mut rows = Vec::new();
         for table in tables {
@@ -3825,8 +4526,7 @@ impl QueryRouter {
     }
 
     async fn build_pg_attribute_relation(&self, current_db: &str) -> PgWireResult<RelationResult> {
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(current_db).await.map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(current_db).await?;
         let mut rows = Vec::new();
         for table in tables {
             for (idx, col) in self
@@ -3864,16 +4564,14 @@ impl QueryRouter {
     }
 
     async fn build_pg_constraint_relation(&self, current_db: &str) -> PgWireResult<RelationResult> {
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(current_db).await.map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(current_db).await?;
         let mut rows = Vec::new();
         let mut next_oid = 1_000_000i64;
 
         for table in tables {
-            let constraints = neo4j
-                .get_table_constraints(current_db, &table.name)
-                .await
-                .map_err(to_err)?;
+            let constraints = self
+                .cached_get_table_constraints(current_db, &table.name)
+                .await?;
 
             if !constraints.primary_key_columns.is_empty() {
                 rows.push(row_from_pairs(vec![
@@ -4875,8 +5573,22 @@ impl QueryRouter {
     // ── Query handlers (SHOW, DESCRIBE, INFORMATION_SCHEMA) ──
 
     async fn handle_show_databases<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
-        let neo4j = self.neo4j.read().await;
-        let dbs = neo4j.show_databases().await.map_err(to_err)?;
+        let dbs = if let Some(catalog) = self.catalog.as_ref() {
+            let catalog_dbs = catalog.list_databases().await.map_err(to_err)?;
+            if !catalog_dbs.is_empty() || self.catalog_backend == CatalogBackend::Sqlite {
+                catalog_dbs
+            } else {
+                let neo4j = self.legacy_neo4j().await?;
+                let dbs = neo4j.show_databases().await.map_err(to_err)?;
+                for db in &dbs {
+                    catalog.put_database(db).await.map_err(to_err)?;
+                }
+                dbs
+            }
+        } else {
+            let neo4j = self.legacy_neo4j().await?;
+            neo4j.show_databases().await.map_err(to_err)?
+        };
 
         let fields = Arc::new(vec![text_field("Database")]);
         let mut rows: Vec<DataRow> = Vec::new();
@@ -4891,8 +5603,26 @@ impl QueryRouter {
 
     async fn handle_show_tables<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j.show_tables(&current_db).await.map_err(to_err)?;
+        let tables = if let Some(catalog) = self.catalog.as_ref() {
+            if let Some(db) = self.cached_get_database(&current_db).await? {
+                let catalog_tables = catalog.list_tables(db.id).await.map_err(to_err)?;
+                if !catalog_tables.is_empty() || self.catalog_backend == CatalogBackend::Sqlite {
+                    catalog_tables
+                } else {
+                    let neo4j = self.legacy_neo4j().await?;
+                    let tables = neo4j.show_tables(&current_db).await.map_err(to_err)?;
+                    for table in &tables {
+                        catalog.put_table(table).await.map_err(to_err)?;
+                    }
+                    tables
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            let neo4j = self.legacy_neo4j().await?;
+            neo4j.show_tables(&current_db).await.map_err(to_err)?
+        };
 
         let fields = Arc::new(vec![text_field("Table")]);
         let mut rows: Vec<DataRow> = Vec::new();
@@ -4913,11 +5643,7 @@ impl QueryRouter {
             _ => (current_db, table_name),
         };
 
-        let neo4j = self.neo4j.read().await;
-        let cols = neo4j
-            .describe_table(&db_name, tbl_name)
-            .await
-            .map_err(to_err)?;
+        let cols = self.cached_describe_table(&db_name, tbl_name).await?;
 
         let fields = Arc::new(vec![
             text_field("Field"),
@@ -4941,11 +5667,7 @@ impl QueryRouter {
 
     async fn handle_info_schema_tables<'a>(&self) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let tables = neo4j
-            .information_schema_tables(&current_db)
-            .await
-            .map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(&current_db).await?;
 
         let fields = Arc::new(vec![
             text_field("table_catalog"),
@@ -4954,11 +5676,11 @@ impl QueryRouter {
         ]);
 
         let mut rows: Vec<DataRow> = Vec::new();
-        for (catalog, schema_name, name) in &tables {
+        for table in &tables {
             let mut encoder = DataRowEncoder::new(fields.clone());
-            encoder.encode_field(catalog)?;
-            encoder.encode_field(schema_name)?;
-            encoder.encode_field(name)?;
+            encoder.encode_field(&current_db)?;
+            encoder.encode_field(&"public")?;
+            encoder.encode_field(&table.name)?;
             rows.push(encoder.finish()?);
         }
 
@@ -4967,11 +5689,7 @@ impl QueryRouter {
 
     async fn handle_info_schema_columns<'a>(&self) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let cols = neo4j
-            .information_schema_columns(&current_db)
-            .await
-            .map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(&current_db).await?;
 
         let fields = Arc::new(vec![
             text_field("table_catalog"),
@@ -4983,15 +5701,18 @@ impl QueryRouter {
         ]);
 
         let mut rows: Vec<DataRow> = Vec::new();
-        for (catalog, schema_name, table, column, dtype, nullable) in &cols {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            encoder.encode_field(catalog)?;
-            encoder.encode_field(schema_name)?;
-            encoder.encode_field(table)?;
-            encoder.encode_field(column)?;
-            encoder.encode_field(dtype)?;
-            encoder.encode_field(nullable)?;
-            rows.push(encoder.finish()?);
+        for table in &tables {
+            let cols = self.cached_describe_table(&current_db, &table.name).await?;
+            for col in &cols {
+                let mut encoder = DataRowEncoder::new(fields.clone());
+                encoder.encode_field(&current_db)?;
+                encoder.encode_field(&"public")?;
+                encoder.encode_field(&table.name)?;
+                encoder.encode_field(&col.name)?;
+                encoder.encode_field(&col.data_type)?;
+                encoder.encode_field(&(if col.nullable { "YES" } else { "NO" }))?;
+                rows.push(encoder.finish()?);
+            }
         }
 
         Ok(Response::Query(query_response(fields, rows)))
@@ -4999,11 +5720,7 @@ impl QueryRouter {
 
     async fn handle_info_schema_table_constraints<'a>(&self) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let constraints = neo4j
-            .information_schema_table_constraints(&current_db)
-            .await
-            .map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(&current_db).await?;
 
         let fields = Arc::new(vec![
             text_field("table_catalog"),
@@ -5014,14 +5731,42 @@ impl QueryRouter {
         ]);
 
         let mut rows: Vec<DataRow> = Vec::new();
-        for (catalog, schema_name, table, constraint_name, constraint_type) in &constraints {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            encoder.encode_field(catalog)?;
-            encoder.encode_field(schema_name)?;
-            encoder.encode_field(table)?;
-            encoder.encode_field(constraint_name)?;
-            encoder.encode_field(constraint_type)?;
-            rows.push(encoder.finish()?);
+        for table in &tables {
+            let constraints = self
+                .cached_get_table_constraints(&current_db, &table.name)
+                .await?;
+            let mut constraint_rows = Vec::new();
+            if !constraints.primary_key_columns.is_empty() {
+                constraint_rows.push((format!("{}_pkey", table.name), "PRIMARY KEY"));
+            }
+            constraint_rows.extend(
+                constraints
+                    .unique_constraints
+                    .iter()
+                    .map(|unique| (unique.name.clone(), "UNIQUE")),
+            );
+            constraint_rows.extend(
+                constraints
+                    .foreign_keys
+                    .iter()
+                    .map(|foreign_key| (foreign_key.name.clone(), "FOREIGN KEY")),
+            );
+            constraint_rows.extend(
+                constraints
+                    .check_constraints
+                    .iter()
+                    .map(|check| (check.name.clone(), "CHECK")),
+            );
+
+            for (constraint_name, constraint_type) in constraint_rows {
+                let mut encoder = DataRowEncoder::new(fields.clone());
+                encoder.encode_field(&current_db)?;
+                encoder.encode_field(&"public")?;
+                encoder.encode_field(&table.name)?;
+                encoder.encode_field(&constraint_name)?;
+                encoder.encode_field(&constraint_type)?;
+                rows.push(encoder.finish()?);
+            }
         }
 
         Ok(Response::Query(query_response(fields, rows)))
@@ -5029,11 +5774,7 @@ impl QueryRouter {
 
     async fn handle_info_schema_key_column_usage<'a>(&self) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let usages = neo4j
-            .information_schema_key_column_usage(&current_db)
-            .await
-            .map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(&current_db).await?;
 
         let fields = Arc::new(vec![
             text_field("table_catalog"),
@@ -5045,15 +5786,50 @@ impl QueryRouter {
         ]);
 
         let mut rows: Vec<DataRow> = Vec::new();
-        for (catalog, schema_name, table, column, ordinal_position, constraint_name) in &usages {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            encoder.encode_field(catalog)?;
-            encoder.encode_field(schema_name)?;
-            encoder.encode_field(table)?;
-            encoder.encode_field(column)?;
-            encoder.encode_field(&ordinal_position.to_string())?;
-            encoder.encode_field(constraint_name)?;
-            rows.push(encoder.finish()?);
+        for table in &tables {
+            let constraints = self
+                .cached_get_table_constraints(&current_db, &table.name)
+                .await?;
+            if !constraints.primary_key_columns.is_empty() {
+                let constraint_name = format!("{}_pkey", table.name);
+                for (idx, column) in constraints.primary_key_columns.iter().enumerate() {
+                    encode_key_column_usage_row(
+                        &fields,
+                        &mut rows,
+                        &current_db,
+                        &table.name,
+                        column,
+                        idx + 1,
+                        &constraint_name,
+                    )?;
+                }
+            }
+            for unique in &constraints.unique_constraints {
+                for (idx, column) in unique.columns.iter().enumerate() {
+                    encode_key_column_usage_row(
+                        &fields,
+                        &mut rows,
+                        &current_db,
+                        &table.name,
+                        column,
+                        idx + 1,
+                        &unique.name,
+                    )?;
+                }
+            }
+            for foreign_key in &constraints.foreign_keys {
+                for (idx, column) in foreign_key.columns.iter().enumerate() {
+                    encode_key_column_usage_row(
+                        &fields,
+                        &mut rows,
+                        &current_db,
+                        &table.name,
+                        column,
+                        idx + 1,
+                        &foreign_key.name,
+                    )?;
+                }
+            }
         }
 
         Ok(Response::Query(query_response(fields, rows)))
@@ -5061,11 +5837,7 @@ impl QueryRouter {
 
     async fn handle_info_schema_referential_constraints<'a>(&self) -> PgWireResult<Response<'a>> {
         let current_db = self.current_db.read().await.clone();
-        let neo4j = self.neo4j.read().await;
-        let constraints = neo4j
-            .information_schema_referential_constraints(&current_db)
-            .await
-            .map_err(to_err)?;
+        let tables = self.catalog_tables_for_db(&current_db).await?;
 
         let fields = Arc::new(vec![
             text_field("constraint_catalog"),
@@ -5079,27 +5851,39 @@ impl QueryRouter {
         ]);
 
         let mut rows: Vec<DataRow> = Vec::new();
-        for (
-            constraint_catalog,
-            constraint_schema,
-            constraint_name,
-            unique_constraint_catalog,
-            unique_constraint_schema,
-            unique_constraint_name,
-            update_rule,
-            delete_rule,
-        ) in &constraints
-        {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            encoder.encode_field(constraint_catalog)?;
-            encoder.encode_field(constraint_schema)?;
-            encoder.encode_field(constraint_name)?;
-            encoder.encode_field(unique_constraint_catalog)?;
-            encoder.encode_field(unique_constraint_schema)?;
-            encoder.encode_field(unique_constraint_name)?;
-            encoder.encode_field(update_rule)?;
-            encoder.encode_field(delete_rule)?;
-            rows.push(encoder.finish()?);
+        for table in &tables {
+            let constraints = self
+                .cached_get_table_constraints(&current_db, &table.name)
+                .await?;
+            for foreign_key in &constraints.foreign_keys {
+                let ref_db_name = foreign_key.ref_db_name.as_deref().unwrap_or(&current_db);
+                let ref_constraints = self
+                    .cached_get_table_constraints(ref_db_name, &foreign_key.ref_table_name)
+                    .await?;
+                let unique_constraint_name =
+                    if ref_constraints.primary_key_columns == foreign_key.ref_columns {
+                        format!("{}_pkey", foreign_key.ref_table_name)
+                    } else if let Some(unique) = ref_constraints
+                        .unique_constraints
+                        .iter()
+                        .find(|unique| unique.columns == foreign_key.ref_columns)
+                    {
+                        unique.name.clone()
+                    } else {
+                        format!("{}_key", foreign_key.ref_table_name)
+                    };
+
+                let mut encoder = DataRowEncoder::new(fields.clone());
+                encoder.encode_field(&current_db)?;
+                encoder.encode_field(&"public")?;
+                encoder.encode_field(&foreign_key.name)?;
+                encoder.encode_field(&ref_db_name)?;
+                encoder.encode_field(&"public")?;
+                encoder.encode_field(&unique_constraint_name)?;
+                encoder.encode_field(&foreign_key.on_update)?;
+                encoder.encode_field(&foreign_key.on_delete)?;
+                rows.push(encoder.finish()?);
+            }
         }
 
         Ok(Response::Query(query_response(fields, rows)))
@@ -5204,6 +5988,26 @@ fn text_field(name: &str) -> FieldInfo {
 fn query_response<'a>(fields: Arc<Vec<FieldInfo>>, rows: Vec<DataRow>) -> QueryResponse<'a> {
     let row_stream = stream::iter(rows.into_iter().map(Ok));
     QueryResponse::new(fields, row_stream)
+}
+
+fn encode_key_column_usage_row(
+    fields: &Arc<Vec<FieldInfo>>,
+    rows: &mut Vec<DataRow>,
+    catalog: &str,
+    table: &str,
+    column: &str,
+    ordinal_position: usize,
+    constraint_name: &str,
+) -> PgWireResult<()> {
+    let mut encoder = DataRowEncoder::new(fields.clone());
+    encoder.encode_field(&catalog)?;
+    encoder.encode_field(&"public")?;
+    encoder.encode_field(&table)?;
+    encoder.encode_field(&column)?;
+    encoder.encode_field(&ordinal_position.to_string())?;
+    encoder.encode_field(&constraint_name)?;
+    rows.push(encoder.finish()?);
+    Ok(())
 }
 
 fn classify_statement(stmt: &Statement) -> &'static str {
@@ -9735,19 +10539,27 @@ fn should_use_index_scan(op: &str, candidate_rows: usize, total_rows_hint: Optio
         return true;
     }
 
-    if op == "eq" && candidate_rows <= 512 {
+    if op == "eq" && candidate_rows <= 8 {
         return true;
     }
 
     let Some(total_rows) = total_rows_hint else {
-        // Without a warmed table cardinality hint, range indexes can be slower
-        // than the columnar scan path because they still need row fetches and
-        // post-filtering. Keep unknown-cardinality index use to point lookups.
-        return false;
+        // Without a warmed table cardinality hint, secondary indexes can still
+        // win for small equality lookups in interactive endpoints. Larger
+        // candidate sets fall back to the columnar path because row-id
+        // materialization can be much slower than a warm columnar scan.
+        return op == "eq" && candidate_rows <= 64;
     };
 
     if total_rows == 0 {
         return false;
+    }
+
+    if op == "eq" {
+        // Equality indexes pay off for highly selective predicates on larger
+        // tables. On small warmed tables a columnar scan is often cheaper than
+        // fetching many individual rows through the secondary index.
+        return total_rows >= 50_000 && candidate_rows * 100 <= total_rows * 2;
     }
 
     // Range predicates only beat the columnar path when they are highly
@@ -10650,6 +11462,7 @@ fn encode_typed_value(val: &TypedValue, data_type: &str) -> String {
 mod tests {
     use super::*;
     use executor::typed_value::TypedValue;
+    use executor::StorageBackend;
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
 
@@ -10717,6 +11530,162 @@ mod tests {
         assert!(trusted);
         assert_eq!(sql, "INSERT INTO t VALUES (1);");
         assert!(parse_fast_insert_values(sql).is_some());
+    }
+
+    #[tokio::test]
+    async fn sqlite_catalog_mode_warms_without_neo4j_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = Arc::new(schema::SQLiteCatalogStore::open(&catalog_path).unwrap());
+        catalog.init_catalog().await.unwrap();
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = Arc::new(executor::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap());
+        let wal_path = dir.path().join("wal.log");
+        let wal = wal::WalFile::open(wal_path.to_str().unwrap()).unwrap();
+
+        let router = QueryRouter::new_with_catalog(
+            None,
+            storage,
+            wal,
+            CatalogBackend::Sqlite,
+            Some(catalog),
+        );
+
+        router.warm_schema_cache().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_catalog_mode_inserts_values_without_neo4j_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = Arc::new(schema::SQLiteCatalogStore::open(&catalog_path).unwrap());
+        catalog.init_catalog().await.unwrap();
+        catalog.create_database("default").await.unwrap();
+        let (table, _) = catalog
+            .create_table(
+                "default",
+                "items",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "name".to_string(),
+                        data_type: "TEXT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = Arc::new(executor::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap());
+        let wal_path = dir.path().join("wal.log");
+        let wal = wal::WalFile::open(wal_path.to_str().unwrap()).unwrap();
+
+        let router = QueryRouter::new_with_catalog(
+            None,
+            storage.clone(),
+            wal,
+            CatalogBackend::Sqlite,
+            Some(catalog),
+        );
+        router.warm_schema_cache().await.unwrap();
+
+        let responses = router
+            .route("INSERT INTO items (id, name) VALUES (1, 'alpha'), (2, 'beta');")
+            .await
+            .unwrap();
+        assert_eq!(responses.len(), 1);
+
+        let prefix = keys::table_scan_prefix(table.db_id, table.id).unwrap();
+        let rows = storage.scan_prefix(&prefix).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sqlite_catalog_mode_updates_non_key_column_without_neo4j_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog_path = dir.path().join("catalog.sqlite");
+        let catalog = Arc::new(schema::SQLiteCatalogStore::open(&catalog_path).unwrap());
+        catalog.init_catalog().await.unwrap();
+        catalog.create_database("default").await.unwrap();
+        let (table, _) = catalog
+            .create_table(
+                "default",
+                "items",
+                vec![
+                    ColumnDefinition {
+                        name: "id".to_string(),
+                        data_type: "INT".to_string(),
+                        nullable: false,
+                        is_pk: true,
+                    },
+                    ColumnDefinition {
+                        name: "name".to_string(),
+                        data_type: "TEXT".to_string(),
+                        nullable: false,
+                        is_pk: false,
+                    },
+                ],
+                TableConstraintsInfo {
+                    primary_key_columns: vec!["id".to_string()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let columns = catalog.list_columns(table.id).await.unwrap();
+        let name_col_id = columns
+            .iter()
+            .find(|column| column.name == "name")
+            .unwrap()
+            .id;
+
+        let rocks_path = dir.path().join("rocks");
+        let storage = Arc::new(executor::RocksStorage::open(rocks_path.to_str().unwrap()).unwrap());
+        let wal_path = dir.path().join("wal.log");
+        let wal = wal::WalFile::open(wal_path.to_str().unwrap()).unwrap();
+
+        let router = QueryRouter::new_with_catalog(
+            None,
+            storage.clone(),
+            wal,
+            CatalogBackend::Sqlite,
+            Some(catalog),
+        );
+        router.warm_schema_cache().await.unwrap();
+
+        router
+            .route("INSERT INTO items (id, name) VALUES (1, 'alpha'), (2, 'beta');")
+            .await
+            .unwrap();
+        router
+            .route("UPDATE items SET name = 'gamma' WHERE id = 1;")
+            .await
+            .unwrap();
+
+        let prefix = keys::table_scan_prefix(table.db_id, table.id).unwrap();
+        let rows = storage.scan_prefix(&prefix).await.unwrap();
+        let names = rows
+            .iter()
+            .filter_map(|(_, row)| executor::RowView::new(row))
+            .filter_map(|view| view.find_col(name_col_id).map(Vec::from))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&b"gamma".to_vec()));
+        assert!(names.contains(&b"beta".to_vec()));
+        assert!(!names.contains(&b"alpha".to_vec()));
     }
 
     #[test]
@@ -10850,7 +11819,12 @@ mod tests {
 
     #[test]
     fn index_scan_guard_keeps_range_scans_highly_selective() {
-        assert!(should_use_index_scan("eq", 400, None));
+        assert!(should_use_index_scan("eq", 4, None));
+        assert!(should_use_index_scan("eq", 30, None));
+        assert!(should_use_index_scan("eq", 64, None));
+        assert!(!should_use_index_scan("eq", 65, None));
+        assert!(!should_use_index_scan("eq", 30, Some(2_000)));
+        assert!(should_use_index_scan("eq", 30, Some(100_000)));
         assert!(!should_use_index_scan("range", 400, None));
         assert!(!should_use_index_scan("range", 400, Some(6704)));
         assert!(should_use_index_scan("range", 100, Some(6704)));

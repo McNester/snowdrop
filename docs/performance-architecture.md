@@ -2,7 +2,24 @@
 
 > Embedded RocksDB, in-memory columnar cache, SIMD-filtered scans
 
-Note: `Snowdrop architecture.pdf` is now partially historical. The current source of truth is this document plus the repository code. In particular, secondary indexes now live in RocksDB, while Neo4j is used for schema metadata only. Current benchmark snapshots live in [benchmark-results.md](/e:/snowdrop-1/docs/benchmark-results.md:1), and the active optimization plan lives in [performance-acceleration-roadmap.md](/e:/snowdrop-1/docs/performance-acceleration-roadmap.md:1).
+Note: `Snowdrop architecture.pdf` is now partially historical. The current source of truth is this document plus the repository code. In particular, secondary indexes now live in RocksDB, while Neo4j is used for schema metadata only. Current benchmark snapshots live in [benchmark-results.md](/e:/snowdrop-1/docs/benchmark-results.md:1), the active optimization plan lives in [performance-acceleration-roadmap.md](/e:/snowdrop-1/docs/performance-acceleration-roadmap.md:1), and the next architecture track lives in [hybrid-embedded-engine-roadmap.md](/e:/snowdrop-1/docs/hybrid-embedded-engine-roadmap.md:1).
+
+## Next Architecture Track
+
+The next architecture target is a hybrid embedded engine:
+
+- `SNOWDROP_CATALOG_BACKEND=neo4j|sqlite|mirror` starts the catalog migration away from required Neo4j runtime dependency.
+- `SNOWDROP_EXECUTION_ENGINE=current|datafusion` reserves the read-engine rollout switch for the Arrow/DataFusion path.
+- `SNOWDROP_COLUMNAR_STORE=cache|segments` reserves the columnar-store rollout switch for persisted immutable segments.
+
+Current status: the SQLite catalog and columnar segment foundations exist, and
+the pgwire `QueryRouter` can use `CatalogStore` for core cached schema reads,
+basic `CREATE/DROP DATABASE`, basic `CREATE/DROP TABLE`, and catalog-style
+introspection builders. SQLite catalog mode also owns supported
+column/default/nullability/index metadata mutations and can warm the embedded
+catalog without connecting to Neo4j when no WAL replay is pending. The legacy
+write/replay path and unsupported DDL still use Neo4j, so do not claim Snowdrop
+is fully Neo4j-free until the catalog migration phase is complete.
 
 ---
 

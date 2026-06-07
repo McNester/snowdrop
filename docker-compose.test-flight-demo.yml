@@ -1,0 +1,36 @@
+services:
+  test-flight-postgres-site:
+    build:
+      context: .
+      dockerfile: demo/test-flight-speed-demo/Dockerfile
+    ports:
+      - "${TEST_FLIGHT_POSTGRES_SITE_PORT:-8110}:8110"
+    environment:
+      DEMO_PORT: 8110
+      ENGINE_LABEL: PostgreSQL
+      DEMO_MODE: postgres-source
+      DATABASE_NAME: test_flight_large
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/test_flight_large
+      JWT_SECRET: test-flight-demo-secret
+    networks:
+      - snowdrop-1_default
+
+  test-flight-snowdrop-site:
+    build:
+      context: .
+      dockerfile: demo/test-flight-speed-demo/Dockerfile
+    ports:
+      - "${TEST_FLIGHT_SNOWDROP_SITE_PORT:-8120}:8120"
+    environment:
+      DEMO_PORT: 8120
+      ENGINE_LABEL: Snowdrop
+      DEMO_MODE: snowdrop-migrated
+      DATABASE_NAME: test_flight_large_snowdrop
+      DATABASE_URL: postgres://postgres@orchestrator:5432/test_flight_large_snowdrop
+      JWT_SECRET: test-flight-demo-secret
+    networks:
+      - snowdrop-1_default
+
+networks:
+  snowdrop-1_default:
+    external: true

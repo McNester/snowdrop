@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Test Flight Speed Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #111827;
+        --muted: #64748b;
+        --line: #dbe4ef;
+        --panel: #ffffff;
+        --bg: #edf3fb;
+        --blue: #2563eb;
+        --green: #047857;
+        --red: #b91c1c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(37, 99, 235, 0.2), transparent 34rem),
+          linear-gradient(135deg, #f8fbff 0%, var(--bg) 100%);
+      }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
+        backdrop-filter: blur(16px);
+      }
+      main { max-width: 1180px; margin: 0 auto; padding: 1.5rem; }
+      h1 { margin: 0; font-size: clamp(2rem, 5vw, 4.3rem); line-height: 0.95; letter-spacing: -0.06em; }
+      h2 { margin: 0 0 0.75rem; }
+      button, input, select {
+        font: inherit;
+        border-radius: 0.75rem;
+        border: 1px solid var(--line);
+        padding: 0.75rem 0.9rem;
+      }
+      button {
+        cursor: pointer;
+        border: 0;
+        background: var(--ink);
+        color: white;
+        font-weight: 700;
+      }
+      button.secondary { background: #e2e8f0; color: var(--ink); }
+      button.danger { background: var(--red); }
+      input, select { width: 100%; background: white; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid var(--line); padding: 0.7rem; text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+      .brand { display: flex; align-items: center; gap: 0.8rem; font-weight: 900; }
+      .logo { width: 2.25rem; height: 2.25rem; border-radius: 0.9rem; background: var(--ink); color: white; display: grid; place-items: center; }
+      .engine {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: white;
+        padding: 0.45rem 0.75rem;
+        font-weight: 800;
+      }
+      .hero {
+        display: grid;
+        grid-template-columns: 1.08fr 0.92fr;
+        gap: 1rem;
+        align-items: stretch;
+        margin-top: 1rem;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 1.5rem;
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+        padding: 1.2rem;
+      }
+      .hero-card {
+        padding: 2rem;
+        color: white;
+        background:
+          linear-gradient(135deg, rgba(15, 23, 42, 0.93), rgba(30, 64, 175, 0.9)),
+          radial-gradient(circle at top right, rgba(255, 255, 255, 0.34), transparent 18rem);
+      }
+      .muted { color: var(--muted); }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .section { margin-top: 1rem; }
+      .metric-bar {
+        position: sticky;
+        bottom: 1rem;
+        z-index: 6;
+        max-width: 1180px;
+        margin: 1rem auto;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        background: rgba(17, 24, 39, 0.94);
+        color: white;
+        padding: 0.75rem;
+        box-shadow: 0 16px 50px rgba(15, 23, 42, 0.28);
+      }
+      .metric small { display: block; color: #cbd5e1; }
+      .metric strong { font-size: 1.05rem; }
+      .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+      .flight { display: flex; flex-direction: column; gap: 0.4rem; }
+      .price { font-size: 1.4rem; font-weight: 900; }
+      .hidden { display: none !important; }
+      .error { color: var(--red); font-weight: 700; }
+      .ok { color: var(--green); font-weight: 800; }
+      @media (max-width: 900px) {
+        .hero, .grid, .three, .cards, .metric-bar { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><div class="logo">TF</div><div>Test Flight<br /><span class="muted">Snowdrop speed demo</span></div></div>
+      <div class="engine" id="engineBadge">loading engine...</div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="panel hero-card">
+          <p style="margin-top: 0; opacity: 0.78">Live local demo</p>
+          <h1>Search, book, measure.</h1>
+          <p style="max-width: 42rem; font-size: 1.08rem; opacity: 0.86">
+            Same Test Flight scenario, same SQL workload, different database engine. This page shows real API and DB latency after each action.
+          </p>
+        </div>
+        <div class="panel">
+          <h2>Login / register</h2>
+          <div class="grid">
+            <input id="name" placeholder="Name" value="Demo Passenger" />
+            <input id="email" placeholder="Email" value="demo@testflight.local" type="email" />
+            <input id="password" placeholder="Password" value="demo12345" type="password" />
+            <button onclick="register()">Register</button>
+            <button onclick="login()">Login demo user</button>
+            <button class="secondary" onclick="profile()">Profile</button>
+          </div>
+          <p id="authStatus" class="muted">Use demo@testflight.local / demo12345.</p>
+        </div>
+      </section>
+
+      <section class="panel section">
+        <h2>Flight search</h2>
+        <div class="grid three">
+          <select id="fromCity">
+            <option>Kyiv</option><option>Warsaw</option><option>Berlin</option><option>London</option><option>Paris</option><option>Rome</option>
+          </select>
+          <select id="toCity">
+            <option>Warsaw</option><option>Berlin</option><option>London</option><option>Paris</option><option>Rome</option><option>Madrid</option>
+          </select>
+          <input id="flightDate" type="date" />
+          <input id="passengers" type="number" min="1" max="9" value="1" />
+        </div>
+        <p><button onclick="searchFlights()">Search flights</button> <button class="secondary" onclick="loadDashboards()">Run dashboards</button></p>
+        <div id="flightResults" class="cards"></div>
+      </section>
+
+      <section class="grid section">
+        <div class="panel">
+          <h2>My bookings</h2>
+          <button onclick="loadBookings()">Refresh bookings</button>
+          <div id="bookingResults"></div>
+        </div>
+        <div class="panel">
+          <h2>Read-heavy dashboards</h2>
+          <p class="muted">These queries are closer to Snowdrop's current winning use case: scan, filter, group and compact projection.</p>
+          <div id="dashboardResults"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="metric-bar">
+      <div class="metric"><small>Engine</small><strong id="mEngine">-</strong></div>
+      <div class="metric"><small>Last query</small><strong id="mQuery">-</strong></div>
+      <div class="metric"><small>DB latency</small><strong id="mDb">-</strong></div>
+      <div class="metric"><small>API latency</small><strong id="mApi">-</strong></div>
+      <div class="metric"><small>Rows / status</small><strong id="mRows">-</strong></div>
+    </div>
+
+    <script>
+      let token = localStorage.getItem("tf_demo_token") || "";
+      let selectedFlight = null;
+
+      function headers() {
+        return token ? { "Content-Type": "application/json", Authorization: `Bearer ${token}` } : { "Content-Type": "application/json" };
+      }
+
+      function showMetrics(metrics, fallbackQuery) {
+        if (!metrics) return;
+        document.getElementById("mEngine").textContent = metrics.engine || "-";
+        document.getElementById("mQuery").textContent = metrics.queryName || fallbackQuery || "-";
+        document.getElementById("mDb").textContent = `${metrics.dbLatencyMs ?? "-"} ms`;
+        document.getElementById("mApi").textContent = `${metrics.apiLatencyMs ?? "-"} ms`;
+        document.getElementById("mRows").textContent = metrics.rowCount ?? "-";
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, options);
+        const data = await res.json();
+        showMetrics(data._metrics, path);
+        if (!res.ok) throw new Error(data.message || "Request failed");
+        return data;
+      }
+
+      async function init() {
+        const meta = await fetch("/api/meta").then((r) => r.json());
+        document.getElementById("engineBadge").textContent = meta.engine;
+        document.getElementById("mEngine").textContent = meta.engine;
+        document.getElementById("flightDate").value = "2026-06-22";
+        await searchFlights();
+      }
+
+      async function register() {
+        try {
+          const data = await api("/api/auth/register", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({
+              name: document.getElementById("name").value,
+              email: document.getElementById("email").value,
+              password: document.getElementById("password").value
+            })
+          });
+          document.getElementById("authStatus").innerHTML = `<span class="ok">Registered ${data.user.email}</span>`;
+        } catch (err) {
+          document.getElementById("authStatus").innerHTML = `<span class="error">${err.message}</span>`;
+        }
+      }
+
+      async function login() {
+        try {
+          const data = await api("/api/auth/login", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({
+              email: document.getElementById("email").value,
+              password: document.getElementById("password").value
+            })
+          });
+          token = data.token;
+          localStorage.setItem("tf_demo_token", token);
+          document.getElementById("authStatus").innerHTML = `<span class="ok">Logged in as ${data.user.email}</span>`;
+          await loadBookings();
+        } catch (err) {
+          document.getElementById("authStatus").innerHTML = `<span class="error">${err.message}</span>`;
+        }
+      }
+
+      async function profile() {
+        const data = await api("/api/auth/me", { headers: headers() });
+        document.getElementById("authStatus").innerHTML = `<span class="ok">${data.user.name} / ${data.user.role}</span>`;
+      }
+
+      async function searchFlights() {
+        const from = document.getElementById("fromCity").value;
+        const to = document.getElementById("toCity").value;
+        const date = document.getElementById("flightDate").value;
+        const passengers = Number(document.getElementById("passengers").value);
+        if (from === to) {
+          alert("From and To must be different.");
+          return;
+        }
+        if (date) {
+          const selected = new Date(`${date}T00:00:00`);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          if (selected < today) {
+            alert("Please choose today or a future date.");
+            return;
+          }
+        }
+        if (!Number.isInteger(passengers) || passengers < 1 || passengers > 9) {
+          alert("Passengers must be between 1 and 9.");
+          return;
+        }
+        const params = new URLSearchParams({
+          from,
+          to,
+          date,
+          passengers: String(passengers)
+        });
+        const data = await api(`/api/flights?${params.toString()}`);
+        const root = document.getElementById("flightResults");
+        root.innerHTML = data.flights.map((flight) => `
+          <article class="panel flight">
+            <strong>${flight.flightNumber}</strong>
+            <span>${flight.fromCity} -> ${flight.toCity}</span>
+            <span class="muted">${new Date(flight.departAt).toLocaleString()} / ${flight.airlineName}</span>
+            <span class="price">$${flight.price.toFixed(2)}</span>
+            <button onclick="bookFlight(${flight.id}, '${flight.flightNumber}')">Book this flight</button>
+          </article>
+        `).join("");
+        selectedFlight = data.flights[0] || null;
+      }
+
+      async function bookFlight(flightId, flightNumber) {
+        const email = document.getElementById("email").value;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          alert("Enter a valid passenger email before booking.");
+          return;
+        }
+        const data = await api("/api/bookings", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({
+            flightId,
+            passengerName: document.getElementById("name").value,
+            passengerEmail: email,
+            flightNumber: selectedFlight?.flightNumber,
+            fromCity: selectedFlight?.fromCity,
+            toCity: selectedFlight?.toCity,
+            price: selectedFlight?.price,
+            departAt: selectedFlight?.departAt,
+            arriveAt: selectedFlight?.arriveAt,
+            seatsAvailable: selectedFlight?.seatsAvailable
+          })
+        });
+        document.getElementById("authStatus").innerHTML = `<span class="ok">Booked ${flightNumber}: #${data.booking.id}</span>`;
+        await loadBookings();
+      }
+
+      async function loadBookings() {
+        const data = await api("/api/bookings/my", { headers: headers() });
+        document.getElementById("bookingResults").innerHTML = `
+          <table><thead><tr><th>ID</th><th>Flight</th><th>Status</th><th>Total</th><th></th></tr></thead><tbody>
+          ${data.bookings.map((b) => `
+            <tr>
+              <td>${b.id}</td>
+              <td>${b.flight?.flightNumber || b.flightId}</td>
+              <td>${b.status}</td>
+              <td>$${b.totalPrice.toFixed(2)}</td>
+              <td>${b.status === "confirmed" ? `<button class="danger" onclick="cancelBooking(${b.id})">Cancel</button>` : ""}</td>
+            </tr>
+          `).join("")}
+          </tbody></table>`;
+      }
+
+      async function cancelBooking(id) {
+        if (!confirm(`Cancel booking #${id}?`)) return;
+        await api(`/api/bookings/${id}/cancel`, { method: "PATCH", headers: headers() });
+        await loadBookings();
+      }
+
+      async function loadDashboards() {
+        const [routes, statuses] = await Promise.all([
+          api("/api/dashboard/routes"),
+          api("/api/dashboard/flight-status")
+        ]);
+        document.getElementById("dashboardResults").innerHTML = `
+          <h3>Top routes</h3>
+          <table><tbody>${routes.routes.slice(0, 8).map((r) => `<tr><td>${r.from_city} -> ${r.to_city}</td><td>${r.search_count}</td><td>$${Number(r.revenue).toFixed(2)}</td></tr>`).join("")}</tbody></table>
+          <h3>Kyiv -> Warsaw flight status</h3>
+          <table><tbody>${statuses.statuses.map((r) => `<tr><td>${r.flight_status}</td><td>${r.flights} flights</td><td>${r.seats} seats</td></tr>`).join("")}</tbody></table>`;
+      }
+
+      init().catch((err) => {
+        document.body.insertAdjacentHTML("afterbegin", `<p class="panel error">${err.message}</p>`);
+      });
+    </script>
+  </body>
+</html>

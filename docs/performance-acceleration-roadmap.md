@@ -1,5 +1,14 @@
 # Snowdrop Performance Acceleration Roadmap
 
+## Hybrid Embedded Engine Track
+
+The next major architecture track is documented in
+[hybrid-embedded-engine-roadmap.md](/e:/snowdrop-1/docs/hybrid-embedded-engine-roadmap.md:1).
+The short version: Snowdrop should evolve into a PostgreSQL-compatible read
+accelerator with embedded catalog, RocksDB row-delta/index storage, persisted
+columnar segments, and a reusable vectorized read engine. This is intentionally
+not a big-bang rewrite into a general PostgreSQL replacement.
+
 This roadmap turns benchmark work into an engineering loop:
 
 1. capture baseline

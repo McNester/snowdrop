@@ -1,0 +1,17 @@
+{
+  "name": "test-flight-speed-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Test Flight PostgreSQL vs Snowdrop speed demo",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "compare": "node scripts/compare-actions.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.16.3"
+  }
+}
