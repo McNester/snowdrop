@@ -1,0 +1,16 @@
+[package]
+name = "crypto-demo"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "crypto-demo"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }

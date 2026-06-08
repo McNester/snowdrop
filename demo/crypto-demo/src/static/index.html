@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Snowdrop · Live Trades</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #141925;
+    --panel2: #1c2333;
+    --line: #283044;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --sd: #4ade80;
+    --pg: #60a5fa;
+    --accent: #f5b301;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sd);
+         box-shadow: 0 0 0 0 var(--sd); animation: pulse 2s infinite; display: inline-block; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.5)} 70%{box-shadow:0 0 0 8px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  .sub b { color: var(--text); }
+
+  .controls { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 22px; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 8px; }
+  label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 10px 14px; font-size: 15px; min-width: 130px; cursor: pointer;
+  }
+  .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--muted); border: 0; padding: 10px 18px; font-size: 14px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #1a1300; font-weight: 600; }
+  .range { flex: 1; min-width: 260px; }
+  .range .vals { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; color: var(--text); font-size: 14px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+  .rngpair { display: flex; gap: 10px; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .card .v { font-size: 28px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+  .race { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .bar { display: flex; align-items: center; gap: 14px; margin: 14px 0; }
+  .bar .name { width: 96px; font-weight: 600; font-size: 14px; }
+  .bar .name.sd { color: var(--sd); }
+  .bar .name.pg { color: var(--pg); }
+  .track { flex: 1; background: var(--panel2); border-radius: 8px; height: 30px; position: relative; overflow: hidden; }
+  .fill { height: 100%; border-radius: 8px; transition: width .45s cubic-bezier(.2,.7,.2,1); width: 0; }
+  .fill.sd { background: linear-gradient(90deg, #2bb673, var(--sd)); }
+  .fill.pg { background: linear-gradient(90deg, #3b82f6, var(--pg)); }
+  .ms { width: 96px; text-align: right; font-variant-numeric: tabular-nums; font-size: 15px; }
+  .verdict { text-align: center; margin-top: 18px; font-size: 15px; color: var(--muted); }
+  .verdict b { font-size: 30px; color: var(--sd); font-weight: 800; letter-spacing: -0.02em; }
+  .sql { margin-top: 18px; color: var(--muted); font: 12px/1.5 ui-monospace, Menlo, monospace; word-break: break-word; }
+  .foot { margin-top: 26px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><span class="dot"></span><h1>Live Trades Explorer</h1></header>
+  <p class="sub">The exact same SQL runs on <b style="color:var(--sd)">Snowdrop</b> and <b style="color:var(--pg)">PostgreSQL</b> over real Binance trades. Filter anything — watch the latency.</p>
+
+  <div class="controls">
+    <div class="row">
+      <div class="field">
+        <label>Symbol</label>
+        <select id="symbol"></select>
+      </div>
+      <div class="field">
+        <label>Side</label>
+        <div class="seg" id="side">
+          <button data-v="ALL" class="on">All</button>
+          <button data-v="BUY">Buy</button>
+          <button data-v="SELL">Sell</button>
+        </div>
+      </div>
+      <div class="field range">
+        <label>Price range</label>
+        <div class="vals"><span id="lo">—</span><span id="hi">—</span></div>
+        <div class="rngpair">
+          <input type="range" id="pmin" min="0" max="100" value="0" />
+          <input type="range" id="pmax" min="0" max="100" value="100" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Volume</div><div class="v" id="m_vol">—</div></div>
+    <div class="card"><div class="k">Trades</div><div class="v" id="m_cnt">—</div></div>
+    <div class="card"><div class="k">Avg price</div><div class="v" id="m_avg">—</div></div>
+  </div>
+
+  <div class="race">
+    <div class="bar"><div class="name sd">Snowdrop</div><div class="track"><div class="fill sd" id="bar_sd"></div></div><div class="ms" id="ms_sd">—</div></div>
+    <div class="bar"><div class="name pg">PostgreSQL</div><div class="track"><div class="fill pg" id="bar_pg"></div></div><div class="ms" id="ms_pg">—</div></div>
+    <div class="verdict" id="verdict">&nbsp;</div>
+    <div class="sql" id="sql"></div>
+  </div>
+
+  <div class="foot">Snowdrop: columnar cache over row-packed RocksDB · PostgreSQL 16 · same schema, same query</div>
+</div>
+
+<script>
+let SYMBOLS = [];
+let pmin = 0, pmax = 0, lo = 0, hi = 0;
+
+const $ = id => document.getElementById(id);
+
+async function init() {
+  SYMBOLS = await (await fetch('/api/symbols')).json();
+  const sel = $('symbol');
+  SYMBOLS.forEach(s => { const o = document.createElement('option'); o.value = s.symbol; o.textContent = s.symbol; sel.appendChild(o); });
+  sel.onchange = () => { setSymbol(sel.value); run(); };
+  $('side').querySelectorAll('button').forEach(b => b.onclick = () => {
+    $('side').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); run();
+  });
+  ['pmin','pmax'].forEach(id => $(id).oninput = () => { syncRange(); debounced(); });
+  if (SYMBOLS.length) setSymbol(SYMBOLS[0].symbol);
+  run();
+}
+
+function setSymbol(sym) {
+  const s = SYMBOLS.find(x => x.symbol === sym) || {min:0, max:1};
+  pmin = s.min; pmax = s.max;
+  $('pmin').value = 0; $('pmax').value = 100;
+  syncRange();
+}
+
+function priceAt(pct) { return pmin + (pmax - pmin) * pct/100; }
+
+function syncRange() {
+  let a = +$('pmin').value, b = +$('pmax').value;
+  if (a > b) { [a, b] = [b, a]; $('pmin').value = a; $('pmax').value = b; }
+  lo = priceAt(a); hi = priceAt(b);
+  $('lo').textContent = fmtPrice(lo);
+  $('hi').textContent = fmtPrice(hi);
+}
+
+let timer = null;
+function debounced() { clearTimeout(timer); timer = setTimeout(run, 180); }
+
+function side() { return $('side').querySelector('.on').dataset.v; }
+
+async function run() {
+  const body = {
+    symbol: $('symbol').value,
+    side: side(),
+    priceMin: lo, priceMax: hi
+  };
+  let r;
+  try { r = await (await fetch('/api/query', {method:'POST', body: JSON.stringify(body)})).json(); }
+  catch (e) { return; }
+  render(r);
+}
+
+function commas(n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+
+function render(r) {
+  const s = r.snowdrop, p = r.postgres;
+  $('m_vol').textContent = fmtBig(s.volume, '$');
+  $('m_cnt').textContent = commas(s.trades||0);
+  $('m_avg').textContent = fmtPrice(s.avg_px);
+
+  const max = Math.max(s.median_ms, p.median_ms, 0.01);
+  $('bar_sd').style.width = (100 * s.median_ms / max) + '%';
+  $('bar_pg').style.width = (100 * p.median_ms / max) + '%';
+  $('ms_sd').textContent = s.median_ms.toFixed(2) + ' ms';
+  $('ms_pg').textContent = p.median_ms.toFixed(2) + ' ms';
+
+  if (r.speedup) {
+    $('verdict').innerHTML = 'Snowdrop is <b>' + r.speedup.toFixed(1) + '×</b> faster';
+  } else { $('verdict').innerHTML = '&nbsp;'; }
+  $('sql').textContent = r.sql;
+}
+
+function fmtPrice(v) {
+  if (v >= 1000) return '$' + commas(v);
+  if (v >= 1) return '$' + v.toFixed(2);
+  return '$' + v.toFixed(4);
+}
+function fmtBig(v, pre='') {
+  const a = Math.abs(v);
+  if (a >= 1e9) return pre + (v/1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return pre + (v/1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return pre + (v/1e3).toFixed(1) + 'K';
+  return pre + v.toFixed(0);
+}
+
+init();
+</script>
+</body>
+</html>
