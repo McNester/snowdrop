@@ -8671,17 +8671,35 @@ fn compute_columnar_aggregate_rows(
             first_row_idx: None,
             states: plan.state_specs.iter().map(init_aggregate_state).collect(),
         };
-        for idx in bitmap.iter_set_bits() {
-            if bucket.first_row_idx.is_none() {
-                bucket.first_row_idx = Some(idx);
+        // Fast path: compile each aggregate argument once into a column kernel.
+        // Falls back to the per-row evaluator only for unsupported aggregates.
+        if let Some(kernels) = plan
+            .state_specs
+            .iter()
+            .map(|spec| compile_agg_kernel(spec, table_cols, schema_cols))
+            .collect::<Option<Vec<_>>>()
+        {
+            for idx in bitmap.iter_set_bits() {
+                if bucket.first_row_idx.is_none() {
+                    bucket.first_row_idx = Some(idx);
+                }
+                for (state, kernel) in bucket.states.iter_mut().zip(kernels.iter()) {
+                    update_state_with_kernel(state, kernel, table_cols, idx);
+                }
             }
-            update_aggregate_states(
-                &mut bucket.states,
-                &plan.state_specs,
-                idx,
-                table_cols,
-                schema_cols,
-            );
+        } else {
+            for idx in bitmap.iter_set_bits() {
+                if bucket.first_row_idx.is_none() {
+                    bucket.first_row_idx = Some(idx);
+                }
+                update_aggregate_states(
+                    &mut bucket.states,
+                    &plan.state_specs,
+                    idx,
+                    table_cols,
+                    schema_cols,
+                );
+            }
         }
         return Ok(vec![aggregate_bucket_to_row(
             plan,
