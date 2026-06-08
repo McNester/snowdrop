@@ -8,10 +8,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 
 const INDEX_HTML: &str = include_str!("static/index.html");
@@ -217,6 +219,7 @@ struct App {
     sd: Vec<Arc<Client>>,
     pg: Vec<Arc<Client>>,
     symbols: Arc<Vec<SymbolInfo>>,
+    bench: Arc<BenchShared>,
 }
 
 #[derive(Serialize, Default)]
@@ -244,6 +247,183 @@ struct DashboardResponse {
     error: Option<String>,
 }
 
+// ── Benchmark (Grafana-backed, single global idempotent run) ───────────────
+
+/// How long one benchmark run lasts. Long enough for Prometheus (scraping every
+/// few seconds) to plot a time series.
+const BENCH_DURATION: Duration = Duration::from_secs(45);
+
+#[derive(Serialize, Clone, Default)]
+struct QueryStat {
+    query: String,
+    sd_ms: f64,
+    pg_ms: f64,
+    speedup: f64,
+}
+
+#[derive(Serialize, Clone, Default)]
+struct BenchStatus {
+    running: bool,
+    finished: bool,
+    suite: String,
+    iteration: u64,
+    elapsed_s: f64,
+    duration_s: u64,
+    stats: Vec<QueryStat>,
+}
+
+#[derive(Default)]
+struct BenchShared {
+    running: AtomicBool,
+    status: Mutex<BenchStatus>,
+}
+
+impl BenchShared {
+    async fn status_json(&self) -> String {
+        let mut s = self.status.lock().await.clone();
+        s.running = self.running.load(Ordering::SeqCst);
+        serde_json::to_string(&s).unwrap()
+    }
+}
+
+/// Idempotent: only one run at a time. If a run is in progress, this is a no-op
+/// and the caller just sees the live status. The run is spawned detached.
+fn start_benchmark(app: &App, suite: &str) {
+    if app
+        .running_cas()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return; // already running
+    }
+    let app = app.clone();
+    let suite = suite.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = run_benchmark(&app, &suite).await {
+            eprintln!("benchmark error: {e:#}");
+        }
+        app.bench.running.store(false, Ordering::SeqCst);
+        metrics::gauge!("bench_running").set(0.0);
+        let mut st = app.bench.status.lock().await;
+        st.running = false;
+        st.finished = true;
+    });
+}
+
+impl App {
+    fn running_cas(&self) -> &AtomicBool {
+        &self.bench.running
+    }
+}
+
+/// (display name, snowdrop SQL, postgres SQL). For TPC-H, Snowdrop reads the
+/// cross-db qualified `tpch.` tables; PostgreSQL connects to the `tpch` db.
+fn suite_queries(suite: &str) -> Vec<(&'static str, String, String)> {
+    if suite == "tpch" {
+        let sd = |s: &str| s.replace("{p}", "tpch.");
+        let pg = |s: &str| s.replace("{p}", "");
+        let q6 = "SELECT SUM(l_extendedprice * l_discount) AS revenue FROM {p}lineitem \
+                  WHERE l_shipdate >= '1994-01-01' AND l_shipdate < '1995-01-01' \
+                  AND l_discount >= 0.05 AND l_discount <= 0.07 AND l_quantity < 24;";
+        let q1 = "SELECT l_returnflag, l_linestatus, SUM(l_quantity), SUM(l_extendedprice), \
+                  SUM(l_extendedprice * (1 - l_discount)), AVG(l_quantity), AVG(l_extendedprice), \
+                  AVG(l_discount), COUNT(*) FROM {p}lineitem WHERE l_shipdate <= '1998-09-02' \
+                  GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus;";
+        let q14 = "SELECT SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) \
+                   ELSE 0 END), SUM(l_extendedprice * (1 - l_discount)) \
+                   FROM {p}lineitem l INNER JOIN {p}part p ON l.l_partkey = p.p_partkey \
+                   WHERE l.l_shipdate >= '1995-01-01' AND l.l_shipdate < '1995-02-01';";
+        vec![
+            ("Q6 revenue", sd(q6), pg(q6)),
+            ("Q1 pricing", sd(q1), pg(q1)),
+            ("Q14 promo", sd(q14), pg(q14)),
+        ]
+    } else {
+        // Crypto trades — same SQL on both engines (table `trades`).
+        let q = |s: &str| (s.to_string(), s.to_string());
+        let (c1s, c1p) = q("SELECT COUNT(*), SUM(price*qty), AVG(price) FROM trades WHERE is_buy = 1;");
+        let (c2s, c2p) =
+            q("SELECT COUNT(*), SUM(price*qty), AVG(price) FROM trades WHERE hour >= 9 AND hour <= 16;");
+        let (c3s, c3p) =
+            q("SELECT hour, COUNT(*), SUM(price*qty) FROM trades WHERE is_buy = 1 GROUP BY hour ORDER BY hour;");
+        let (c4s, c4p) = q("SELECT COUNT(*), AVG(price), SUM(qty) FROM trades WHERE price >= 0;");
+        vec![
+            ("Buy-side volume", c1s, c1p),
+            ("Market hours", c2s, c2p),
+            ("Volume by hour", c3s, c3p),
+            ("Full scan", c4s, c4p),
+        ]
+    }
+}
+
+async fn time_query(client: &Client, sql: &str) -> f64 {
+    let t = Instant::now();
+    let _ = client.simple_query(sql).await;
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+async fn run_benchmark(app: &App, suite: &str) -> Result<()> {
+    metrics::gauge!("bench_running").set(1.0);
+    {
+        let mut st = app.bench.status.lock().await;
+        *st = BenchStatus {
+            running: true,
+            finished: false,
+            suite: suite.to_string(),
+            iteration: 0,
+            elapsed_s: 0.0,
+            duration_s: BENCH_DURATION.as_secs(),
+            stats: suite_queries(suite)
+                .iter()
+                .map(|(n, _, _)| QueryStat {
+                    query: n.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+    }
+
+    // Dedicated connections so the benchmark doesn't fight the live dashboard.
+    let sd = connect(&snowdrop_conn()).await?;
+    let _ = sd.simple_query("USE crypto;").await;
+    let pg_db = if suite == "tpch" { "tpch" } else { "crypto" };
+    let pg = connect(&postgres_conn(pg_db)).await?;
+    let queries = suite_queries(suite);
+
+    let start = Instant::now();
+    let mut iteration = 0u64;
+    while start.elapsed() < BENCH_DURATION {
+        iteration += 1;
+        for (i, (name, sd_sql, pg_sql)) in queries.iter().enumerate() {
+            let sd_ms = time_query(&sd, sd_sql).await;
+            let pg_ms = time_query(&pg, pg_sql).await;
+            let speedup = if sd_ms > 0.0 { pg_ms / sd_ms } else { 0.0 };
+
+            metrics::gauge!("bench_latency_ms", "engine" => "snowdrop", "query" => name.to_string(), "suite" => suite.to_string()).set(sd_ms);
+            metrics::gauge!("bench_latency_ms", "engine" => "postgres", "query" => name.to_string(), "suite" => suite.to_string()).set(pg_ms);
+            metrics::gauge!("bench_speedup", "query" => name.to_string(), "suite" => suite.to_string()).set(speedup);
+            metrics::counter!("bench_queries_total", "engine" => "snowdrop").increment(1);
+            metrics::counter!("bench_queries_total", "engine" => "postgres").increment(1);
+
+            let mut st = app.bench.status.lock().await;
+            if let Some(slot) = st.stats.get_mut(i) {
+                slot.sd_ms = sd_ms;
+                slot.pg_ms = pg_ms;
+                slot.speedup = speedup;
+            }
+        }
+        metrics::gauge!("bench_iteration", "suite" => suite.to_string()).set(iteration as f64);
+        {
+            let mut st = app.bench.status.lock().await;
+            st.iteration = iteration;
+            st.elapsed_s = start.elapsed().as_secs_f64();
+        }
+        // Brief pause so Prometheus can scrape the moving gauges.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
 async fn serve() -> Result<()> {
     // Two connections per engine so the totals and hourly queries run in
     // parallel (real server-side concurrency, not pipelined on one connection).
@@ -256,12 +436,28 @@ async fn serve() -> Result<()> {
         pg.push(Arc::new(connect(&postgres_conn("crypto")).await?));
     }
 
+    // Prometheus metrics endpoint (scraped by Prometheus → graphed in Grafana).
+    let metrics_port: u16 = std::env::var("METRICS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9091);
+    if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], metrics_port))
+        .install()
+    {
+        eprintln!("metrics exporter not started: {e}");
+    } else {
+        println!("metrics on http://localhost:{metrics_port}/metrics");
+    }
+    metrics::gauge!("bench_running").set(0.0);
+
     let symbols = load_symbols(&sd[0]).await?;
     let first = symbols.first().map(|s| s.sym_id).unwrap_or(0);
     let app = App {
         sd,
         pg,
         symbols: Arc::new(symbols),
+        bench: Arc::new(BenchShared::default()),
     };
 
     // Warm both engines (builds Snowdrop's columnar cache, PG's page cache).
@@ -330,6 +526,17 @@ async fn route(line: &str, app: &App) -> (&'static str, &'static str, String) {
     }
     if line.starts_with("GET /api/dashboard") {
         return ("200 OK", "application/json", api_dashboard(line, app).await);
+    }
+    if line.starts_with("POST /api/benchmark/start") {
+        let suite = match query_param(line, "suite") {
+            Some("tpch") => "tpch",
+            _ => "crypto",
+        };
+        start_benchmark(app, suite);
+        return ("200 OK", "application/json", app.bench.status_json().await);
+    }
+    if line.starts_with("GET /api/benchmark/status") {
+        return ("200 OK", "application/json", app.bench.status_json().await);
     }
     ("404 Not Found", "text/plain", "not found".to_string())
 }

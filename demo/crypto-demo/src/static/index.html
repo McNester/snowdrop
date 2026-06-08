@@ -64,6 +64,27 @@
   .foot { margin-top: 20px; color: var(--mut); font-size: 12px; text-align: center; }
   .legend { display: inline-flex; gap: 12px; font-size: 11px; color: var(--mut); }
   .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+
+  /* tabs */
+  .tabs { display: inline-flex; gap: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 4px; margin-bottom: 22px; }
+  .tabs button { font: inherit; font-weight: 600; border: 0; background: transparent; color: var(--mut); padding: 8px 18px; border-radius: 7px; cursor: pointer; }
+  .tabs button.on { background: var(--ink); color: #fff; }
+  [hidden] { display: none !important; }
+
+  /* benchmark */
+  .benchbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; }
+  .start { font: inherit; font-weight: 700; font-size: 15px; border: 0; border-radius: 9px; padding: 11px 22px; background: var(--sd); color: #fff; cursor: pointer; }
+  .start:disabled { background: #b9c2cc; cursor: not-allowed; }
+  .bstatus { font-variant-numeric: tabular-nums; color: var(--mut); }
+  .bstatus b { color: var(--ink); }
+  table.bench { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
+  table.bench th, table.bench td { text-align: right; padding: 9px 14px; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--line); }
+  table.bench th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--mut); font-weight: 600; }
+  table.bench td:first-child, table.bench th:first-child { text-align: left; }
+  table.bench tr:last-child td { border-bottom: 0; }
+  .sx { color: var(--sd); font-weight: 700; }
+  .gframe { width: 100%; height: 560px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  .ghint { color: var(--mut); font-size: 12px; margin: 8px 2px 0; }
 </style>
 </head>
 <body>
@@ -71,6 +92,12 @@
   <h1>Live Binance Trades — Snowdrop vs PostgreSQL</h1>
   <p class="lede">Same query, same data (<b id="nrows">8M</b> real trades), two engines. Change a filter — both dashboards reload at once.</p>
 
+  <div class="tabs">
+    <button id="tab_explorer_btn" class="on" onclick="showTab('explorer')">Explorer</button>
+    <button id="tab_bench_btn" onclick="showTab('bench')">Benchmark</button>
+  </div>
+
+  <div id="tab-explorer">
   <div class="filters">
     <div><label>Symbol</label><select id="symbol"></select></div>
     <div><label>Side</label>
@@ -97,6 +124,28 @@
       <div class="tiles" id="tiles_pg"></div>
       <div id="charts_pg"></div>
     </div>
+  </div>
+  </div><!-- /tab-explorer -->
+
+  <div id="tab-bench" hidden>
+    <div class="benchbar">
+      <div>
+        <label>Suite</label>
+        <div class="seg" id="suite">
+          <button data-v="crypto" class="on">Crypto trades</button><button data-v="tpch">TPC-H</button>
+        </div>
+      </div>
+      <button class="start" id="startBtn" onclick="startBench()">Start benchmark</button>
+      <div class="bstatus" id="bstatus">Idle</div>
+    </div>
+
+    <table class="bench">
+      <thead><tr><th>Query</th><th>Snowdrop</th><th>PostgreSQL</th><th>Speedup</th></tr></thead>
+      <tbody id="benchRows"><tr><td colspan="4" style="text-align:center;color:var(--mut)">Press “Start benchmark” to run live queries on both engines.</td></tr></tbody>
+    </table>
+
+    <iframe id="gframe" class="gframe" src="about:blank"></iframe>
+    <div class="ghint">Live Grafana dashboard (Prometheus metrics). One run at a time — anyone visiting sees the run in progress.</div>
   </div>
 
   <div class="foot">Snowdrop: in-memory columnar cache over row-packed RocksDB · PostgreSQL 16, same schema · results identical</div>
@@ -201,7 +250,48 @@ function fmtBig(v,pre=''){ const a=Math.abs(v);
   if(a>=1e9) return pre+(v/1e9).toFixed(2)+'B'; if(a>=1e6) return pre+(v/1e6).toFixed(1)+'M';
   if(a>=1e3) return pre+(v/1e3).toFixed(1)+'K'; return pre+v.toFixed(0); }
 
+// ── tabs + benchmark ──
+let benchSuite = 'crypto', gframeLoaded = false;
+function showTab(name) {
+  $('tab-explorer').hidden = name !== 'explorer';
+  $('tab-bench').hidden = name !== 'bench';
+  $('tab_explorer_btn').classList.toggle('on', name === 'explorer');
+  $('tab_bench_btn').classList.toggle('on', name === 'bench');
+  if (name === 'bench' && !gframeLoaded) {
+    // Grafana on :3000 of the same host (anonymous, kiosk, auto-refresh).
+    $('gframe').src = `${location.protocol}//${location.hostname}:3000/d/snowbench/snowdrop-benchmark?orgId=1&refresh=5s&kiosk`;
+    gframeLoaded = true;
+  }
+}
+document.querySelectorAll('#suite button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#suite button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); benchSuite = b.dataset.v;
+});
+async function startBench() {
+  try { await fetch('/api/benchmark/start?suite=' + benchSuite, {method:'POST'}); } catch(e){}
+  pollBench();
+}
+async function pollBench() {
+  let s; try { s = await (await fetch('/api/benchmark/status')).json(); } catch(e){ return; }
+  const btn = $('startBtn');
+  btn.disabled = s.running;
+  if (s.running) {
+    btn.textContent = 'Running…';
+    $('bstatus').innerHTML = `<b>${s.suite}</b> · iteration <b>${s.iteration}</b> · ${s.elapsed_s.toFixed(0)}s / ${s.duration_s}s`;
+  } else {
+    btn.textContent = 'Start benchmark';
+    $('bstatus').innerHTML = s.finished ? `Finished — <b>${s.iteration}</b> iterations` : 'Idle';
+  }
+  if (s.stats && s.stats.length) {
+    $('benchRows').innerHTML = s.stats.map(q =>
+      `<tr><td>${q.query}</td><td>${q.sd_ms.toFixed(2)} ms</td><td>${q.pg_ms.toFixed(2)} ms</td>`
+      + `<td class="sx">${q.speedup>0?q.speedup.toFixed(1)+'×':'—'}</td></tr>`).join('');
+  }
+}
+setInterval(pollBench, 1500);  // anyone visiting sees a run in progress
+
 init();
+pollBench();
 </script>
 </body>
 </html>

@@ -1,0 +1,41 @@
+# Prometheus + Grafana for the benchmark tab.
+# Snowdrop orchestrator (:9090) and crypto-demo (:9091) run natively on the host,
+# so the containers reach them via host.docker.internal (host-gateway).
+#
+#   docker compose -f docker-compose.monitoring.yml up -d
+#   Grafana on :3000 (anonymous), Prometheus on :9092
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "9092:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_COOKIE_SAMESITE: "disabled"
+      GF_USERS_DEFAULT_THEME: "light"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/snowbench.json"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  prom_data: {}
+  grafana_data: {}
