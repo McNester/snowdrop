@@ -3,203 +3,203 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Snowdrop · Live Trades</title>
+<title>Snowdrop vs PostgreSQL — Live Binance Trades</title>
 <style>
   :root {
-    --bg: #0b0e14;
-    --panel: #141925;
-    --panel2: #1c2333;
-    --line: #283044;
-    --text: #e6e9f0;
-    --muted: #8b93a7;
-    --sd: #4ade80;
-    --pg: #60a5fa;
-    --accent: #f5b301;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --line: #e6e8ec;
+    --ink: #14181f;
+    --mut: #767d8a;
+    --sd: #18a558;
+    --pg: #3b6fe0;
+    --sell: #d65a5a;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 80px; }
-  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
-  h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sd);
-         box-shadow: 0 0 0 0 var(--sd); animation: pulse 2s infinite; display: inline-block; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.5)} 70%{box-shadow:0 0 0 8px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
-  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
-  .sub b { color: var(--text); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 36px 22px 70px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 3px; letter-spacing: -0.01em; }
+  .lede { color: var(--mut); margin: 0 0 22px; font-size: 13.5px; }
 
-  .controls { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 22px; }
-  .row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-end; }
-  .field { display: flex; flex-direction: column; gap: 8px; }
-  label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  select {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 9px; padding: 10px 14px; font-size: 15px; min-width: 130px; cursor: pointer;
-  }
-  .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-  .seg button { background: transparent; color: var(--muted); border: 0; padding: 10px 18px; font-size: 14px; cursor: pointer; }
-  .seg button.on { background: var(--accent); color: #1a1300; font-weight: 600; }
-  .range { flex: 1; min-width: 260px; }
-  .range .vals { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; color: var(--text); font-size: 14px; }
-  input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
-  .rngpair { display: flex; gap: 10px; }
+  /* filter bar */
+  .filters { display: flex; gap: 26px; align-items: center; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-bottom: 22px; }
+  .filters label { display: block; font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); cursor: pointer; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; background: #fff; border: 0; padding: 7px 14px; color: var(--mut); cursor: pointer; }
+  .seg button.on { background: var(--ink); color: #fff; }
+  .rng { min-width: 280px; }
+  .rng .v { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; margin-top: 4px; color: var(--ink); }
+  .pair { display: flex; gap: 8px; }
+  input[type=range] { width: 100%; accent-color: var(--ink); cursor: pointer; }
 
-  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
-  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-  .card .v { font-size: 28px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  /* split */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .pane { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px 22px; transition: opacity .15s; }
+  .pane.loading { opacity: .45; }
+  .pane h2 { font-size: 14px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; }
+  .badge { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 15px; }
+  .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .tag { width: 9px; height: 9px; border-radius: 50%; }
+  .tag.sd { background: var(--sd); } .tag.pg { background: var(--pg); }
+  .badge.sd { color: var(--sd); } .badge.pg { color: var(--pg); }
 
-  .race { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
-  .bar { display: flex; align-items: center; gap: 14px; margin: 14px 0; }
-  .bar .name { width: 96px; font-weight: 600; font-size: 14px; }
-  .bar .name.sd { color: var(--sd); }
-  .bar .name.pg { color: var(--pg); }
-  .track { flex: 1; background: var(--panel2); border-radius: 8px; height: 30px; position: relative; overflow: hidden; }
-  .fill { height: 100%; border-radius: 8px; transition: width .45s cubic-bezier(.2,.7,.2,1); width: 0; }
-  .fill.sd { background: linear-gradient(90deg, #2bb673, var(--sd)); }
-  .fill.pg { background: linear-gradient(90deg, #3b82f6, var(--pg)); }
-  .ms { width: 96px; text-align: right; font-variant-numeric: tabular-nums; font-size: 15px; }
-  .verdict { text-align: center; margin-top: 18px; font-size: 15px; color: var(--muted); }
-  .verdict b { font-size: 30px; color: var(--sd); font-weight: 800; letter-spacing: -0.02em; }
-  .sql { margin-top: 18px; color: var(--muted); font: 12px/1.5 ui-monospace, Menlo, monospace; word-break: break-word; }
-  .foot { margin-top: 26px; color: var(--muted); font-size: 12px; text-align: center; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .tile { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
+  .tile .k { font-size: 10.5px; color: var(--mut); text-transform: uppercase; letter-spacing: .05em; }
+  .tile .n { font-size: 20px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+  .chart { margin-top: 16px; }
+  .chart .t { font-size: 11.5px; color: var(--mut); margin-bottom: 7px; display: flex; justify-content: space-between; }
+  .chart svg { display: block; width: 100%; height: 64px; }
+  .chart rect { transition: height .3s ease, y .3s ease; }
+
+  .verdict { text-align: center; margin: 22px 0 2px; font-size: 14px; color: var(--mut); }
+  .verdict b { color: var(--sd); font-weight: 700; }
+  .foot { margin-top: 20px; color: var(--mut); font-size: 12px; text-align: center; }
+  .legend { display: inline-flex; gap: 12px; font-size: 11px; color: var(--mut); }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header><span class="dot"></span><h1>Live Trades Explorer</h1></header>
-  <p class="sub">The exact same SQL runs on <b style="color:var(--sd)">Snowdrop</b> and <b style="color:var(--pg)">PostgreSQL</b> over real Binance trades. Filter anything — watch the latency.</p>
+  <h1>Live Binance Trades — Snowdrop vs PostgreSQL</h1>
+  <p class="lede">Same query, same data (<b id="nrows">16M</b> real trades), two engines. Change a filter — both dashboards reload at once.</p>
 
-  <div class="controls">
-    <div class="row">
-      <div class="field">
-        <label>Symbol</label>
-        <select id="symbol"></select>
+  <div class="filters">
+    <div><label>Symbol</label><select id="symbol"></select></div>
+    <div><label>Side</label>
+      <div class="seg" id="side">
+        <button data-v="ALL" class="on">All</button><button data-v="BUY">Buy</button><button data-v="SELL">Sell</button>
       </div>
-      <div class="field">
-        <label>Side</label>
-        <div class="seg" id="side">
-          <button data-v="ALL" class="on">All</button>
-          <button data-v="BUY">Buy</button>
-          <button data-v="SELL">Sell</button>
-        </div>
-      </div>
-      <div class="field range">
-        <label>Price range</label>
-        <div class="vals"><span id="lo">—</span><span id="hi">—</span></div>
-        <div class="rngpair">
-          <input type="range" id="pmin" min="0" max="100" value="0" />
-          <input type="range" id="pmax" min="0" max="100" value="100" />
-        </div>
-      </div>
+    </div>
+    <div class="rng"><label>Price range</label>
+      <div class="pair"><input type="range" id="pmin" min="0" max="100" value="0"><input type="range" id="pmax" min="0" max="100" value="100"></div>
+      <div class="v"><span id="lo">—</span><span id="hi">—</span></div>
     </div>
   </div>
 
-  <div class="cards">
-    <div class="card"><div class="k">Volume</div><div class="v" id="m_vol">—</div></div>
-    <div class="card"><div class="k">Trades</div><div class="v" id="m_cnt">—</div></div>
-    <div class="card"><div class="k">Avg price</div><div class="v" id="m_avg">—</div></div>
+  <div class="verdict" id="verdict">&nbsp;</div>
+
+  <div class="split">
+    <div class="pane" id="pane_sd">
+      <div class="phead"><span class="tag sd"></span><h2>Snowdrop</h2><span class="badge sd" id="ms_sd">—</span></div>
+      <div class="tiles" id="tiles_sd"></div>
+      <div id="charts_sd"></div>
+    </div>
+    <div class="pane" id="pane_pg">
+      <div class="phead"><span class="tag pg"></span><h2>PostgreSQL</h2><span class="badge pg" id="ms_pg">—</span></div>
+      <div class="tiles" id="tiles_pg"></div>
+      <div id="charts_pg"></div>
+    </div>
   </div>
 
-  <div class="race">
-    <div class="bar"><div class="name sd">Snowdrop</div><div class="track"><div class="fill sd" id="bar_sd"></div></div><div class="ms" id="ms_sd">—</div></div>
-    <div class="bar"><div class="name pg">PostgreSQL</div><div class="track"><div class="fill pg" id="bar_pg"></div></div><div class="ms" id="ms_pg">—</div></div>
-    <div class="verdict" id="verdict">&nbsp;</div>
-    <div class="sql" id="sql"></div>
-  </div>
-
-  <div class="foot">Snowdrop: columnar cache over row-packed RocksDB · PostgreSQL 16 · same schema, same query</div>
+  <div class="foot">Snowdrop: in-memory columnar cache over row-packed RocksDB · PostgreSQL 16, same schema · results identical</div>
 </div>
 
 <script>
-let SYMBOLS = [];
-let pmin = 0, pmax = 0, lo = 0, hi = 0;
-
+let SYMBOLS = [], pmin = 0, pmax = 0, lo = 0, hi = 0;
 const $ = id => document.getElementById(id);
 
 async function init() {
   SYMBOLS = await (await fetch('/api/symbols')).json();
   const sel = $('symbol');
-  SYMBOLS.forEach(s => { const o = document.createElement('option'); o.value = s.symbol; o.textContent = s.symbol; sel.appendChild(o); });
+  SYMBOLS.forEach(s => { const o = document.createElement('option'); o.value = s.symbol; o.textContent = s.symbol + 'USDT'; sel.appendChild(o); });
   sel.onchange = () => { setSymbol(sel.value); run(); };
   $('side').querySelectorAll('button').forEach(b => b.onclick = () => {
-    $('side').querySelectorAll('button').forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); run();
+    $('side').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); run();
   });
   ['pmin','pmax'].forEach(id => $(id).oninput = () => { syncRange(); debounced(); });
   if (SYMBOLS.length) setSymbol(SYMBOLS[0].symbol);
   run();
 }
-
 function setSymbol(sym) {
-  const s = SYMBOLS.find(x => x.symbol === sym) || {min:0, max:1};
-  pmin = s.min; pmax = s.max;
-  $('pmin').value = 0; $('pmax').value = 100;
-  syncRange();
+  const s = SYMBOLS.find(x => x.symbol === sym) || {min:0,max:1};
+  pmin = s.min; pmax = s.max; $('pmin').value = 0; $('pmax').value = 100; syncRange();
 }
-
-function priceAt(pct) { return pmin + (pmax - pmin) * pct/100; }
-
+function priceAt(p) { return pmin + (pmax - pmin) * p/100; }
 function syncRange() {
   let a = +$('pmin').value, b = +$('pmax').value;
-  if (a > b) { [a, b] = [b, a]; $('pmin').value = a; $('pmax').value = b; }
+  if (a > b) { [a,b]=[b,a]; $('pmin').value=a; $('pmax').value=b; }
   lo = priceAt(a); hi = priceAt(b);
-  $('lo').textContent = fmtPrice(lo);
-  $('hi').textContent = fmtPrice(hi);
+  $('lo').textContent = fmtP(lo); $('hi').textContent = fmtP(hi);
+}
+let timer=null; function debounced(){ clearTimeout(timer); timer=setTimeout(run,160); }
+function side(){ return $('side').querySelector('.on').dataset.v; }
+
+let sdMs = 0, pgMs = 0;
+function params(engine) {
+  const a = +$('pmin').value, b = +$('pmax').value;
+  let q = `engine=${engine}&sym=${$('symbol').value}&side=${side()}`;
+  if (a > 0) q += `&pmin=${lo.toFixed(2)}`;
+  if (b < 100) q += `&pmax=${hi.toFixed(2)}`;
+  return q;
+}
+function run() {
+  $('pane_sd').classList.add('loading'); $('pane_pg').classList.add('loading');
+  $('verdict').innerHTML = '&nbsp;';
+  load('snowdrop', 'sd'); load('postgres', 'pg');
+}
+async function load(engine, k) {
+  let r; try { r = await (await fetch('/api/dashboard?' + params(engine))).json(); } catch(e){ return; }
+  $('pane_'+k).classList.remove('loading');
+  $('ms_'+k).textContent = r.ms.toFixed(0) + ' ms';
+  if (k==='sd') sdMs = r.ms; else pgMs = r.ms;
+  renderTiles(k, r.totals);
+  renderCharts(k, r.hourly);
+  if (sdMs > 0 && pgMs > 0) {
+    const x = pgMs / sdMs;
+    $('verdict').innerHTML = x >= 1 ? `Snowdrop ran this <b>${x.toFixed(1)}× faster</b>` : '';
+  }
+}
+function renderTiles(k, t) {
+  $('tiles_'+k).innerHTML =
+    tile('Trades', commas(t.trades)) +
+    tile('Volume', fmtBig(t.volume,'$')) +
+    tile('Avg price', fmtP(t.avg_px));
+}
+function tile(kk, n){ return `<div class="tile"><div class="k">${kk}</div><div class="n">${n}</div></div>`; }
+
+function renderCharts(k, hourly) {
+  const H = Array.from({length:24}, (_,h) => hourly.find(x=>x.hour===h) || {hour:h,trades:0,volume:0,avg_px:0,buys:0});
+  const color = k==='sd' ? 'var(--sd)' : 'var(--pg)';
+  let html = '';
+  html += chart('Volume by hour (UTC)', bars(H.map(x=>x.volume), color));
+  html += chart('Trades by hour', bars(H.map(x=>x.trades), color));
+  html += chart('Buy vs sell by hour', stacked(H.map(x=>x.buys), H.map(x=>x.trades-x.buys)),
+    `<span class="legend"><span><i style="background:${color}"></i>buy</span><span><i style="background:var(--sell)"></i>sell</span></span>`);
+  $('charts_'+k).innerHTML = html;
+}
+function chart(title, svg, legend='') {
+  return `<div class="chart"><div class="t"><span>${title}</span>${legend}</div>${svg}</div>`;
+}
+function bars(vals, color) {
+  const max = Math.max(...vals, 1e-9), n = vals.length, w = 100/n;
+  let r = '';
+  vals.forEach((v,i) => { const h = 100*v/max; r += `<rect x="${i*w+0.5}" y="${100-h}" width="${w-1}" height="${h}" fill="${color}" rx="0.6"/>`; });
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${r}</svg>`;
+}
+function stacked(buy, sell, color) {
+  const tot = buy.map((b,i)=>b+sell[i]), max = Math.max(...tot,1e-9), n = buy.length, w = 100/n;
+  let r = '';
+  for (let i=0;i<n;i++){
+    const bh = 100*buy[i]/max, sh = 100*sell[i]/max;
+    r += `<rect x="${i*w+0.5}" y="${100-bh}" width="${w-1}" height="${bh}" fill="var(--sd)" rx="0.6"/>`;
+    r += `<rect x="${i*w+0.5}" y="${100-bh-sh}" width="${w-1}" height="${sh}" fill="var(--sell)" rx="0.6"/>`;
+  }
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${r}</svg>`;
 }
 
-let timer = null;
-function debounced() { clearTimeout(timer); timer = setTimeout(run, 180); }
-
-function side() { return $('side').querySelector('.on').dataset.v; }
-
-async function run() {
-  const body = {
-    symbol: $('symbol').value,
-    side: side(),
-    priceMin: lo, priceMax: hi
-  };
-  let r;
-  try { r = await (await fetch('/api/query', {method:'POST', body: JSON.stringify(body)})).json(); }
-  catch (e) { return; }
-  render(r);
-}
-
-function commas(n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
-
-function render(r) {
-  const s = r.snowdrop, p = r.postgres;
-  $('m_vol').textContent = fmtBig(s.volume, '$');
-  $('m_cnt').textContent = commas(s.trades||0);
-  $('m_avg').textContent = fmtPrice(s.avg_px);
-
-  const max = Math.max(s.median_ms, p.median_ms, 0.01);
-  $('bar_sd').style.width = (100 * s.median_ms / max) + '%';
-  $('bar_pg').style.width = (100 * p.median_ms / max) + '%';
-  $('ms_sd').textContent = s.median_ms.toFixed(2) + ' ms';
-  $('ms_pg').textContent = p.median_ms.toFixed(2) + ' ms';
-
-  if (r.speedup) {
-    $('verdict').innerHTML = 'Snowdrop is <b>' + r.speedup.toFixed(1) + '×</b> faster';
-  } else { $('verdict').innerHTML = '&nbsp;'; }
-  $('sql').textContent = r.sql;
-}
-
-function fmtPrice(v) {
-  if (v >= 1000) return '$' + commas(v);
-  if (v >= 1) return '$' + v.toFixed(2);
-  return '$' + v.toFixed(4);
-}
-function fmtBig(v, pre='') {
-  const a = Math.abs(v);
-  if (a >= 1e9) return pre + (v/1e9).toFixed(2) + 'B';
-  if (a >= 1e6) return pre + (v/1e6).toFixed(2) + 'M';
-  if (a >= 1e3) return pre + (v/1e3).toFixed(1) + 'K';
-  return pre + v.toFixed(0);
-}
+function commas(n){ return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function fmtP(v){ if(v>=1000) return '$'+commas(v); if(v>=1) return '$'+v.toFixed(2); return '$'+v.toFixed(4); }
+function fmtBig(v,pre=''){ const a=Math.abs(v);
+  if(a>=1e9) return pre+(v/1e9).toFixed(2)+'B'; if(a>=1e6) return pre+(v/1e6).toFixed(1)+'M';
+  if(a>=1e3) return pre+(v/1e3).toFixed(1)+'K'; return pre+v.toFixed(0); }
 
 init();
 </script>

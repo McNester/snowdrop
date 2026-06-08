@@ -1,13 +1,17 @@
-# Live Trades Explorer — Snowdrop vs PostgreSQL
+# Live Binance Trades — Snowdrop vs PostgreSQL
 
-A touchable demo: the **same SQL** runs live against Snowdrop and PostgreSQL over
-real Binance trade data. Pick a symbol, side, and price range — watch the
-latency bars.
+A split-screen dashboard: the **same SQL** runs live against Snowdrop (left) and
+PostgreSQL (right) over real Binance trade data. Pick a symbol, side, or price
+range and both dashboards reload at once — Snowdrop's side fills in while
+PostgreSQL is still working.
 
-It is a single-table filtered aggregate (`COUNT`, `SUM(price*qty)`, `AVG`, `MIN`,
-`MAX`) over millions of rows. Symbol and side are dictionary-encoded to integer
-columns so every predicate is a numeric (SIMD-friendly) comparison — Snowdrop's
-columnar cache scans these far faster than PostgreSQL's row scan.
+Each side runs one grouped scan
+(`SELECT hour, COUNT(*), SUM(price*qty), AVG(price), SUM(is_buy) ... GROUP BY hour`)
+over millions of rows and renders volume / trades / buy-vs-sell charts plus
+headline tiles. Symbol and side are dictionary-encoded to integer columns and
+`hour` is a plain int, so every predicate and the GROUP BY stay on Snowdrop's
+SIMD-friendly columnar fast path. Results from both engines are identical;
+typical gap is ~3x in Snowdrop's favour at 16M rows.
 
 ## Prerequisites
 

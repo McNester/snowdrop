@@ -98,9 +98,10 @@ fn parse_csv(path: &std::path::Path) -> Result<Vec<Trade>> {
 
 // symbol and side are dictionary-encoded to integer columns (sym_id, is_buy) so
 // every filter the UI sends is a SIMD-friendly numeric comparison rather than a
-// per-row string compare — that is where Snowdrop's columnar scan wins big.
+// per-row string compare. `hour` (0-23) is a plain int so GROUP BY hour takes
+// Snowdrop's fast integer-keyed grouping path.
 const CREATE_TABLE: &str = "CREATE TABLE trades (id BIGINT PRIMARY KEY, sym_id INT, \
-     symbol VARCHAR(12), is_buy INT, price FLOAT, qty FLOAT, minute INT)";
+     symbol VARCHAR(12), is_buy INT, price FLOAT, qty FLOAT, hour INT)";
 
 async fn seed() -> Result<()> {
     let dir = data_dir();
@@ -174,7 +175,7 @@ async fn insert_symbol(
     };
     for chunk in rows.chunks(batch) {
         let mut sql = format!(
-            "{marker}INSERT INTO trades (id, sym_id, symbol, is_buy, price, qty, minute) VALUES "
+            "{marker}INSERT INTO trades (id, sym_id, symbol, is_buy, price, qty, hour) VALUES "
         );
         for (i, t) in chunk.iter().enumerate() {
             if i > 0 {
@@ -188,7 +189,7 @@ async fn insert_symbol(
                 t.is_buy,
                 t.price,
                 t.qty,
-                t.minute
+                t.minute / 60
             ));
         }
         sql.push(';');
@@ -213,53 +214,63 @@ struct SymbolInfo {
 
 #[derive(Clone)]
 struct App {
-    sd: Arc<Client>,
-    pg: Arc<Client>,
+    sd: Vec<Arc<Client>>,
+    pg: Vec<Arc<Client>>,
     symbols: Arc<Vec<SymbolInfo>>,
 }
 
-#[derive(Serialize)]
-struct EngineResult {
-    median_ms: f64,
+#[derive(Serialize, Default)]
+struct Totals {
     trades: i64,
     volume: f64,
     avg_px: f64,
-    low: f64,
-    high: f64,
-    error: Option<String>,
 }
 
 #[derive(Serialize)]
-struct CompareResponse {
-    sql: String,
-    snowdrop: EngineResult,
-    postgres: EngineResult,
-    speedup: Option<f64>,
+struct HourBucket {
+    hour: i32,
+    trades: i64,
+    volume: f64,
+    avg_px: f64,
+    buys: i64,
+}
+
+#[derive(Serialize)]
+struct DashboardResponse {
+    engine: String,
+    ms: f64,
+    totals: Totals,
+    hourly: Vec<HourBucket>,
+    error: Option<String>,
 }
 
 async fn serve() -> Result<()> {
-    let sd = connect(&snowdrop_conn()).await?;
-    let _ = sd.simple_query("USE crypto;").await;
-    let pg = connect(&postgres_conn("crypto")).await?;
+    // Two connections per engine so the totals and hourly queries run in
+    // parallel (real server-side concurrency, not pipelined on one connection).
+    let mut sd = Vec::new();
+    let mut pg = Vec::new();
+    for _ in 0..2 {
+        let c = connect(&snowdrop_conn()).await?;
+        let _ = c.simple_query("USE crypto;").await;
+        sd.push(Arc::new(c));
+        pg.push(Arc::new(connect(&postgres_conn("crypto")).await?));
+    }
 
-    // Discover symbols + their price range for the UI sliders.
-    let symbols = load_symbols(&sd).await?;
+    let symbols = load_symbols(&sd[0]).await?;
     let first = symbols.first().map(|s| s.sym_id).unwrap_or(0);
     let app = App {
-        sd: Arc::new(sd),
-        pg: Arc::new(pg),
+        sd,
+        pg,
         symbols: Arc::new(symbols),
     };
 
     // Warm both engines (builds Snowdrop's columnar cache, PG's page cache).
-    let _ = run_engine(&app.sd, &build_sql(first, None, None, None)).await;
-    let _ = run_engine(&app.pg, &build_sql(first, None, None, None)).await;
+    let _ = run_dashboard(&app, "snowdrop", first, None, None, None).await;
+    let _ = run_dashboard(&app, "postgres", first, None, None, None).await;
 
     let port = std::env::var("DEMO_PORT").unwrap_or_else(|_| "8095".to_string());
-    let addr = format!("0.0.0.0:{port}");
-    let listener = TcpListener::bind(&addr).await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("crypto-demo on http://localhost:{port}");
-
     loop {
         let (stream, _) = listener.accept().await?;
         let app = app.clone();
@@ -272,17 +283,11 @@ async fn serve() -> Result<()> {
 }
 
 async fn handle(mut stream: TcpStream, app: App) -> Result<()> {
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut n = stream.read(&mut buf).await?;
-    while !headers_complete(&buf[..n]) && n < buf.len() {
-        let more = stream.read(&mut buf[n..]).await?;
-        if more == 0 {
-            break;
-        }
-        n += more;
-    }
+    let mut buf = vec![0u8; 16 * 1024];
+    let n = stream.read(&mut buf).await?;
     let req = String::from_utf8_lossy(&buf[..n]).to_string();
-    let (status, ctype, body) = route(&req, &app).await;
+    let line = req.lines().next().unwrap_or("");
+    let (status, ctype, body) = route(line, &app).await;
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
         body.len()
@@ -293,12 +298,6 @@ async fn handle(mut stream: TcpStream, app: App) -> Result<()> {
     Ok(())
 }
 
-fn headers_complete(b: &[u8]) -> bool {
-    b.windows(4).any(|w| w == b"\r\n\r\n")
-}
-
-/// One GROUP BY query (handled by Snowdrop's fast aggregate path) gives every
-/// symbol and its price range for the UI.
 async fn load_symbols(client: &Client) -> Result<Vec<SymbolInfo>> {
     let sql = "SELECT symbol, sym_id, MIN(price) AS lo, MAX(price) AS hi \
                FROM trades GROUP BY symbol, sym_id;";
@@ -314,37 +313,40 @@ async fn load_symbols(client: &Client) -> Result<Vec<SymbolInfo>> {
             });
         }
     }
-    out.sort_by(|a, b| b.max.partial_cmp(&a.max).unwrap()); // priciest first
+    out.sort_by(|a, b| b.max.partial_cmp(&a.max).unwrap());
     Ok(out)
 }
 
-async fn route(req: &str, app: &App) -> (&'static str, &'static str, String) {
-    let first = req.lines().next().unwrap_or("");
-    if first.starts_with("GET / ") || first.starts_with("GET /index.html") {
+async fn route(line: &str, app: &App) -> (&'static str, &'static str, String) {
+    if line.starts_with("GET / ") || line.starts_with("GET /index.html") {
         return ("200 OK", "text/html; charset=utf-8", INDEX_HTML.to_string());
     }
-    if first.starts_with("GET /api/symbols") {
+    if line.starts_with("GET /api/symbols") {
         return (
             "200 OK",
             "application/json",
             serde_json::to_string(app.symbols.as_ref()).unwrap(),
         );
     }
-    if first.starts_with("POST /api/query") {
-        let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
-        return ("200 OK", "application/json", api_query(body, app).await);
+    if line.starts_with("GET /api/dashboard") {
+        return ("200 OK", "application/json", api_dashboard(line, app).await);
     }
     ("404 Not Found", "text/plain", "not found".to_string())
 }
 
-async fn api_query(body: &str, app: &App) -> String {
-    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-    let req_symbol = v.get("symbol").and_then(|s| s.as_str()).unwrap_or("");
-    let side = v.get("side").and_then(|s| s.as_str()).unwrap_or("ALL");
-    let price_min = v.get("priceMin").and_then(|s| s.as_f64());
-    let price_max = v.get("priceMax").and_then(|s| s.as_f64());
+fn query_param<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let q = line.split('?').nth(1)?.split(' ').next()?;
+    q.split('&')
+        .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
+}
 
-    // Resolve the symbol to its integer id; default to the first known symbol.
+async fn api_dashboard(line: &str, app: &App) -> String {
+    let engine = query_param(line, "engine").unwrap_or("snowdrop");
+    let req_symbol = query_param(line, "sym").unwrap_or("");
+    let side = query_param(line, "side").unwrap_or("ALL");
+    let pmin = query_param(line, "pmin").and_then(|v| v.parse().ok());
+    let pmax = query_param(line, "pmax").and_then(|v| v.parse().ok());
+
     let sym_id = app
         .symbols
         .iter()
@@ -357,95 +359,97 @@ async fn api_query(body: &str, app: &App) -> String {
         "SELL" => Some(0),
         _ => None,
     };
-
-    let sql = build_sql(sym_id, is_buy, price_min, price_max);
-    let snowdrop = run_engine(&app.sd, &sql).await;
-    let postgres = run_engine(&app.pg, &sql).await;
-    let speedup = match (snowdrop.median_ms, postgres.median_ms) {
-        (s, p) if s > 0.0 && p > 0.0 => Some(p / s),
-        _ => None,
-    };
-    serde_json::to_string(&CompareResponse {
-        sql,
-        snowdrop,
-        postgres,
-        speedup,
-    })
-    .unwrap()
+    let resp = run_dashboard(app, engine, sym_id, is_buy, pmin, pmax).await;
+    serde_json::to_string(&resp).unwrap()
 }
 
-fn build_sql(sym_id: i32, is_buy: Option<i32>, price_min: Option<f64>, price_max: Option<f64>) -> String {
-    // All predicates are numeric (sym_id, is_buy, price) so the columnar scan
-    // stays on the SIMD-friendly fast path.
-    let mut where_clause = format!("sym_id = {sym_id}");
+fn where_clause(sym_id: i32, is_buy: Option<i32>, pmin: Option<f64>, pmax: Option<f64>) -> String {
+    let mut w = format!("sym_id = {sym_id}");
     if let Some(b) = is_buy {
-        where_clause.push_str(&format!(" AND is_buy = {b}"));
+        w.push_str(&format!(" AND is_buy = {b}"));
     }
-    if let Some(min) = price_min {
-        where_clause.push_str(&format!(" AND price >= {min:.4}"));
+    if let Some(min) = pmin {
+        w.push_str(&format!(" AND price >= {min:.4}"));
     }
-    if let Some(max) = price_max {
-        where_clause.push_str(&format!(" AND price <= {max:.4}"));
+    if let Some(max) = pmax {
+        w.push_str(&format!(" AND price <= {max:.4}"));
     }
-    // No COALESCE: Snowdrop's columnar aggregate path rejects it. Empty results
-    // yield SQL NULL, which the metric parser already treats as zero.
-    format!(
-        "SELECT COUNT(*) AS trades, SUM(price * qty) AS volume, \
-         AVG(price) AS avg_px, MIN(price) AS low, MAX(price) AS high \
-         FROM trades WHERE {where_clause};"
-    )
+    w
 }
 
-/// Run the query a few times and return the median latency + parsed metrics.
-async fn run_engine(client: &Client, sql: &str) -> EngineResult {
-    let mut samples = Vec::new();
-    let mut last_row: Option<(i64, f64, f64, f64, f64)> = None;
-    for _ in 0..5 {
-        let t = Instant::now();
-        match client.simple_query(sql).await {
-            Ok(messages) => {
-                samples.push(t.elapsed().as_secs_f64() * 1000.0);
-                last_row = parse_metrics(&messages);
-            }
-            Err(e) => {
-                return EngineResult {
-                    median_ms: 0.0,
-                    trades: 0,
-                    volume: 0.0,
-                    avg_px: 0.0,
-                    low: 0.0,
-                    high: 0.0,
-                    error: Some(e.to_string()),
-                };
-            }
+/// Run the dashboard's single grouped query for one engine; the totals tiles
+/// are derived from the hourly buckets so only one scan is needed.
+async fn run_dashboard(
+    app: &App,
+    engine: &str,
+    sym_id: i32,
+    is_buy: Option<i32>,
+    pmin: Option<f64>,
+    pmax: Option<f64>,
+) -> DashboardResponse {
+    let client = if engine == "postgres" { &app.pg[0] } else { &app.sd[0] };
+    let w = where_clause(sym_id, is_buy, pmin, pmax);
+    let hourly_sql = format!(
+        "SELECT hour, COUNT(*) AS trades, SUM(price*qty) AS volume, AVG(price) AS avg_px, \
+         SUM(is_buy) AS buys FROM trades WHERE {w} GROUP BY hour ORDER BY hour;"
+    );
+
+    let t = Instant::now();
+    let res = client.simple_query(&hourly_sql).await;
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    let mut resp = DashboardResponse {
+        engine: engine.to_string(),
+        ms,
+        totals: Totals::default(),
+        hourly: Vec::new(),
+        error: None,
+    };
+    match res {
+        Ok(hm) => {
+            resp.hourly = parse_hourly(&hm);
+            resp.totals = totals_from_hourly(&resp.hourly);
         }
+        Err(e) => resp.error = Some(e.to_string()),
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = samples[samples.len() / 2];
-    let (trades, volume, avg_px, low, high) = last_row.unwrap_or((0, 0.0, 0.0, 0.0, 0.0));
-    EngineResult {
-        median_ms: median,
+    resp
+}
+
+/// Roll per-hour buckets up into the headline totals. avg_px is a trade-count
+/// weighted mean of the per-hour averages.
+fn totals_from_hourly(hourly: &[HourBucket]) -> Totals {
+    let mut trades = 0i64;
+    let mut volume = 0.0;
+    let mut price_sum = 0.0;
+    for h in hourly {
+        trades += h.trades;
+        volume += h.volume;
+        price_sum += h.avg_px * h.trades as f64;
+    }
+    Totals {
         trades,
         volume,
-        avg_px,
-        low,
-        high,
-        error: None,
+        avg_px: if trades > 0 { price_sum / trades as f64 } else { 0.0 },
     }
 }
 
-fn parse_metrics(messages: &[SimpleQueryMessage]) -> Option<(i64, f64, f64, f64, f64)> {
+fn rget(row: &tokio_postgres::SimpleQueryRow, name: &str) -> String {
+    row.get(name).unwrap_or("0").to_string()
+}
+
+fn parse_hourly(messages: &[SimpleQueryMessage]) -> Vec<HourBucket> {
+    let mut out = Vec::new();
     for m in messages {
-        if let SimpleQueryMessage::Row(row) = m {
-            let g = |name: &str| row.get(name).unwrap_or("0");
-            return Some((
-                g("trades").parse().unwrap_or(0),
-                g("volume").parse().unwrap_or(0.0),
-                g("avg_px").parse().unwrap_or(0.0),
-                g("low").parse().unwrap_or(0.0),
-                g("high").parse().unwrap_or(0.0),
-            ));
+        if let SimpleQueryMessage::Row(r) = m {
+            out.push(HourBucket {
+                hour: rget(r, "hour").parse().unwrap_or(0),
+                trades: rget(r, "trades").parse().unwrap_or(0),
+                volume: rget(r, "volume").parse().unwrap_or(0.0),
+                avg_px: rget(r, "avg_px").parse().unwrap_or(0.0),
+                buys: rget(r, "buys").parse().unwrap_or(0),
+            });
         }
     }
-    None
+    out
 }
+
