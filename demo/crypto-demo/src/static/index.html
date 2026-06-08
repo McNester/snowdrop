@@ -85,6 +85,14 @@
   .sx { color: var(--sd); font-weight: 700; }
   .gframe { width: 100%; height: 560px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
   .ghint { color: var(--mut); font-size: 12px; margin: 8px 2px 0; }
+  .nowexec { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
+  .nowexec .dot.run { display:inline-block; width:9px; height:9px; border-radius:50%; background: var(--sd); margin-right:8px; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%{opacity:1} 50%{opacity:.3} 100%{opacity:1} }
+  .nowlabel { font-weight: 600; font-size: 13px; }
+  .nowsql { margin: 8px 0 0; padding: 10px 12px; background: #0e1320; color: #cdd6e6; border-radius: 8px;
+            font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; overflow-x: auto; }
+  td.sqlcell { text-align: left; }
+  td.sqlcell code { font: 11px/1.4 ui-monospace, Menlo, monospace; color: var(--mut); }
 </style>
 </head>
 <body>
@@ -135,8 +143,22 @@
           <button data-v="crypto" class="on">Crypto trades</button><button data-v="tpch">TPC-H</button>
         </div>
       </div>
+      <div>
+        <label>Run length</label>
+        <select id="secs">
+          <option value="30">30s</option>
+          <option value="60" selected>60s</option>
+          <option value="120">2 min</option>
+          <option value="300">5 min</option>
+        </select>
+      </div>
       <button class="start" id="startBtn" onclick="startBench()">Start benchmark</button>
       <div class="bstatus" id="bstatus">Idle</div>
+    </div>
+
+    <div class="nowexec" id="nowexec" hidden>
+      <span class="dot run"></span><span class="nowlabel" id="nowlabel"></span>
+      <pre class="nowsql" id="nowsql"></pre>
     </div>
 
     <table class="bench">
@@ -267,10 +289,13 @@ document.querySelectorAll('#suite button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#suite button').forEach(x => x.classList.remove('on'));
   b.classList.add('on'); benchSuite = b.dataset.v;
 });
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 async function startBench() {
-  try { await fetch('/api/benchmark/start?suite=' + benchSuite, {method:'POST'}); } catch(e){}
+  const secs = $('secs').value;
+  try { await fetch(`/api/benchmark/start?suite=${benchSuite}&secs=${secs}`, {method:'POST'}); } catch(e){}
   pollBench();
 }
+let benchTimer = null;
 async function pollBench() {
   let s; try { s = await (await fetch('/api/benchmark/status')).json(); } catch(e){ return; }
   const btn = $('startBtn');
@@ -282,13 +307,23 @@ async function pollBench() {
     btn.textContent = 'Start benchmark';
     $('bstatus').innerHTML = s.finished ? `Finished — <b>${s.iteration}</b> iterations` : 'Idle';
   }
+  const ne = $('nowexec');
+  if (s.running && s.current) {
+    ne.hidden = false;
+    $('nowlabel').textContent = 'Executing: ' + s.current;
+    const cur = (s.stats||[]).find(q => s.current.endsWith(q.query));
+    $('nowsql').textContent = cur ? cur.sql : '';
+  } else { ne.hidden = true; }
   if (s.stats && s.stats.length) {
     $('benchRows').innerHTML = s.stats.map(q =>
-      `<tr><td>${q.query}</td><td>${q.sd_ms.toFixed(2)} ms</td><td>${q.pg_ms.toFixed(2)} ms</td>`
-      + `<td class="sx">${q.speedup>0?q.speedup.toFixed(1)+'×':'—'}</td></tr>`).join('');
+      `<tr><td>${esc(q.query)}</td><td>${q.sd_ms.toFixed(2)} ms</td><td>${q.pg_ms.toFixed(2)} ms</td>`
+      + `<td class="sx">${q.speedup>0?q.speedup.toFixed(1)+'×':'—'}</td></tr>`
+      + `<tr><td class="sqlcell" colspan="4"><code>${esc(q.sql)}</code></td></tr>`).join('');
   }
+  // poll faster while a run is live so the "executing" line feels real-time
+  clearTimeout(benchTimer);
+  benchTimer = setTimeout(pollBench, s.running ? 600 : 2000);
 }
-setInterval(pollBench, 1500);  // anyone visiting sees a run in progress
 
 init();
 pollBench();

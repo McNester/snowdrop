@@ -249,13 +249,14 @@ struct DashboardResponse {
 
 // ── Benchmark (Grafana-backed, single global idempotent run) ───────────────
 
-/// How long one benchmark run lasts. Long enough for Prometheus (scraping every
-/// few seconds) to plot a time series.
-const BENCH_DURATION: Duration = Duration::from_secs(45);
+/// Default run length (seconds) if the caller doesn't pass `secs`. Clamped to
+/// [10, 600]. Long enough for Prometheus to plot a clear time series.
+const BENCH_DEFAULT_SECS: u64 = 60;
 
 #[derive(Serialize, Clone, Default)]
 struct QueryStat {
     query: String,
+    sql: String,
     sd_ms: f64,
     pg_ms: f64,
     speedup: f64,
@@ -269,6 +270,7 @@ struct BenchStatus {
     iteration: u64,
     elapsed_s: f64,
     duration_s: u64,
+    current: String,
     stats: Vec<QueryStat>,
 }
 
@@ -288,7 +290,7 @@ impl BenchShared {
 
 /// Idempotent: only one run at a time. If a run is in progress, this is a no-op
 /// and the caller just sees the live status. The run is spawned detached.
-fn start_benchmark(app: &App, suite: &str) {
+fn start_benchmark(app: &App, suite: &str, duration: Duration) {
     if app
         .running_cas()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -299,7 +301,7 @@ fn start_benchmark(app: &App, suite: &str) {
     let app = app.clone();
     let suite = suite.to_string();
     tokio::spawn(async move {
-        if let Err(e) = run_benchmark(&app, &suite).await {
+        if let Err(e) = run_benchmark(&app, &suite, duration).await {
             eprintln!("benchmark error: {e:#}");
         }
         app.bench.running.store(false, Ordering::SeqCst);
@@ -307,6 +309,7 @@ fn start_benchmark(app: &App, suite: &str) {
         let mut st = app.bench.status.lock().await;
         st.running = false;
         st.finished = true;
+        st.current = String::new();
     });
 }
 
@@ -362,8 +365,13 @@ async fn time_query(client: &Client, sql: &str) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-async fn run_benchmark(app: &App, suite: &str) -> Result<()> {
+async fn set_current(app: &App, what: &str) {
+    app.bench.status.lock().await.current = what.to_string();
+}
+
+async fn run_benchmark(app: &App, suite: &str, duration: Duration) -> Result<()> {
     metrics::gauge!("bench_running").set(1.0);
+    let queries = suite_queries(suite);
     {
         let mut st = app.bench.status.lock().await;
         *st = BenchStatus {
@@ -372,11 +380,13 @@ async fn run_benchmark(app: &App, suite: &str) -> Result<()> {
             suite: suite.to_string(),
             iteration: 0,
             elapsed_s: 0.0,
-            duration_s: BENCH_DURATION.as_secs(),
-            stats: suite_queries(suite)
+            duration_s: duration.as_secs(),
+            current: String::new(),
+            stats: queries
                 .iter()
-                .map(|(n, _, _)| QueryStat {
+                .map(|(n, sd_sql, _)| QueryStat {
                     query: n.to_string(),
+                    sql: sd_sql.clone(),
                     ..Default::default()
                 })
                 .collect(),
@@ -388,14 +398,15 @@ async fn run_benchmark(app: &App, suite: &str) -> Result<()> {
     let _ = sd.simple_query("USE crypto;").await;
     let pg_db = if suite == "tpch" { "tpch" } else { "crypto" };
     let pg = connect(&postgres_conn(pg_db)).await?;
-    let queries = suite_queries(suite);
 
     let start = Instant::now();
     let mut iteration = 0u64;
-    while start.elapsed() < BENCH_DURATION {
+    while start.elapsed() < duration {
         iteration += 1;
         for (i, (name, sd_sql, pg_sql)) in queries.iter().enumerate() {
+            set_current(app, &format!("Snowdrop · {name}")).await;
             let sd_ms = time_query(&sd, sd_sql).await;
+            set_current(app, &format!("PostgreSQL · {name}")).await;
             let pg_ms = time_query(&pg, pg_sql).await;
             let speedup = if sd_ms > 0.0 { pg_ms / sd_ms } else { 0.0 };
 
@@ -532,7 +543,11 @@ async fn route(line: &str, app: &App) -> (&'static str, &'static str, String) {
             Some("tpch") => "tpch",
             _ => "crypto",
         };
-        start_benchmark(app, suite);
+        let secs = query_param(line, "secs")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(BENCH_DEFAULT_SECS)
+            .clamp(10, 600);
+        start_benchmark(app, suite, Duration::from_secs(secs));
         return ("200 OK", "application/json", app.bench.status_json().await);
     }
     if line.starts_with("GET /api/benchmark/status") {
