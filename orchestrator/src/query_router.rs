@@ -8851,6 +8851,33 @@ fn compile_num_kernel<'a>(
     }
 }
 
+/// An integer-typed group column, read directly as Option<i64> (None = NULL).
+enum IntGroupCol<'a> {
+    I64(&'a [i64], &'a column_store::NullBitmap),
+    I32(&'a [i32], &'a column_store::NullBitmap),
+    Bool(&'a [bool], &'a column_store::NullBitmap),
+}
+
+impl IntGroupCol<'_> {
+    #[inline]
+    fn key(&self, idx: usize) -> Option<i64> {
+        match self {
+            IntGroupCol::I64(v, n) => (!n.is_null(idx)).then(|| v[idx]),
+            IntGroupCol::I32(v, n) => (!n.is_null(idx)).then(|| v[idx] as i64),
+            IntGroupCol::Bool(v, n) => (!n.is_null(idx)).then(|| v[idx] as i64),
+        }
+    }
+}
+
+fn integer_group_column(table_cols: &TableColumns, col_id: u32) -> Option<IntGroupCol<'_>> {
+    match table_cols.columns.get(&col_id)? {
+        (TypedColumn::Int64(v), n) => Some(IntGroupCol::I64(v, n)),
+        (TypedColumn::DateDays(v), n) => Some(IntGroupCol::I32(v, n)),
+        (TypedColumn::Boolean(v), n) => Some(IntGroupCol::Bool(v, n)),
+        _ => None,
+    }
+}
+
 /// One compiled aggregate accumulator, resolved once before the row loop.
 enum AggKernel<'a> {
     CountStar,
@@ -8976,6 +9003,47 @@ fn try_compute_simple_grouped_columnar_aggregate_rows(
     for item in &plan.items {
         if let ColumnarProjectionItem::Scalar { expr, .. } = item {
             column_id_for_expr(expr, schema_cols)?;
+        }
+    }
+
+    // Fast path: a single integer group column (e.g. GROUP BY hour) keys directly
+    // by i64, skipping the per-row string formatting + hashing that dominates
+    // GROUP BY cost at scale. NULL is its own group via Option<i64>.
+    if group_col_ids.len() == 1 {
+        if let Some(int_col) = integer_group_column(table_cols, group_col_ids[0]) {
+            // Small non-negative keys (hour, weekday, status codes, ...) index a
+            // dense Vec directly — no hashing at all. Anything else (NULL,
+            // negative, very large) falls back to a HashMap.
+            const DIRECT_LIMIT: i64 = 1 << 20;
+            let mut direct: Vec<Option<AggregateBucket>> = Vec::new();
+            let mut overflow: HashMap<Option<i64>, AggregateBucket> = HashMap::new();
+            let new_bucket = |idx: usize| AggregateBucket {
+                first_row_idx: Some(idx),
+                states: plan.state_specs.iter().map(init_aggregate_state).collect(),
+            };
+            for idx in bitmap.iter_set_bits() {
+                let bucket = match int_col.key(idx) {
+                    Some(k) if (0..DIRECT_LIMIT).contains(&k) => {
+                        let u = k as usize;
+                        if u >= direct.len() {
+                            direct.resize_with(u + 1, || None);
+                        }
+                        direct[u].get_or_insert_with(|| new_bucket(idx))
+                    }
+                    other => overflow.entry(other).or_insert_with(|| new_bucket(idx)),
+                };
+                for (state, kernel) in bucket.states.iter_mut().zip(agg_kernels.iter()) {
+                    update_state_with_kernel(state, kernel, table_cols, idx);
+                }
+            }
+            return Some(
+                direct
+                    .iter()
+                    .filter_map(|b| b.as_ref())
+                    .chain(overflow.values())
+                    .map(|bucket| aggregate_bucket_to_row(plan, bucket, table_cols, schema_cols))
+                    .collect(),
+            );
         }
     }
 
