@@ -332,8 +332,10 @@ fn suite_queries(suite: &str) -> Vec<(&'static str, String, String)> {
                   SUM(l_extendedprice * (1 - l_discount)), AVG(l_quantity), AVG(l_extendedprice), \
                   AVG(l_discount), COUNT(*) FROM {p}lineitem WHERE l_shipdate <= '1998-09-02' \
                   GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus;";
+        // Aliases promo_revenue / total_revenue + the l/p aliases are required by
+        // Snowdrop's Q14 fast path (it's a join — the general path is far slower).
         let q14 = "SELECT SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) \
-                   ELSE 0 END), SUM(l_extendedprice * (1 - l_discount)) \
+                   ELSE 0 END) AS promo_revenue, SUM(l_extendedprice * (1 - l_discount)) AS total_revenue \
                    FROM {p}lineitem l INNER JOIN {p}part p ON l.l_partkey = p.p_partkey \
                    WHERE l.l_shipdate >= '1995-01-01' AND l.l_shipdate < '1995-02-01';";
         vec![
